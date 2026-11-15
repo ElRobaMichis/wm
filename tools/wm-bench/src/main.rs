@@ -35,6 +35,23 @@ fn main() -> ExitCode {
         #[cfg(windows)]
         Some("snapshot") => overlay::snapshot(),
         #[cfg(windows)]
+        Some("capture") => match meter::capture_primary() {
+            Ok((img, w, h)) => {
+                let file = args.get(1).map_or("captura.bmp", String::as_str);
+                match meter::save_bmp(std::path::Path::new(file), &img, w, (0, 0, w, h)) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(e) => {
+                        eprintln!("{e}");
+                        ExitCode::FAILURE
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                ExitCode::FAILURE
+            }
+        },
+        #[cfg(windows)]
         Some("ghost") => match overlay::wm_exe() {
             Some(exe) => ghost::run(&args[1..], &exe),
             None => {

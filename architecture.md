@@ -944,13 +944,17 @@ Diseño revisado con Fable 5.2; implementado y medido el 15/11/2026 a 144 Hz (no
 | Brave | 800 px en 150 ms | 40 | 100 % | **0 / 0** |
 | **Brave con CPU al 100 %** (`wm burn`) | 800 px en 200 ms | 40 | **98,8 %** | **0 / 0** |
 | Windows Terminal (XAML) | 800 px en 200 ms | 40 | 100 % | **0 / 0** |
+| **Rayo** (winit, Rust nativo; el administrador de archivos del usuario, su ventana real) | 800 px en 200 ms | 40 | 100 % | **0 / 0** |
 
 - En todos los vuelos la ventana real llegó al destino a tiempo.
+- Con una ventana del usuario, la demo guarda posición, tamaño y si estaba maximizada, y la deja igual al terminar: Rayo volvió exactamente a su rectángulo.
+- **Error de medición encontrado:** la demo avisaba "lista" antes de que se pintara el telón, y el ancho en reposo salía de cuadros sin telón (1920 px). Ahora avisa con el telón pintado, y el reposo se toma de los últimos cuadros antes del primer vuelo.
 - Un solo `SetWindowPos` por vuelo.
 - 0 ventanas marcadas al terminar.
 
 **Pendiente:**
-- **Explorer:** no se pudo probar porque las ventanas de carpeta no abrían. Windows lanzaba `explorer.exe /factory,… -Embedding`, pero la ventana nunca aparecía. Probablemente es secuela del Explorer relanzado a mano en el spike 3: hay que reiniciarlo desde el Administrador de tareas y repetir `wm-bench ghost explorer`.
+- **Explorer:** no se pudo probar porque en esta máquina el administrador de archivos predeterminado es **Rayo** (un `rayo.exe` nativo, sin WebView2): `explorer.exe <carpeta>` le pasa la carpeta a Rayo y nunca abre una ventana `CabinetWClass`. No era una avería. Probar con el Explorer clásico requiere otra máquina o abrirlo de otra forma; mientras tanto, Rayo es la app de archivos real del usuario de prueba.
+- **Lección para el producto:** el "explorador de archivos" no es siempre `explorer.exe`. Las asignaciones por defecto de `Caps` + letra (`E` = archivos) tienen que respetar el administrador de archivos predeterminado.
 - **VS Code / Electron:** no está instalado. Brave cubre el mismo motor (Chromium); falta una app Electron real.
 - **240 Hz:** no hay monitor.
 - **Cambiar de tamaño (agrandar / achicar):** la miniatura en vivo muestra el repintado tardío de la app. Plan de Fable:

@@ -1,4 +1,4 @@
-//! `wm-bench ghost <puppet|explorer|brave|terminal> [dx] [ms] [vueltas]` — spike 6
+//! `wm-bench ghost <puppet|explorer|brave|terminal|rayo> [dx] [ms] [vueltas]` — spike 6
 //! (architecture.md §7.4): mide la animación con fantasma.
 //!
 //! `wm ghost-demo … curtain` pone un telón magenta del tamaño del monitor
@@ -47,6 +47,9 @@ fn open_target(kind: &str, exe: &std::path::Path) -> Option<(Option<Child>, Vec<
             std::thread::sleep(Duration::from_millis(3000));
             Some((None, vec!["app".into(), "brave".into()]))
         }
+        // La ventana de Rayo (el administrador de archivos del usuario) que ya
+        // está abierta: no se abre ni se cierra nada; la demo la deja igual.
+        "rayo" => Some((None, vec!["app".into(), "rayo".into()])),
         "terminal" => {
             Command::new("wt.exe").args(["-w", "new"]).spawn().ok()?;
             std::thread::sleep(Duration::from_millis(3000));
@@ -78,7 +81,7 @@ pub fn run(args: &[String], exe: &std::path::Path) -> ExitCode {
     let reps: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(20);
 
     let Some((mut helper, target)) = open_target(kind, exe) else {
-        eprintln!("Uso: wm-bench ghost <puppet|explorer|brave|terminal> [dx] [ms] [vueltas]");
+        eprintln!("Uso: wm-bench ghost <puppet|explorer|brave|terminal|rayo> [dx] [ms] [vueltas]");
         return ExitCode::FAILURE;
     };
     let mut demo_args: Vec<String> = vec!["ghost-demo".into()];
@@ -150,7 +153,8 @@ pub fn run(args: &[String], exe: &std::path::Path) -> ExitCode {
             let _ = h.kill();
             let _ = h.wait();
         }
-        None => close_window(target_hwnd),
+        None if kind != "rayo" => close_window(target_hwnd),
+        None => {}
     }
 
     println!(
@@ -172,11 +176,15 @@ pub fn run(args: &[String], exe: &std::path::Path) -> ExitCode {
 }
 
 fn report(name: &str, hz: f64, samples: &[Sample], measure_start: i64, flights: &[Flight]) {
-    let mut idle: Vec<u32> = samples
+    // Ancho en reposo: los últimos cuadros antes de la primera secuencia
+    // (cuando el telón ya está pintado).
+    let first_seq = flights.first().map_or(i64::MAX, |f| f.t0 - clock::plus_micros(0, 150_000));
+    let before: Vec<u32> = samples
         .iter()
-        .filter(|s| s.qpc >= measure_start && flights.first().is_none_or(|f| s.qpc < f.t0))
+        .filter(|s| s.qpc >= measure_start && s.qpc < first_seq)
         .map(|s| s.covered)
         .collect();
+    let mut idle: Vec<u32> = before.iter().rev().take(5).copied().collect();
     idle.sort_unstable();
     let Some(&base) = idle.get(idle.len() / 2) else {
         println!("{name}: sin cuadros antes del primer vuelo");

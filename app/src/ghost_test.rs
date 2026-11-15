@@ -81,10 +81,16 @@ pub fn demo(args: &[String]) -> ExitCode {
     let curtain_on = args.iter().any(|a| a == "curtain");
 
     wm_platform::input::ensure_message_queue();
+    // Cómo estaba la ventana, para dejarla igual al terminar (puede ser una
+    // ventana del usuario).
+    let was_maximized = wm_platform::hide::is_maximized(id);
+    if was_maximized {
+        wm_platform::hide::set_maximized_for_test(id, false);
+        std::thread::sleep(Duration::from_millis(400));
+    }
+    let Some(original) = ghost::window_rect(id) else { return ExitCode::FAILURE };
     // Las apps de prueba se llevan a un tamaño y lugar conocidos, al frente.
     if args.first().is_some_and(|a| a == "app") {
-        wm_platform::hide::set_maximized_for_test(id, false);
-        std::thread::sleep(Duration::from_millis(300));
         let r = Rect { left: 100, top: 150, right: 1000, bottom: 800 };
         let _ = windows_list::place_async_top(id, r);
     } else if let Some(r) = ghost::window_rect(id) {
@@ -132,14 +138,15 @@ pub fn demo(args: &[String]) -> ExitCode {
         g.source_size(),
         ghost::has_compositor_clock()
     );
+    for _ in 0..40 {
+        ghost::wait_frame(); // deja pintar el telón antes de avisar
+    }
     println!(
         "READY {} {} {} {} {}",
         start_efb.left, start_efb.top, start_efb.right, start_efb.bottom, id.0
     );
     let _ = std::io::stdout().flush();
-    for _ in 0..40 {
-        ghost::wait_frame(); // deja pintar el telón
-    }
+    std::thread::sleep(Duration::from_millis(500));
 
     let duration = Duration::from_millis(ms);
     let mut dir = 1;
@@ -196,7 +203,12 @@ pub fn demo(args: &[String]) -> ExitCode {
         std::thread::sleep(Duration::from_millis(300));
         dir = -dir;
     }
-    let _ = windows_list::place_async_top(id, start_win);
+    let _ = start_win;
+    let _ = windows_list::place_async_top(id, original);
+    if was_maximized {
+        std::thread::sleep(Duration::from_millis(300));
+        wm_platform::hide::set_maximized_for_test(id, true);
+    }
     drop(curtain);
     println!("END");
     ExitCode::SUCCESS
