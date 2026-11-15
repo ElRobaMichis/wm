@@ -31,13 +31,45 @@ use windows::core::Interface;
 use wm_model::Rect;
 use wm_platform::clock;
 
+/// Qué píxeles cuentan en la fila.
+#[derive(Debug, Clone, Copy)]
+pub enum ColorKey {
+    /// Un color (BGR) con tolerancia por canal.
+    Near { b: u8, g: u8, r: u8, tolerance: u8 },
+    /// Todo lo que **no** es el telón magenta de `wm ghost-demo … curtain`.
+    /// El magenta oscurecido por la sombra de una ventana sigue contando como
+    /// telón (G bajo, R y B altos y parecidos).
+    NotCurtain,
+}
+
+impl ColorKey {
+    /// El cuadrado de la demo de overlays.
+    pub const MAGENTA: ColorKey = ColorKey::Near { b: 255, g: 0, r: 255, tolerance: 70 };
+
+    fn matches(&self, p: &[u8; 4]) -> bool {
+        match *self {
+            ColorKey::Near { b, g, r, tolerance } => {
+                let near = |a: u8, c: u8| a.abs_diff(c) <= tolerance;
+                near(p[0], b) && near(p[1], g) && near(p[2], r)
+            }
+            ColorKey::NotCurtain => {
+                let curtain = p[1] < 40 && p[0] > 100 && p[2] > 100 && p[0].abs_diff(p[2]) < 30;
+                !curtain
+            }
+        }
+    }
+}
+
 /// Un cuadro entregado por Desktop Duplication.
 #[derive(Debug, Clone, Copy)]
 pub struct Sample {
     /// `LastPresentTime` (QPC) del cuadro.
     pub qpc: i64,
-    /// Centro del cuadrado en la fila medida, si se ve.
+    /// Centro del tramo más largo del color en la fila medida, si se ve.
     pub x: Option<u32>,
+    /// Píxeles de la fila con el color (para detectar "sin ventana" y
+    /// "doble imagen").
+    pub covered: u32,
     /// Cuadros compuestos desde el anterior que entregamos (> 1 = salteados).
     pub accumulated: u32,
 }
@@ -64,14 +96,18 @@ impl OutputMeter {
 
 /// Arranca un medidor por monitor. `row` es la fila (relativa al monitor)
 /// donde pasa el cuadrado. Miden hasta que `stop` sea `true`.
-pub fn start(row: u32, stop: Arc<AtomicBool>) -> Result<Vec<OutputMeter>, String> {
+pub fn start(
+    row: u32,
+    key: ColorKey,
+    stop: Arc<AtomicBool>,
+) -> Result<Vec<OutputMeter>, String> {
     let mut meters = Vec::new();
     for (a, o, name, desktop) in outputs()? {
         let stop = Arc::clone(&stop);
         let (tx, rx) = std::sync::mpsc::channel();
         let handle = std::thread::Builder::new()
             .name(format!("meter-{name}"))
-            .spawn(move || measure(a, o, row, &stop, &tx))
+            .spawn(move || measure(a, o, row, key, &stop, &tx))
             .map_err(|e| e.to_string())?;
         let refresh_hz = rx.recv().map_err(|_| format!("{name}: no arrancó"))?;
         meters.push(OutputMeter { name, desktop, refresh_hz, handle });
@@ -118,6 +154,7 @@ fn measure(
     adapter_index: u32,
     output_index: u32,
     row: u32,
+    key: ColorKey,
     stop: &AtomicBool,
     ready: &std::sync::mpsc::Sender<f64>,
 ) -> Result<Measured, String> {
@@ -197,6 +234,7 @@ fn measure(
             }
             if info.LastPresentTime != 0 {
                 let mut x = None;
+                let mut covered = 0;
                 if let Some(tex) = resource.and_then(|r| r.cast::<ID3D11Texture2D>().ok()) {
                     let region = D3D11_BOX {
                         left: 0,
@@ -213,13 +251,14 @@ fn measure(
                             mapped.pData as *const u8,
                             width as usize * 4,
                         );
-                        x = find_magenta(pixels);
+                        (x, covered) = find_color(pixels, key);
                         context.Unmap(&staging, 0);
                     }
                 }
                 out.samples.push(Sample {
                     qpc: info.LastPresentTime,
                     x,
+                    covered,
                     accumulated: info.AccumulatedFrames,
                 });
             }
@@ -229,13 +268,16 @@ fn measure(
     }
 }
 
-/// Centro del tramo magenta contiguo más largo en una fila BGRA.
-fn find_magenta(bgra: &[u8]) -> Option<u32> {
-    let is = |p: &[u8; 4]| p[0] > 180 && p[1] < 80 && p[2] > 180;
+/// Centro del tramo contiguo más largo del color en una fila BGRA, y cuántos
+/// píxeles de la fila tienen ese color.
+fn find_color(bgra: &[u8], key: ColorKey) -> (Option<u32>, u32) {
+    let is = |p: &[u8; 4]| key.matches(p);
     let (mut best, mut best_len) = (None, 0usize);
+    let mut covered = 0u32;
     let mut run_start = None;
     let pixels = bgra.as_chunks::<4>().0;
     for (i, p) in pixels.iter().enumerate() {
+        covered += u32::from(is(p));
         match (is(p), run_start) {
             (true, None) => run_start = Some(i),
             (false, Some(s)) => {
@@ -252,7 +294,7 @@ fn find_magenta(bgra: &[u8]) -> Option<u32> {
     {
         best = Some((s + pixels.len() - 1) / 2);
     }
-    best.map(|x| x as u32)
+    (best.map(|x| x as u32), covered)
 }
 
 /// Resumen de un tramo de muestras.

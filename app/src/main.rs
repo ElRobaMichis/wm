@@ -10,6 +10,8 @@ use std::process::ExitCode;
 #[cfg(windows)]
 mod core;
 #[cfg(windows)]
+mod ghost_test;
+#[cfg(windows)]
 mod guardian;
 #[cfg(windows)]
 mod hang_test;
@@ -46,6 +48,8 @@ fn main() -> ExitCode {
         Some("ops-test") => ops_test::run(&args),
         #[cfg(windows)]
         Some("overlay-demo") => overlay_test::demo(&args),
+        #[cfg(windows)]
+        Some("ghost-demo") => ghost_test::demo(&args),
         #[cfg(windows)]
         Some("guardian") => guardian::run(&args),
         #[cfg(windows)]

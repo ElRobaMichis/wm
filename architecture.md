@@ -358,7 +358,7 @@ Así no se ve el fondo de pantalla entre medio. Las ventanas escondidas se manti
   6. quitar el fantasma.
 - **La posición se calcula por tiempo**, no por número de cuadro, para que sirva a cualquier frecuencia.
 - **El fantasma depende del cloak:** en modo degradado, las animaciones de ventanas se apagan o quedan en solo-mover.
-- Que las miniaturas muestren ventanas cloaked es esperable (así funciona la Vista de tareas), pero **[A VERIFICAR]**.
+- **Verificado en el spike 6:** la miniatura de una ventana cloaked sigue en vivo. Con esta secuencia, 0 cuadros sin ventana o con doble imagen en Brave, Windows Terminal y títeres, también con la CPU al 100 % (§13.8).
 
 ---
 
@@ -905,6 +905,63 @@ Plan de medición revisado con Fable 5.2; implementado y medido el 15/11/2026, e
 - **DPI distinto por monitor:** los visuales van en píxeles físicos; probar con 125–200 %.
 - **HDR:** Desktop Duplication convierte a BGRA8 y el umbral de magenta podría fallar.
 - **Reinicio de DWM** con overlays creados.
+
+### 13.8 Estado del spike 6 (noviembre 2026)
+
+Diseño revisado con Fable 5.2; implementado y medido el 15/11/2026 a 144 Hz (no hay monitor de 240 Hz).
+
+**Decisión: la animación de ventanas existe**, con fantasma por `DwmRegisterThumbnail` público (`wm-platform::ghost`) y un hilo que la mueve un paso por cuadro del compositor. El ordinal 147 (`DwmpCreateSharedThumbnailVisual`) no hace falta; queda como experimento por si en otra máquina el camino público no llega.
+
+**Implementación:**
+- **Anfitrión:**
+  - una sola ventana sobre toda la pantalla virtual, con los mismos estilos que los overlays (`NOREDIRECTIONBITMAP | LAYERED | TRANSPARENT | TOPMOST | TOOLWINDOW | NOACTIVATE`) y 1 px menos de alto;
+  - no oscurece nada, no toma clics y sirve para cruzar de monitor.
+- **La miniatura es el marco visible:**
+  - `DwmQueryThumbnailSourceSize` dio exactamente `DWMWA_EXTENDED_FRAME_BOUNDS` (370×509 en el títere, 886×643 en Brave y Terminal);
+  - el destino va en ese espacio, 1:1: el canje fantasma ↔ real no salta ni se ve borroso;
+  - `SetWindowPos` sigue usando `GetWindowRect`.
+- **La miniatura de una ventana con cloak sigue en vivo** (estaba **[A VERIFICAR]** en §7.4).
+- **Marcapasos:** `DCompositionWaitForCompositorClock` + `DCompositionBoostCompositorClock` durante el vuelo, resueltos en tiempo de ejecución (`dynlib`); `DwmFlush` en Windows 10. La posición se calcula **para el cuadro siguiente** (tiempo + 1 refresco): sin eso, el primer cuadro de cada vuelo repetía posición (96–97 % en vez de ~100 %).
+- **Secuencia** (`wm ghost-demo`):
+  1. fantasma en el marco viejo, 2 cuadros;
+  2. cloak **confirmado** con `DWMWA_CLOAKED`, 1 cuadro;
+  3. **un solo** `SetWindowPos` asíncrono al destino, **que además la sube al frente** (`HWND_TOP`, sin activar);
+  4. vuelo;
+  5. esperar a que el marco real esté en el destino (tope 150 ms; si no llega, el fantasma va adonde está la real);
+  6. uncloak **confirmado**, 2 cuadros;
+  7. quitar el fantasma.
+- **Hallazgo de diseño:** sin el `HWND_TOP` del paso 3, al terminar la ventana real quedaba **debajo** de otras y "desaparecía", porque el fantasma se ve encima de todo y la real no. Con la ventana ya al frente, no pasa.
+
+**Medición** (`wm-bench ghost`):
+- un **telón magenta** del tamaño del monitor justo debajo de la ventana; Desktop Duplication cuenta lo que no es telón en una fila a 3/4 de altura (la sombra sobre el telón cuenta como telón);
+- **defecto** = cualquier cuadro, transiciones incluidas, con ese ancho a más de **±3 px** del de reposo: menos es "sin ventana", más es "doble imagen", aunque sea parcial;
+- el vuelo se toma de las muestras: del primer cuadro movido al primero en el destino.
+
+| App (ventana nueva, abierta para la prueba) | Vuelo | Vuelos | Refrescos con el fantasma en otra posición (meta ≥ 95 %) | Cuadros sin ventana / con doble imagen (meta 0) |
+|---|---|---|---|---|
+| Títere (Win32) | 600 px en 200 ms | 20 | 100 % | **0 / 0** |
+| Brave (Chromium) | 800 px en 200 ms | 60 | 100 % | **0 / 0** |
+| Brave | 800 px en 150 ms | 40 | 100 % | **0 / 0** |
+| **Brave con CPU al 100 %** (`wm burn`) | 800 px en 200 ms | 40 | **98,8 %** | **0 / 0** |
+| Windows Terminal (XAML) | 800 px en 200 ms | 40 | 100 % | **0 / 0** |
+
+- En todos los vuelos la ventana real llegó al destino a tiempo.
+- Un solo `SetWindowPos` por vuelo.
+- 0 ventanas marcadas al terminar.
+
+**Pendiente:**
+- **Explorer:** no se pudo probar porque las ventanas de carpeta no abrían. Windows lanzaba `explorer.exe /factory,… -Embedding`, pero la ventana nunca aparecía. Probablemente es secuela del Explorer relanzado a mano en el spike 3: hay que reiniciarlo desde el Administrador de tareas y repetir `wm-bench ghost explorer`.
+- **VS Code / Electron:** no está instalado. Brave cubre el mismo motor (Chromium); falta una app Electron real.
+- **240 Hz:** no hay monitor.
+- **Cambiar de tamaño (agrandar / achicar):** la miniatura en vivo muestra el repintado tardío de la app. Plan de Fable:
+  - recortar 1:1 (`rcSource` del tamaño en curso), sin estirar;
+  - al agrandar, `SetWindowPos` al principio; al achicar, al final;
+  - medir recorte contra estirado.
+- **Hilo `anim` en el core:**
+  - prioridad `TIME_CRITICAL` solo durante el vuelo; en esta prueba corrió a prioridad normal y alcanzó igual el 98,8 % bajo carga;
+  - el brain tiene que ignorar los `CLOAKED`/`UNCLOAKED` de ventanas en vuelo.
+- **Sin animación** con: ventanas maximizadas, minimizadas o a pantalla completa; contenido protegido (la miniatura sale negra); apps colgadas (`IsHungAppWindow` antes de empezar); y cloak degradado (§6.3).
+- **Esquinas redondeadas y sombra:** la sombra desaparece durante el vuelo. Mirar las esquinas en capturas; si difieren, `DWMWCP_DONOTROUND` en las ventanas en mosaico.
 
 ---
 

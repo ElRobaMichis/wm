@@ -9,6 +9,10 @@ pub mod clock;
 #[cfg(windows)]
 pub mod console;
 #[cfg(windows)]
+pub mod ghost;
+#[cfg(windows)]
+pub mod ghost_curtain;
+#[cfg(windows)]
 mod dynlib;
 #[cfg(windows)]
 pub mod hide;

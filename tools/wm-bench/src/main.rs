@@ -19,6 +19,8 @@
 //! con `NtQuerySystemInformation`.
 
 #[cfg(windows)]
+mod ghost;
+#[cfg(windows)]
 mod meter;
 #[cfg(windows)]
 mod sysinfo;
@@ -32,8 +34,16 @@ fn main() -> ExitCode {
         Some("overlay") => overlay::run(&args[1..]),
         #[cfg(windows)]
         Some("snapshot") => overlay::snapshot(),
+        #[cfg(windows)]
+        Some("ghost") => match overlay::wm_exe() {
+            Some(exe) => ghost::run(&args[1..], &exe),
+            None => {
+                eprintln!("No encuentro wm.exe junto a wm-bench.exe.");
+                ExitCode::FAILURE
+            }
+        },
         _ => {
-            eprintln!("Uso: wm-bench overlay [arranques] | wm-bench snapshot");
+            eprintln!("Uso: wm-bench overlay [arranques] | snapshot | ghost [dx] [ms] [vueltas]");
             ExitCode::from(2)
         }
     }
@@ -171,7 +181,7 @@ mod overlay {
         end: i64,
     }
 
-    fn wm_exe() -> Option<PathBuf> {
+    pub fn wm_exe() -> Option<PathBuf> {
         std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|d| d.join("wm.exe")))
@@ -239,7 +249,7 @@ mod overlay {
         };
 
         let stop = Arc::new(AtomicBool::new(false));
-        let meters = match meter::start(MARK_ROW, Arc::clone(&stop)) {
+        let meters = match meter::start(MARK_ROW, meter::ColorKey::MAGENTA, Arc::clone(&stop)) {
             Ok(m) => m,
             Err(e) => {
                 eprintln!("No se pudo arrancar Desktop Duplication: {e}");

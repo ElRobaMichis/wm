@@ -118,6 +118,30 @@ fn title(h: HWND) -> String {
     String::from_utf16_lossy(&buf[..len.max(0) as usize])
 }
 
+/// Como [`place_async`], pero además la sube al frente del orden Z (sin
+/// activarla), en la misma llamada. Lo usa la animación con fantasma: el
+/// fantasma se ve encima de todo, así que la real tiene que quedar arriba al
+/// terminar (spike 6).
+pub fn place_async_top(id: WindowId, rect: wm_model::Rect) -> Result<(), String> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        HWND_TOP, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SetWindowPos,
+    };
+    let flags = SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS;
+    // SAFETY: con SWP_ASYNCWINDOWPOS el pedido se postea al hilo dueño.
+    unsafe {
+        SetWindowPos(
+            id.hwnd(),
+            Some(HWND_TOP),
+            rect.left,
+            rect.top,
+            rect.width(),
+            rect.height(),
+            flags,
+        )
+    }
+    .map_err(|e| format!("SetWindowPos: {e}"))
+}
+
 /// Mueve y redimensiona sin esperar a la app (`SWP_ASYNCWINDOWPOS`).
 pub fn place_async(id: WindowId, rect: wm_model::Rect) -> Result<(), String> {
     use windows::Win32::UI::WindowsAndMessaging::{

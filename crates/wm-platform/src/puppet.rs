@@ -34,6 +34,12 @@ pub const HANG_INDEX: isize = 99;
 /// (no atiende mensajes), 1 ocupado (CPU al 100 % en un núcleo).
 const WM_PUPPET_HANG: u32 = WM_APP + 0x10;
 
+/// Color del títere `n` (desde 1) como (azul, verde, rojo).
+pub fn color_bgr(n: usize) -> (u8, u8, u8) {
+    let c = COLORS[(n.max(1) - 1) % COLORS.len()];
+    ((c >> 16) as u8, (c >> 8) as u8, c as u8)
+}
+
 /// Colores bien distintos para reconocer cada títere a simple vista.
 const COLORS: [u32; 10] = [
     0x003C_14DC, 0x0000_A5FF, 0x0000_D7FF, 0x0032_CD32, 0x00D1_CE00, 0x00E1_6941, 0x00D3_00C7,
