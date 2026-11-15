@@ -51,6 +51,12 @@ jobs:
           if ($deps -match '(?i)vcruntime|msvcp|ucrtbase|api-ms-win-crt') {
             throw "El ejecutable depende del runtime de C; revisar crt-static (.cargo/config.toml)."
           }
+          # Las DLL de gráficos se cargan a demanda (crates/wm-platform/src/dynlib.rs):
+          # importarlas en forma estática las cargaría en todos los roles y podría
+          # impedir que wm arranque en Windows 10 (architecture.md §13.7).
+          if ($deps -match '(?i)d3d11|dxgi|d2d1|dwrite|dcomp|coremessaging|psapi') {
+            throw "wm.exe importa una DLL de gráficos en forma estática; usar dynlib."
+          }
 
       - name: Doctor
         run: target\${{ matrix.target }}\release\wm.exe doctor

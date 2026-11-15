@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["app", "crates/wm-model", "crates/wm-platform"]
+members = ["app", "crates/wm-model", "crates/wm-platform", "tools/wm-bench"]
 
 [workspace.package]
 version = "0.0.1"

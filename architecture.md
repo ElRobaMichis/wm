@@ -120,12 +120,13 @@ No hizo falta una segunda ronda con Fable: su informe ya cubre y corrige cada pu
 
 **Diseño de overlays:**
 - **Una ventana overlay por monitor**, creada una vez y oculta. **Nunca se activa:** el teclado llega por el hook, así que la app enfocada no pierde el foco.
-- **Borde de foco y zonas** con `CompositionSpriteShape` (vectorial, sin dispositivo D3D). Solo el mapa de teclado necesita D2D.
-- **El dispositivo D3D/D2D se crea perezosamente** y se libera tras un rato sin uso. Los 0,4 s de espera del mapa son presupuesto de preparación: se rasteriza al bajar Caps.
+- **Borde de foco y zonas** con `CompositionSpriteShape` (vectorial, sin dispositivo D3D).
+- **El texto del mapa también es vectorial:** contornos de DirectWrite → `CompositionPath` → `ShapeVisual`, sin dispositivo D3D en nuestro proceso. D2D por hardware costó 136 ms y 55 MB de commit; D2D por software (WARP) queda de respaldo (§13.7).
+- **Se precrean al arrancar** el `Compositor`, las ventanas ocultas y los targets (0,3 MB). El mapa se arma al mostrarlo, en 6–14 ms, dentro de los 0,4 s de espera de Caps.
 - **El editor de zonas** es un modo del overlay del núcleo (no de Slint), para que sea idéntico a lo que se ve al arrastrar.
 - **Buscador y selector de app** ("¿Qué app querés en la K?"): ventana propia activable en el núcleo, con un campo de texto mínimo por `WM_CHAR`. **Deuda:** accesibilidad (UI Automation).
 - **Respetar la preferencia de animaciones del sistema** (`SPI_GETCLIENTAREAANIMATION`) **[DOC]**.
-- ⚠️ La documentación de Composition dice que sus animaciones corren "a 60 FPS independiente del hilo de UI" **[DOC]**. Que corran a 144 o 240 Hz en esos monitores es lo esperable pero no está escrito: **[A VERIFICAR]** en el spike 5.
+- La documentación de Composition dice que sus animaciones corren "a 60 FPS independiente del hilo de UI" **[DOC]**. **Medido en el spike 5:** corren a 144 Hz en monitores de 144 Hz (99,9 % de refrescos con posición nueva) y siguen con nuestro proceso suspendido. Falta 60 + 144 Hz y 240 Hz (§13.7).
 
 ---
 
@@ -813,6 +814,79 @@ Diseño consultado con Fable 5.2; implementado y medido el 15/11/2026.
 - `WinRef` con pid/tid para no actuar sobre un HWND reciclado en pedidos retenidos.
 - Escuchar `TaskbarCreated` (necesita la ventana top-level del brain) para reconciliar tras reiniciar Explorer (§13.5).
 - Abrir programas con el entorno del usuario (`CreateEnvironmentBlock`), no con el de la terminal (§13.5).
+
+### 13.7 Estado del spike 5 (noviembre 2026)
+
+Plan de medición revisado con Fable 5.2; implementado y medido el 15/11/2026, en Windows 11 24H2 con 2 monitores de 1920×1080 a 144 Hz.
+
+**Decisión: Win32 + Windows.UI.Composition, y el texto del mapa como contornos vectoriales, sin dispositivo D3D propio.**
+
+| Camino de texto | Cómo funciona | Primer cuadro (incluye armar el mapa) | Memoria de la demo con el mapa | Elegido |
+|---|---|---|---|---|
+| **`shape`** | DirectWrite da los contornos de los glifos → geometría D2D en CPU (sin dispositivo) → `CompositionPath` → `ShapeVisual`. Lo rasteriza DWM | **6–14 ms** | **1,7 MB WS privado / 2,3 MB commit** | ✅ |
+| `warp` | D2D sobre D3D11 por software en una `CompositionDrawingSurface` | 26–32 ms | 6,1 MB / 10,5 MB | respaldo |
+| `d2d` | Lo mismo con D3D11 por hardware | **136–148 ms** ❌ | 12,8 MB / **54,6 MB** | ❌ |
+
+- Las tres se ven prácticamente iguales: se verificó con capturas.
+- **Límites de `shape`:**
+  - no hay shaping, kerning ni ligaduras (se toman glifo por glifo);
+  - no hay ClearType: el suavizado es en escala de grises;
+  - no hay emoji a color.
+
+  Para las etiquetas del mapa (una letra y un nombre corto) no se nota. Si un texto lo necesitara, el respaldo es `warp`.
+- **Overlays:**
+  - una ventana por monitor (`WS_EX_NOREDIRECTIONBITMAP | TOPMOST | TOOLWINDOW | NOACTIVATE | LAYERED | TRANSPARENT`) con `DesktopWindowTarget` y un solo `Compositor`;
+  - **la ventana mide 1 px menos de alto que el monitor**: del tamaño exacto, el shell la tomó por una app a pantalla completa (`SHQueryUserNotificationState` = "ocupado") y silenciaría las notificaciones;
+  - no roba el foco;
+  - los clics la atraviesan (`WindowFromPoint` devuelve lo que está debajo).
+- **Animaciones:**
+  - las corre DWM (`Vector3KeyFrameAnimation`, por tiempo, lineal);
+  - al esconder se detienen, porque una animación `Forever` mantiene a DWM componiendo aunque no se vea;
+  - el core llama a `DisableProcessWindowsGhosting`: un hilo colgado nunca se vuelve una ventana fantasma a pantalla completa.
+- **Precrear al arrancar el core:**
+  - hilo ui, `DispatcherQueue`, `Compositor`, ventanas ocultas y targets: cuestan 0,3 MB privados;
+  - el mapa se arma al mostrarlo (6–14 ms, dentro de los 0,4 s de espera de Caps).
+- **`wm.exe` no importa DLL de gráficos:**
+  - `CoreMessaging`, `d3d11`, `dxgi`, `d2d1` y `dwrite` se resuelven en tiempo de ejecución (`wm-platform/src/dynlib.rs`), y `psapi` se reemplazó por `K32GetProcessMemoryInfo`;
+  - así el guardián, el core y la CLI no las cargan, y una función que no exista en Windows 10 no impide arrancar;
+  - la CI lo verifica con `dumpbin`.
+
+**Medición** (`wm-bench overlay` y `wm-bench snapshot`, un binario aparte para no cargarle D3D a `wm.exe`):
+- **Desktop Duplication por monitor:**
+  - por cada cuadro que compone DWM copia una sola fila de píxeles y ubica el cuadrado magenta de la demo;
+  - informa "cuadros de DWM por refresco" (el techo que pone DWM) y "refrescos con posición nueva" (nuestra pila);
+  - mide la regularidad del paso (Δx), que revela judder aunque el porcentaje dé bien;
+  - invalida la corrida con > 1 % de cuadros salteados y se recupera de `DXGI_ERROR_ACCESS_LOST`.
+- **Memoria** de la demo y de `dwm.exe` con `NtQuerySystemInformation` (working set privado y commit), sin abrir el proceso: `dwm.exe` no deja abrirse sin elevación.
+- La demo (`wm overlay-demo`) obedece órdenes por stdin, así el "precreado" se mide desde la orden `show`, como lo haría el core.
+
+| Criterio | Meta | DISPLAY1 (144 Hz) | DISPLAY2 (144 Hz) |
+|---|---|---|---|
+| Refrescos con posición nueva | ≥ 97 % | **99,9 %** (DWM compuso 100 %) | **99,9 %** (100 %) |
+| Paso por cuadro | parejo | 12,8 ± 0,6 px | 12,8 ± 0,6 px |
+| Animación con nuestro proceso **suspendido 10 s** (más que los 5 s del "no responde") | termina | **99,0 %**, llegó al final, 0 fantasmas | **99,0 %**, llegó al final |
+| Primer cuadro en frío, **desde antes de lanzar el proceso** (20 arranques) | < 50 ms | **p50 27,3 / p95 30,3 / máx 31,2 ms** | p50 27,5 / máx 31,3 ms |
+| Primer cuadro con todo precreado (orden `show`) | — | 3,8 ms (volver a mostrar: 8,4 ms) | 4,0 ms (8,7 ms) |
+| Mapa (`shape`), armándolo al mostrar | < 50 ms | p50 11,0 / máx 14,1 ms | p50 5,8 / máx 11,6 ms |
+
+| Memoria | Meta | Medido |
+|---|---|---|
+| `wm.exe` sin overlays | ≤ 15 MB | **1,0 MB** WS privado / 1,4 MB commit |
+| Con overlays y Compositor (ocultos o animando) | ≤ 30 MB | **1,3 MB** / 1,9 MB |
+| Con el mapa (`shape`) | ≤ 30 MB | **1,7 MB** / 2,3 MB |
+| Δ de `dwm.exe` con el mapa | medir | ~+1 MB, dentro del ruido entre corridas (35–37 MB WS privado en reposo) |
+
+- **CPU de la demo animando:** 0,000 % (0,00 ms en 5 s).
+- **Duplicación:** no se recreó en ninguna corrida; 0 cuadros salteados.
+
+**Pendiente:**
+- **60 + 144 Hz:** hay que poner un monitor a 60 Hz a mano (cambiar la configuración de pantalla queda a cargo del usuario) y correr `wm-bench overlay`. Mirar el paso en el monitor de 60 Hz: un patrón 2-3-2 sería judder.
+- **Windows 10 22H2** (una VM alcanza): ahí el criterio razonable es "funciona", porque DWM usa un solo reloj.
+- **Control de la medición:** `DCompositionGetTargetStatistics` (Windows 11, por `GetProcAddress`), con y sin duplicación activa, para medir cuánto interfiere el medidor.
+- **Juegos a pantalla completa:** que un overlay visible no fuerce composición (PresentMon), y que el overlay se oculte con apps a pantalla completa (§5.7).
+- **DPI distinto por monitor:** los visuales van en píxeles físicos; probar con 125–200 %.
+- **HDR:** Desktop Duplication convierte a BGRA8 y el umbral de magenta podría fallar.
+- **Reinicio de DWM** con overlays creados.
 
 ---
 

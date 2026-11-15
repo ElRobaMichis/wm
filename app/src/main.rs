@@ -17,6 +17,8 @@ mod hang_test;
 mod hide_test;
 #[cfg(windows)]
 mod ops_test;
+#[cfg(windows)]
+mod overlay_test;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(2).collect();
@@ -42,6 +44,8 @@ fn main() -> ExitCode {
         Some("hang-probe") => hang_test::probe(&args),
         #[cfg(windows)]
         Some("ops-test") => ops_test::run(&args),
+        #[cfg(windows)]
+        Some("overlay-demo") => overlay_test::demo(&args),
         #[cfg(windows)]
         Some("guardian") => guardian::run(&args),
         #[cfg(windows)]

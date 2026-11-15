@@ -88,3 +88,48 @@ pub fn ghost_windows() -> Vec<(WindowId, u32)> {
     };
     found
 }
+
+/// Suspende (o reanuda) todos los hilos de un proceso. Solo pruebas: usa
+/// `NtSuspendProcess`/`NtResumeProcess` de ntdll (no documentadas).
+pub fn suspend_process(handle: isize, suspend: bool) -> bool {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+    use windows::core::{s, w};
+    type NtFn = unsafe extern "system" fn(HANDLE) -> i32;
+    // SAFETY: ntdll siempre está cargada; la firma es la conocida de estas
+    // funciones (un HANDLE, devuelven NTSTATUS).
+    unsafe {
+        let Ok(ntdll) = GetModuleHandleW(w!("ntdll.dll")) else { return false };
+        let name = if suspend { s!("NtSuspendProcess") } else { s!("NtResumeProcess") };
+        let Some(f) = GetProcAddress(ntdll, name) else { return false };
+        let f: NtFn = std::mem::transmute(f);
+        f(HANDLE(handle as *mut c_void)) >= 0
+    }
+}
+
+/// Tiempo de CPU (usuario + núcleo) consumido por un proceso, en ms.
+pub fn process_cpu_ms(handle: isize) -> f64 {
+    use windows::Win32::Foundation::{FILETIME, HANDLE};
+    use windows::Win32::System::Threading::GetProcessTimes;
+    let [mut c, mut e, mut k, mut u] = [FILETIME::default(); 4];
+    let h = HANDLE(handle as *mut c_void);
+    // SAFETY: punteros a variables locales; handle con permiso de consulta.
+    let ok = unsafe { GetProcessTimes(h, &mut c, &mut e, &mut k, &mut u) };
+    if ok.is_err() {
+        return f64::NAN;
+    }
+    let t = |f: FILETIME| (u64::from(f.dwHighDateTime) << 32 | u64::from(f.dwLowDateTime)) as f64;
+    (t(k) + t(u)) / 10_000.0
+}
+
+/// Clase de la ventana que recibiría un clic en (`x`, `y`) de pantalla.
+pub fn class_at(x: i32, y: i32) -> String {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::WindowFromPoint;
+    // SAFETY: consulta de solo lectura.
+    let h = unsafe { WindowFromPoint(POINT { x, y }) };
+    let mut name = [0u16; 64];
+    // SAFETY: buffer local válido.
+    let len = unsafe { GetClassNameW(h, &mut name) };
+    String::from_utf16_lossy(&name[..len.max(0) as usize])
+}

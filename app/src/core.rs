@@ -101,6 +101,9 @@ pub fn run() -> ExitCode {
     let (log, log_thread) = Log::start();
 
     ops::boost_process();
+    // Que un hilo nuestro colgado nunca se convierta en una ventana fantasma
+    // (con overlays, una fantasma taparía la pantalla).
+    wm_platform::overlay::disable_ghosting();
     input::ensure_message_queue();
     ops::boost_brain_thread();
     let brain = input::current_thread_id();

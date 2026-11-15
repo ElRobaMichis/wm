@@ -423,13 +423,17 @@ pub fn wait(deadline: Option<std::time::Instant>) -> Wake {
     loop {
         // SAFETY: MSG válido; extracción estándar de la cola del hilo.
         while unsafe { PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE) }.as_bool() {
+            // Nuestros avisos son mensajes de hilo (sin ventana): si el hilo
+            // tuviera ventanas, un WM_APP+n dirigido a una de ellas no es
+            // nuestro (Fable, spike 5).
+            let thread_msg = msg.hwnd.is_invalid();
             match msg.message {
                 WM_QUIT => return Wake::Quit,
-                WM_OPS => return Wake::Ops,
-                WM_PING => return Wake::Ping(msg.lParam.0 as i64),
+                WM_OPS if thread_msg => return Wake::Ops,
+                WM_PING if thread_msg => return Wake::Ping(msg.lParam.0 as i64),
                 _ => {}
             }
-            if let Some(event) = decode(&msg) {
+            if thread_msg && let Some(event) = decode(&msg) {
                 return Wake::Input(event);
             }
             // SAFETY: mensaje recién obtenido de PeekMessageW.

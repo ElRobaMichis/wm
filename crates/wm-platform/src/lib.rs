@@ -9,11 +9,19 @@ pub mod clock;
 #[cfg(windows)]
 pub mod console;
 #[cfg(windows)]
+mod dynlib;
+#[cfg(windows)]
 pub mod hide;
 #[cfg(windows)]
 pub mod input;
 #[cfg(windows)]
 pub mod ops;
+#[cfg(windows)]
+pub mod overlay;
+#[cfg(windows)]
+pub mod overlay_demo;
+#[cfg(windows)]
+pub mod overlay_text;
 #[cfg(windows)]
 pub mod probe;
 #[cfg(windows)]

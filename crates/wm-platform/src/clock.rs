@@ -37,3 +37,8 @@ pub fn micros(earlier: i64, later: i64) -> u64 {
 pub fn micros_since(earlier: i64) -> u64 {
     micros(earlier, now())
 }
+
+/// El instante `us` microsegundos después de `qpc`.
+pub fn plus_micros(qpc: i64, us: u64) -> i64 {
+    qpc + (i128::from(us) * i128::from(freq()) / 1_000_000) as i64
+}
