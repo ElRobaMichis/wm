@@ -68,3 +68,5 @@ tools/wm-bench/      # mediciones de los spikes (aparte, para no cargarle D3D a 
 ## Licencia
 
 [GPL-3.0-or-later](LICENSE).
+
+La tipografía [Geist](https://github.com/vercel/geist-font) va incluida en los ajustes bajo su propia licencia, la [SIL Open Font License 1.1](settings/ui/fonts/geist/OFL.txt).

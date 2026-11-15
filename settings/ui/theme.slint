@@ -2,6 +2,10 @@
 // tipografía, espacio, radios y movimiento; claro y oscuro siguen al sistema.
 
 import { Palette } from "std-widgets.slint";
+// Geist (OFL, settings/ui/fonts/geist): va dentro del binario, no depende
+// de las fuentes instaladas (design.md §3.1).
+import "fonts/geist/Geist-Regular.ttf";
+import "fonts/geist/Geist-SemiBold.ttf";
 
 export global Theme {
     in-out property <bool> dark: Palette.color-scheme == ColorScheme.dark;
@@ -30,8 +34,7 @@ export global Theme {
     out property <color> shadow: dark ? #00000080 : #0000001F;
 
     // Tipografía: una familia, tres tamaños (design.md §3.1).
-    out property <string> font: "Segoe UI Variable Text";
-    out property <string> font-display: "Segoe UI Variable Display";
+    out property <string> font: "Geist";
     out property <length> t-title: 20px;
     out property <length> t-body: 13px;
     out property <length> t-small: 12px;

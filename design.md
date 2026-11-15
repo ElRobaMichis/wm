@@ -48,10 +48,22 @@ Este documento sale de nueve referencias que eligió el usuario (15/11/2026). Pr
 
 ### 3.1 Tipografía
 
-- **Familia:** por ahora `Segoe UI Variable`, la del sistema en Windows 11 (`Text` para el cuerpo, `Display` para el título).
-  - **A decidir con el usuario:** incluir una tipografía propia (Inter o Geist, licencia OFL) para la identidad, a costa de ~300 KB.
+- **Familia: [Geist](https://github.com/vercel/geist-font)** 1.9.2, Regular y SemiBold, licencia OFL (`settings/ui/fonts/geist`, con su `OFL.txt`). Va dentro del binario, así que se ve igual en cualquier PC. La misma familia para el título y el cuerpo.
+  - **Por qué Geist** (decisión del usuario, 15/11/2026): tiene carácter propio sin llamar la atención, es angosta y técnica, combina con las teclas y los atajos, y pesa un tercio que Inter. Segoe UI Variable es correcta pero es la de cualquier app de Windows.
+  - **Pendiente:** el mapa de teclado y los avisos de `wm.exe` dibujan con DirectWrite y todavía usan Segoe UI. Para usar Geist hay que cargarla desde memoria (`IDWriteFactory5::CreateInMemoryFontFileLoader`), a costa de +254 KB en `wm.exe`.
+  - La prueba (15/11/2026), con la ventana de ajustes y una opción `--font` que ya se quitó:
+
+    | | Segoe UI Variable | Inter 4.1 | Geist 1.9.2 |
+    |---|---|---|---|
+    | Origen | del sistema | [rsms/inter](https://github.com/rsms/inter), OFL | [vercel/geist-font](https://github.com/vercel/geist-font), OFL |
+    | Peso en el `.exe` (Regular + SemiBold) | 0 | +830 KB | +254 KB |
+    | Arranque hasta el primer cuadro (p50, 20 vueltas) | 115 ms | 115 ms | 114 ms |
+    | Memoria (WS privado) | 5,4 MB | 5,5 MB | 5,5 MB |
+    | Carácter | la de Windows: no da identidad propia | neutra y muy legible; letra más ancha y alta, la más "producto" | geométrica, más angosta y técnica; combina con las teclas |
+
+    Slint la incrusta con `import "fonts/…ttf"`: copia los bytes en el binario (se verificó buscándolos en el `.exe`).
 - **Tamaños:** título 20 px semibold; cuerpo 13 px; pie 12 px.
-- **Cifras:** tabulares (`font-feature-settings: "tnum"`) donde haya números.
+- **Cifras:** ninguna de las tres trae cifras tabulares por defecto (medido en la tabla `hmtx`), y Slint 1.18 no permite activar rasgos OpenType como `tnum`. Por eso los números van **alineados a la derecha**: si cambian, no mueven lo que tienen al lado ("12 / 26").
 
 ### 3.2 Color
 
