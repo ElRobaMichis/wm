@@ -171,5 +171,6 @@ name = "wm-platform"
 version = "0.0.1"
 dependencies = [
  "windows",
+ "windows-core",
  "wm-model",
 ]

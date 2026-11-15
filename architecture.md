@@ -629,6 +629,53 @@ Lectura de la latencia:
 - **Documentar ventanas elevadas** (Administrador de tareas al frente) y la variante UIAccess.
 - **Prueba de 24 h** y 0 cambios de contexto en reposo (WPR).
 
+### 13.4 Estado del spike 2 (noviembre 2026)
+
+**Implementado** (`wm-platform::hide`):
+- **Las cuatro estrategias:** `cloak` (shell, no documentada), `minimize` (con `DWMWA_TRANSITIONS_FORCEDISABLED`), `offscreen` (afuera de la pantalla virtual, sin cambiar el tamaño, con `SWP_ASYNCWINDOWPOS`) y `hide` (`SW_HIDE`).
+- **Interfaces del shell** (`IApplicationViewCollection` / `IApplicationView::SetCloak`) declaradas con `windows_core::interface`.
+  - Definiciones tomadas de GlazeWM (GPL-3.0, compatible), con atribución en el código.
+  - Si Windows no las expone, `Hider::new(cloak)` falla y se puede usar otra estrategia.
+- **Marca en la ventana** (`SetPropW`, propiedades `wm.hidden` y `wm.pos`) antes de esconder.
+  - `wm restore` / `hide::restore_all` recorre **todas** las ventanas top-level, escondidas incluidas, y muestra las marcadas con el método correcto.
+  - No depende de la memoria del proceso que las escondió.
+- **Herramientas de prueba:**
+  - `wm puppet [n]`: ventanas de colores numeradas en otro proceso;
+  - `wm hide-test <método> [rondas] [apps...]`: alterna dos "escritorios" en el orden mostrar → esconder, mide el tiempo y verifica el estado con `DWMWA_CLOAKED`, `IsIconic`, la posición o `IsWindowVisible`.
+
+**Primera verificación automática** (2 títeres, 3 cambios, `cloak`): **1,5–1,7 ms por cambio**, 0 ventanas en mal estado; `DWMWA_CLOAKED` confirma `DWM_CLOAKED_SHELL`. **El cloaking del shell funciona en Windows 11 24H2 (build 26100) sin admin.**
+
+**Prueba real con 10 títeres (15/11/2026):**
+
+| Método | Tiempo por cambio (10 ventanas) | Lo que se vio | Estado verificado |
+|---|---|---|---|
+| `cloak` | ~5 ms | **Instantáneo, sin animación, sin parpadeo ni fondo visible** | 10/10 cambios ok |
+| `minimize` (transiciones desactivadas) | ~1,4 ms | **Igual que `cloak`**: confirma que `DWMWA_TRANSITIONS_FORCEDISABLED` quita la animación de minimizar entre procesos | 10/10 ok |
+| `offscreen` | ~0,9 ms | **Bug:** el títere 1 quedó afuera de la pantalla (ver abajo) | 5 cambios con 1 ventana mal |
+| `hide` | ~3 ms | Sin parpadeo. En la barra de tareas no se notó nada porque los 10 títeres están agrupados bajo un mismo ícono | 10/10 ok |
+| `cloak` con apps reales (2 Bloc de notas + Brave) | ~2 ms | Las apps funcionan normal después | 6/6 ok |
+
+**Bug encontrado y corregido (`offscreen`):**
+- La posición original se guardaba empaquetada en una sola propiedad. El títere 1 estaba en (0, 0), así que el valor guardado era 0, y `GetPropW` devuelve 0 cuando la propiedad no existe: el programa creyó que no había posición y dejó la ventana afuera.
+- Después, la prueba con `hide` **pisó la marca**, así que `wm restore` la "mostró" pero en su posición fuera de pantalla.
+- **Corrección:**
+  - la posición se guarda en dos propiedades (`wm.x`, `wm.y`) con un bit de presencia;
+  - esconder una ventana ya marcada primero la restaura con su método original;
+  - si falta la posición, la ventana se trae a (50, 50) del monitor principal en vez de dejarla afuera.
+- **Verificado:** `offscreen` con el títere en (0, 0) da 0 ventanas en mal estado, y mezclar métodos sobre las mismas ventanas funciona.
+
+**Recuperación tras un corte (spike 3, parte 1):**
+- con `hide` (Ctrl+C a mitad): `wm restore` recuperó las 5 ventanas ✅;
+- con `cloak` (proceso matado a la fuerza): `wm restore` recuperó la ventana cloaked ✅. **La marca sobrevive a la muerte del proceso** porque vive en la ventana.
+
+**Decisión:** `cloak` como método principal y **`minimize` con transiciones desactivadas como respaldo documentado**: visualmente quedaron iguales. `offscreen` y `hide` quedan como opciones de último recurso.
+
+**Pendiente:**
+- **Guardián** que ejecute la recuperación solo, sin que el usuario corra `wm restore` (spike 3, parte 2).
+- Qué pasa al **reiniciar Explorer** con ventanas cloaked.
+- `minimize`: verificar que una ventana **maximizada** vuelva maximizada (`SW_SHOWNOACTIVATE` podría restaurarla a tamaño normal).
+- Matriz de apps más amplia (Office, Electron, Java, UWP).
+
 **Hito de producto:** con los spikes 0 y 1 ya existe la **capa de apps** del mapa oficial (`Caps` + inicial). Se puede probar con la usuaria de prueba (`keyboard-design.md` §12) antes de construir el resto.
 
 ---

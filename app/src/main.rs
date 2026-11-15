@@ -1,16 +1,26 @@
 //! Ejecutable único con roles (architecture.md §4.1).
 //!
-//! Implementados: `doctor`, `version` y `core` (prototipo del spike 1).
-//! `guardian`, `settings` y `restore` llegan en los spikes siguientes.
+//! Implementados: `doctor`, `version`, `core` (prototipo del spike 1),
+//! `puppet`, `hide-test` y `restore` (spike 2). `guardian` y `settings`
+//! llegan en los spikes siguientes.
 
 use std::process::ExitCode;
 
 #[cfg(windows)]
 mod core;
+#[cfg(windows)]
+mod hide_test;
 
 fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(2).collect();
     let command = std::env::args().nth(1);
     match command.as_deref() {
+        #[cfg(windows)]
+        Some("puppet") => hide_test::run_puppets(&args),
+        #[cfg(windows)]
+        Some("hide-test") => hide_test::run(&args),
+        #[cfg(windows)]
+        Some("restore") => hide_test::restore(),
         None | Some("doctor") => doctor(),
         Some("version" | "--version" | "-V") => {
             println!("wm {}", env!("CARGO_PKG_VERSION"));
@@ -21,13 +31,14 @@ fn main() -> ExitCode {
         #[cfg(windows)]
         Some("apps") => core::list_apps(),
         Some("burn") => burn(std::env::args().nth(2)),
-        Some(role @ ("guardian" | "settings" | "restore")) => {
+        Some(role @ ("guardian" | "settings")) => {
             eprintln!("`{role}` todavía no está implementado (ver architecture.md §13).");
             ExitCode::from(2)
         }
         Some(other) => {
             eprintln!("Comando desconocido: `{other}`.");
-            eprintln!("Uso: wm [doctor | core | apps | burn [segundos] | version]");
+            eprintln!("Uso: wm [doctor | core | apps | burn [s] | puppet [n] | restore | version");
+            eprintln!("          | hide-test <método> [rondas] [apps...]]");
             ExitCode::from(2)
         }
     }
