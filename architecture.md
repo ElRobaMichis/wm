@@ -879,8 +879,26 @@ Plan de medición revisado con Fable 5.2; implementado y medido el 15/11/2026, e
 - **CPU de la demo animando:** 0,000 % (0,00 ms en 5 s).
 - **Duplicación:** no se recreó en ninguna corrida; 0 cuadros salteados.
 
+**60 + 144 Hz** (corridas del usuario, 15/11/2026, un monitor a 60 Hz por vez):
+
+| Configuración | Monitor de 144 Hz | Monitor de 60 Hz |
+|---|---|---|
+| Secundario a 60 Hz | 99,9 %, paso 12,8 ± 0,7 px | DWM entregó 720 cuadros en 5 s ("240 %"), todos con posición nueva |
+| **Principal** a 60 Hz | **99,9 %**, paso 12,8 ± 0,6 px | ídem |
+
+- **El monitor rápido no se degrada** aunque el principal sea el lento: en Windows 11, DWM compone al ritmo del más rápido, no del principal. Era el riesgo mayor, porque en Windows 10 todo bajaría a 60.
+- **En el monitor de 60 Hz, Desktop Duplication entrega cuadros a 144 por segundo:**
+  - DWM compone esa salida al ritmo del monitor rápido y la pantalla toma uno de cada ~2,4;
+  - por lo tanto **cada refresco a 60 Hz muestra una posición nueva** (criterio ≥ 97 % cumplido);
+  - **lo que no se puede medir así es el judder:** si la pantalla toma alternadamente 2 y 3 de esos cuadros, el paso visible sería 25,6 / 38,4 px en lugar de 30,7 px parejos. Desktop Duplication ve lo que compone DWM, no lo que escanea el monitor.
+- **El resto, igual que a 144 + 144:**
+  - frío p95 24 ms;
+  - mapa `shape` 5–16 ms;
+  - la animación termina con el proceso suspendido;
+  - 0 % de CPU.
+
 **Pendiente:**
-- **60 + 144 Hz:** hay que poner un monitor a 60 Hz a mano (cambiar la configuración de pantalla queda a cargo del usuario) y correr `wm-bench overlay`. Mirar el paso en el monitor de 60 Hz: un patrón 2-3-2 sería judder.
+- **Judder en el monitor de 60 Hz con otro de 144:** medirlo con `DCompositionGetTargetStatistics` por monitor (Windows 11), o con una filmación en cámara lenta (240 fps) del monitor de 60 Hz. Si hay judder, es de DWM y no lo controlamos, pero conviene saberlo antes de prometer "fluido en todos los monitores".
 - **Windows 10 22H2** (una VM alcanza): ahí el criterio razonable es "funciona", porque DWM usa un solo reloj.
 - **Control de la medición:** `DCompositionGetTargetStatistics` (Windows 11, por `GetProcAddress`), con y sin duplicación activa, para medir cuánto interfiere el medidor.
 - **Juegos a pantalla completa:** que un overlay visible no fuerce composición (PresentMon), y que el overlay se oculte con apps a pantalla completa (§5.7).
