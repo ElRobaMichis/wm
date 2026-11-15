@@ -7,7 +7,8 @@
 //! nativa (`wm settings`), para comparar solo el toolkit. Opciones:
 //! - `--lang es|en`: idioma (por defecto, español);
 //! - `--bench x,y`: ventana en esa posición, con una marca magenta arriba a
-//!   la izquierda, y `SHOWN` por stdout (lo usa `wm-bench settings`).
+//!   la izquierda, y `SHOWN` por stdout (lo usa `wm-bench settings`);
+//! - `--at x,y`: solo la posición; `--light` / `--dark`: forzar el tema.
 
 #![windows_subsystem = "windows"]
 
@@ -156,6 +157,13 @@ fn main() -> Result<(), slint::PlatformError> {
 
     if let Some((x, y)) = bench {
         ui.set_bench_mark(true);
+        ui.window().set_position(slint::PhysicalPosition::new(x, y));
+    }
+    // `--at x,y`: solo la posición (capturas para revisar el diseño).
+    if let Some((x, y)) = arg("--at").and_then(|s| {
+        let (x, y) = s.split_once(',')?;
+        Some((x.parse::<i32>().ok()?, y.parse::<i32>().ok()?))
+    }) {
         ui.window().set_position(slint::PhysicalPosition::new(x, y));
     }
     ui.show()?;
