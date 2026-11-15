@@ -1058,7 +1058,7 @@ Planteo revisado con Fable 5.2; implementado y medido el 15/11/2026.
 **Decisión (usuario, 15/11/2026): Slint, en un binario aparte, con un lenguaje de diseño propio** ([design.md](design.md)):
 - componentes propios (tecla, campo de búsqueda, control segmentado, lista, interruptor en fila, botones, desplegable) sobre tokens de color, tipografía, espacio, radios concéntricos y movimiento, en claro y oscuro;
 - no se usan los widgets `fluent` estándar;
-- tipografía **Geist** (OFL), incluida en el binario: +254 KB, sin cambios medibles en arranque ni memoria (elegida frente a Inter y Segoe UI Variable, design.md §3.1).
+- tipografía **Geist** (OFL, `assets/fonts/geist`), incluida en el binario: +254 KB, sin cambios medibles en arranque ni memoria (elegida frente a Inter y Segoe UI Variable, design.md §3.1). `wm.exe` también la usa en el mapa de teclado, cargada desde memoria en DirectWrite: +255 KB (0,92 → 1,18 MB) y el mismo primer cuadro (p50 10,9 ms).
 
 **Con el diseño propio:**
 - mismo arranque (p50 113 ms) y memoria (5,4 MB);

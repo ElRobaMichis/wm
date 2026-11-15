@@ -48,9 +48,17 @@ Este documento sale de nueve referencias que eligió el usuario (15/11/2026). Pr
 
 ### 3.1 Tipografía
 
-- **Familia: [Geist](https://github.com/vercel/geist-font)** 1.9.2, Regular y SemiBold, licencia OFL (`settings/ui/fonts/geist`, con su `OFL.txt`). Va dentro del binario, así que se ve igual en cualquier PC. La misma familia para el título y el cuerpo.
+- **Familia: [Geist](https://github.com/vercel/geist-font)** 1.9.2, Regular y SemiBold, licencia OFL (`assets/fonts/geist`, con su `OFL.txt`). Va dentro de los binarios, así que se ve igual en cualquier PC. La misma familia para el título y el cuerpo, en los ajustes y en los overlays.
   - **Por qué Geist** (decisión del usuario, 15/11/2026): tiene carácter propio sin llamar la atención, es angosta y técnica, combina con las teclas y los atajos, y pesa un tercio que Inter. Segoe UI Variable es correcta pero es la de cualquier app de Windows.
-  - **Pendiente:** el mapa de teclado y los avisos de `wm.exe` dibujan con DirectWrite y todavía usan Segoe UI. Para usar Geist hay que cargarla desde memoria (`IDWriteFactory5::CreateInMemoryFontFileLoader`), a costa de +254 KB en `wm.exe`.
+  - **Ajustes** (`wm-settings.exe`, Slint): `import` de los `.ttf` en `theme.slint`.
+  - **Overlays** (`wm.exe`, mapa de teclado y avisos): DirectWrite la carga desde memoria (`IDWriteFactory5::CreateInMemoryFontFileLoader`) en una fábrica **aislada**, que se libera al terminar de armar el mapa. `dwrite.dll` sigue cargándose a demanda (no aparece entre las importaciones). Medido con `wm-bench overlay` y `snapshot`:
+
+    | `wm.exe` | Segoe UI (del sistema) | Geist (incluida) |
+    |---|---|---|
+    | Tamaño sin símbolos | 0,92 MB | 1,18 MB (+255 KB: las dos fuentes y 1 KB de código) |
+    | Mapa `shape`: primer cuadro, p50 | 11,6 ms | 10,9 ms |
+    | Mapa `shape`: memoria de la demo | 1,7 MB WS privado / 2,3 MB commit | 1,7 MB / 2,2 MB |
+    | Respaldo `warp`: primer cuadro, p50 | 20,8 ms | 23,7 ms |
   - La prueba (15/11/2026), con la ventana de ajustes y una opción `--font` que ya se quitó:
 
     | | Segoe UI Variable | Inter 4.1 | Geist 1.9.2 |

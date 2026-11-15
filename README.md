@@ -63,10 +63,11 @@ crates/wm-model/     # núcleo puro: geometría, layouts, estado (sin unsafe)
 crates/wm-platform/  # capa Win32
 settings/            # ventana de ajustes en Slint (wm-settings.exe, spike 8)
 tools/wm-bench/      # mediciones de los spikes (aparte, para no cargarle D3D a wm.exe)
+assets/fonts/geist/  # la tipografía (OFL), incluida en wm.exe y wm-settings.exe
 ```
 
 ## Licencia
 
 [GPL-3.0-or-later](LICENSE).
 
-La tipografía [Geist](https://github.com/vercel/geist-font) va incluida en los ajustes bajo su propia licencia, la [SIL Open Font License 1.1](settings/ui/fonts/geist/OFL.txt).
+La tipografía [Geist](https://github.com/vercel/geist-font) va incluida en los ajustes y en los overlays bajo su propia licencia, la [SIL Open Font License 1.1](assets/fonts/geist/OFL.txt).

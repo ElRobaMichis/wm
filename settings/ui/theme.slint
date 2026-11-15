@@ -2,10 +2,10 @@
 // tipografía, espacio, radios y movimiento; claro y oscuro siguen al sistema.
 
 import { Palette } from "std-widgets.slint";
-// Geist (OFL, settings/ui/fonts/geist): va dentro del binario, no depende
+// Geist (OFL, assets/fonts/geist): va dentro del binario, no depende
 // de las fuentes instaladas (design.md §3.1).
-import "fonts/geist/Geist-Regular.ttf";
-import "fonts/geist/Geist-SemiBold.ttf";
+import "../../assets/fonts/geist/Geist-Regular.ttf";
+import "../../assets/fonts/geist/Geist-SemiBold.ttf";
 
 export global Theme {
     in-out property <bool> dark: Palette.color-scheme == ColorScheme.dark;

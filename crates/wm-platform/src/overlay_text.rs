@@ -11,6 +11,10 @@
 //!
 //! Las funciones de `dwrite.dll`, `d2d1.dll` y `d3d11.dll` se resuelven en
 //! tiempo de ejecución ([`crate::dynlib`]).
+//!
+//! La tipografía es Geist, la misma de los ajustes (design.md §3.1). Va
+//! dentro de `wm.exe` y se carga desde memoria en una fábrica de DirectWrite
+//! aislada: no depende de las fuentes instaladas ni toca la caché del sistema.
 
 use std::ffi::c_void;
 
@@ -32,10 +36,11 @@ use windows::Win32::Graphics::Direct3D::{
 };
 use windows::Win32::Graphics::Direct3D11::{D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION};
 use windows::Win32::Graphics::DirectWrite::{
-    DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_METRICS, DWRITE_FONT_STRETCH_NORMAL,
-    DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_NORMAL,
-    DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_GLYPH_METRICS, DWRITE_MEASURING_MODE_NATURAL,
-    IDWriteFactory, IDWriteFontFace,
+    DWRITE_FACTORY_TYPE_ISOLATED, DWRITE_FONT_FACE_TYPE_TRUETYPE, DWRITE_FONT_METRICS,
+    DWRITE_FONT_SIMULATIONS_NONE, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+    DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_GLYPH_METRICS,
+    DWRITE_MEASURING_MODE_NATURAL, IDWriteFactory5, IDWriteFontCollection, IDWriteFontFace,
+    IDWriteFontFile,
 };
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::Win32::System::WinRT::Composition::{
@@ -121,16 +126,66 @@ pub fn build_map(
 // Fábricas (resueltas en tiempo de ejecución)
 // ---------------------------------------------------------------------------
 
-fn dwrite_factory() -> windows::core::Result<IDWriteFactory> {
+/// Fábrica aislada: lo que se registra en ella (el cargador en memoria) se
+/// libera con ella, y no se comparte la caché de fuentes del sistema.
+fn dwrite_factory() -> windows::core::Result<IDWriteFactory5> {
     type Create = unsafe extern "system" fn(i32, *const GUID, *mut *mut c_void) -> HRESULT;
     let f = crate::dynlib::proc(w!("dwrite.dll"), s!("DWriteCreateFactory"))?;
     // SAFETY: firma documentada de DWriteCreateFactory.
     let create: Create = unsafe { std::mem::transmute(f) };
     let mut raw = std::ptr::null_mut();
     // SAFETY: IID válido y puntero de salida local.
-    unsafe { create(DWRITE_FACTORY_TYPE_SHARED.0, &IDWriteFactory::IID, &mut raw) }.ok()?;
+    unsafe { create(DWRITE_FACTORY_TYPE_ISOLATED.0, &IDWriteFactory5::IID, &mut raw) }.ok()?;
     // SAFETY: referencia propia recién creada.
-    Ok(unsafe { IDWriteFactory::from_raw(raw) })
+    Ok(unsafe { IDWriteFactory5::from_raw(raw) })
+}
+
+// ---------------------------------------------------------------------------
+// Geist, desde memoria
+// ---------------------------------------------------------------------------
+
+static GEIST_REGULAR: &[u8] = include_bytes!("../../../assets/fonts/geist/Geist-Regular.ttf");
+static GEIST_SEMIBOLD: &[u8] = include_bytes!("../../../assets/fonts/geist/Geist-SemiBold.ttf");
+
+/// Los dos pesos de Geist como archivos de DirectWrite, en una fábrica propia.
+struct Geist {
+    factory: IDWriteFactory5,
+    regular: IDWriteFontFile,
+    semibold: IDWriteFontFile,
+}
+
+impl Geist {
+    fn load() -> windows::core::Result<Self> {
+        let factory = dwrite_factory()?;
+        // SAFETY: el cargador se registra en la fábrica que lo usa; sin dueño,
+        // DirectWrite copia los bytes y los suelta junto con la fábrica.
+        unsafe {
+            let loader = factory.CreateInMemoryFontFileLoader()?;
+            factory.RegisterFontFileLoader(&loader)?;
+            let file = |data: &'static [u8]| {
+                loader.CreateInMemoryFontFileReference(
+                    &factory,
+                    data.as_ptr().cast(),
+                    data.len() as u32,
+                    None::<&IUnknown>,
+                )
+            };
+            let (regular, semibold) = (file(GEIST_REGULAR)?, file(GEIST_SEMIBOLD)?);
+            Ok(Self { factory, regular, semibold })
+        }
+    }
+
+    /// Colección con los dos pesos, para `CreateTextFormat` (camino D2D).
+    fn collection(&self) -> windows::core::Result<IDWriteFontCollection> {
+        // SAFETY: archivos de esta misma fábrica.
+        unsafe {
+            let builder = self.factory.CreateFontSetBuilder()?;
+            builder.AddFontFile(&self.regular)?;
+            builder.AddFontFile(&self.semibold)?;
+            let set = builder.CreateFontSet()?;
+            self.factory.CreateFontCollectionFromFontSet(&set)?.cast()
+        }
+    }
 }
 
 fn d2d_factory<T: Interface>() -> windows::core::Result<T> {
@@ -215,21 +270,16 @@ struct Font {
     ascent: f32,
 }
 
-fn font(dwrite: &IDWriteFactory, weight: DWRITE_FONT_WEIGHT) -> windows::core::Result<Font> {
-    let mut collection = None;
-    // SAFETY: llamadas DirectWrite estándar con salidas locales.
+/// Cara de fuente de un archivo de Geist (sin buscar por nombre).
+fn font(geist: &Geist, file: &IDWriteFontFile) -> windows::core::Result<Font> {
+    // SAFETY: archivo de la misma fábrica; salidas locales.
     unsafe {
-        dwrite.GetSystemFontCollection(&mut collection, false)?;
-        let collection = collection.ok_or(windows::core::Error::from_hresult(
-            windows::Win32::Foundation::E_FAIL,
-        ))?;
-        let mut index = 0u32;
-        let mut exists = windows::core::BOOL::default();
-        collection.FindFamilyName(w!("Segoe UI"), &mut index, &mut exists)?;
-        let family = collection.GetFontFamily(if exists.as_bool() { index } else { 0 })?;
-        let (stretch, style) = (DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL);
-        let font = family.GetFirstMatchingFont(weight, stretch, style)?;
-        let face = font.CreateFontFace()?;
+        let face = geist.factory.CreateFontFace(
+            DWRITE_FONT_FACE_TYPE_TRUETYPE,
+            &[Some(file.clone())],
+            0,
+            DWRITE_FONT_SIMULATIONS_NONE,
+        )?;
         let mut m = DWRITE_FONT_METRICS::default();
         face.GetMetrics(&mut m);
         Ok(Font { face, units_per_em: f32::from(m.designUnitsPerEm), ascent: f32::from(m.ascent) })
@@ -304,10 +354,10 @@ fn build_shapes(
     container: &ContainerVisual,
     keep: &mut Vec<IUnknown>,
 ) -> windows::core::Result<()> {
-    let dwrite = dwrite_factory()?;
+    let geist = Geist::load()?;
     let d2d: ID2D1Factory = d2d_factory()?;
-    let bold = font(&dwrite, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
-    let regular = font(&dwrite, DWRITE_FONT_WEIGHT_NORMAL)?;
+    let bold = font(&geist, &geist.semibold)?;
+    let regular = font(&geist, &geist.regular)?;
 
     let (w, h) = map_size();
     let visual = compositor.CreateShapeVisual()?;
@@ -360,22 +410,23 @@ fn build_d2d(
         DirectXAlphaMode::Premultiplied,
     )?;
 
-    let dwrite = dwrite_factory()?;
+    let geist = Geist::load()?;
+    let fonts = geist.collection()?;
     // SAFETY: parámetros válidos; cadenas estáticas.
     let (letter_format, name_format) = unsafe {
         (
-            dwrite.CreateTextFormat(
-                w!("Segoe UI"),
-                None,
+            geist.factory.CreateTextFormat(
+                w!("Geist"),
+                &fonts,
                 DWRITE_FONT_WEIGHT_SEMI_BOLD,
                 DWRITE_FONT_STYLE_NORMAL,
                 DWRITE_FONT_STRETCH_NORMAL,
                 LETTER_EM,
                 w!("es"),
             )?,
-            dwrite.CreateTextFormat(
-                w!("Segoe UI"),
-                None,
+            geist.factory.CreateTextFormat(
+                w!("Geist"),
+                &fonts,
                 DWRITE_FONT_WEIGHT_NORMAL,
                 DWRITE_FONT_STYLE_NORMAL,
                 DWRITE_FONT_STRETCH_NORMAL,
