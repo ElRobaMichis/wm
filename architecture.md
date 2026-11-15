@@ -1026,10 +1026,26 @@ Diseño revisado con Fable 5.2. Lo automatizable se implementó y midió el 15/1
 
 Al final, `Ctrl` + `C` en el vigilante imprime el resumen. Criterio: todos los ciclos "ok", configuraciones reconocidas al volver y 0 ventanas fuera de pantalla sin rescatar.
 
-**Sobre el 50/50:** 0 fallas en ~30 ciclos manuales acota la tasa real a ~10 %. Para acercarse a 50/50 hace falta repetir las trazas reales en la lógica pura y dejar `display-watch` (sin `restore`, solo observando) varios días de uso normal.
+**Resultado de las pruebas manuales** (usuario, 15/11/2026):
+
+| Prueba | Resultado |
+|---|---|
+| **Cruce de DPI**, monitor 2 a **150 %** (144 DPI) ↔ 100 %: `place-test cross 10` en Windows Terminal y en Brave | **20/20 con 0 px**; cada cruce, **2 pasadas** (meta ≤ 2), ~67 ms; 0 movimientos tardíos |
+| Lo mismo con el monitor 2 a **175 %** (168 DPI) | **20/20 con 0 px**, 2 pasadas, ~67 ms, 0 tardíos |
+| **200 %** | No disponible: Windows ofrece hasta 175 % en un monitor 1080p, y la escala personalizada exige cerrar sesión |
+| **Cables:** 9 desconexiones y reconexiones (o apagados con el botón) de uno u otro monitor | **18 ciclos ok**. "Solo el 1", "solo el 2" y "los dos" se reconocieron **nuevas la primera vez y conocidas siempre después**, con cables reales. 0 ventanas fuera de pantalla |
+| **Bloqueo:** `Win` + `L` × 10 | 10 ciclos ok |
+| **Reposo** | No se pudo: la PC del usuario no entra en suspensión |
+| **Total de `display-watch restore`** | **31/31 ciclos ok**, 0 rescates y 0 restauraciones necesarias |
+
+- Con cables reales, Windows 11 ya dejó las ventanas en su lugar, así que el motor no tuvo que mover nada. Había solo 2 ventanas abiertas: la restauración en sí está probada con la simulación (un títere movido + `WM_DISPLAYCHANGE` falso), no con cables.
+- **Cada cambio de cable** trae una ráfaga de 3–5 avisos en ~0,5 s: `dispositivos` (uno o dos), `pantallas` y `área de trabajo` (una o dos veces). **Cada cambio de escala** trae `configuración`, `pantallas` y `área de trabajo`. La calma de 800 ms + 250 ms los agrupó siempre en un solo ciclo.
+- En el monitor de 150–175 %, la primera pasada con el margen escalado no alcanza, porque la app se reescala después; la segunda corrige. Por eso los cruces dan siempre 2 pasadas, y dentro del criterio.
+
+**Sobre el 50/50:** 0 fallas en 31 ciclos acota la tasa real a ~9 %. Para acercarse a 50/50 hace falta repetir las trazas reales en la lógica pura y dejar `display-watch` (sin `restore`, solo observando) varios días de uso normal.
 
 **Pendiente:**
-- las pruebas manuales;
+- reposo (en otra máquina, o cuando la del usuario suspenda), más ventanas abiertas al desconectar, y 200 % en un monitor que lo permita;
 - la integración en el core: el sumidero de avisos en el brain, `Op::Displays` en el carril `win` y el estado en disco;
 - la colocación por lotes en el core: todas las ventanas a la vez, una sola espera y una segunda pasada solo para las que fallaron; el sondeo bloqueante actual sirve para medir, no para el carril (plazo de 50 ms);
 - títeres "difíciles": sin DPI awareness, PMv1, sin borde, con tamaño mínimo y que se reescalan solos con demora;
