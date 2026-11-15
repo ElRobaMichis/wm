@@ -11,9 +11,9 @@ use windows::Win32::System::Threading::{
     QueryFullProcessImageNameW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GW_OWNER, GWL_EXSTYLE, GetForegroundWindow, GetWindow, GetWindowLongPtrW,
-    GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
-    SW_RESTORE, SetForegroundWindow, ShowWindowAsync, WS_EX_TOOLWINDOW,
+    EnumWindows, GW_OWNER, GWL_EXSTYLE, GetClassNameW, GetForegroundWindow, GetWindow,
+    GetWindowLongPtrW, GetWindowThreadProcessId, InternalGetWindowText, IsIconic,
+    IsWindowVisible, SW_RESTORE, SetForegroundWindow, ShowWindowAsync, WS_EX_TOOLWINDOW,
 };
 use windows::core::{BOOL, PWSTR};
 
@@ -51,19 +51,24 @@ pub fn user_windows() -> Vec<WindowInfo> {
     // SAFETY: el callback solo usa `data` como el `&mut Vec` que le pasamos.
     let _ = unsafe { EnumWindows(Some(collect), LPARAM(&mut handles as *mut Vec<HWND> as isize)) };
 
+    // Primero se descartan las ventanas propias: leer algo de una ventana
+    // nuestra desde otro hilo puede esperar a ese hilo.
     let own_pid = std::process::id();
     handles
         .into_iter()
-        .filter(|&h| is_user_window(h))
         .filter_map(|h| {
             let mut pid = 0u32;
             // SAFETY: `h` es un HWND de EnumWindows; `pid` es una variable local.
             unsafe { GetWindowThreadProcessId(h, Some(&mut pid)) };
-            if pid == own_pid {
+            if pid == own_pid || !is_user_window(h) {
+                return None;
+            }
+            let title = title(h);
+            if title.is_empty() {
                 return None;
             }
             let app = process_name(pid)?;
-            Some(WindowInfo { id: WindowId(h.0 as isize), title: title(h), app })
+            Some(WindowInfo { id: WindowId(h.0 as isize), title, app })
         })
         .collect()
 }
@@ -81,6 +86,13 @@ fn is_user_window(h: HWND) -> bool {
         if GetWindowLongPtrW(h, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW.0 != 0 {
             return false;
         }
+        // Las ventanas fantasma ("No responde") son de dwm.exe y tapan a la
+        // de la app colgada: se ignoran (architecture.md §4.4).
+        let mut class = [0u16; 8];
+        let len = GetClassNameW(h, &mut class);
+        if String::from_utf16_lossy(&class[..len.max(0) as usize]) == "Ghost" {
+            return false;
+        }
         let mut cloaked = 0u32;
         let ok = DwmGetWindowAttribute(
             h,
@@ -88,10 +100,7 @@ fn is_user_window(h: HWND) -> bool {
             &mut cloaked as *mut u32 as *mut c_void,
             size_of::<u32>() as u32,
         );
-        if ok.is_ok() && cloaked != 0 {
-            return false;
-        }
-        GetWindowTextLengthW(h) > 0
+        !(ok.is_ok() && cloaked != 0)
     }
 }
 
@@ -102,10 +111,24 @@ pub fn window_title(id: WindowId) -> String {
 
 fn title(h: HWND) -> String {
     let mut buf = [0u16; 256];
-    // SAFETY: buffer local válido; GetWindowTextW no bloquea con ventanas
-    // de otros procesos (lee el texto que guarda el sistema).
-    let len = unsafe { GetWindowTextW(h, &mut buf) };
+    // SAFETY: buffer local válido. InternalGetWindowText lee el texto que
+    // guarda el sistema y nunca envía WM_GETTEXT, ni siquiera a ventanas
+    // propias (GetWindowTextW sí lo hace con las del mismo proceso).
+    let len = unsafe { InternalGetWindowText(h, &mut buf) };
     String::from_utf16_lossy(&buf[..len.max(0) as usize])
+}
+
+/// Mueve y redimensiona sin esperar a la app (`SWP_ASYNCWINDOWPOS`).
+pub fn place_async(id: WindowId, rect: wm_model::Rect) -> Result<(), String> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos,
+    };
+    let flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS;
+    // SAFETY: con SWP_ASYNCWINDOWPOS el pedido se postea al hilo dueño.
+    unsafe {
+        SetWindowPos(id.hwnd(), None, rect.left, rect.top, rect.width(), rect.height(), flags)
+    }
+    .map_err(|e| format!("SetWindowPos: {e}"))
 }
 
 fn process_name(pid: u32) -> Option<String> {

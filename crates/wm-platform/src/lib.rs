@@ -5,11 +5,17 @@
 //! - Información del sistema para `wm doctor` (spike 0).
 
 #[cfg(windows)]
+pub mod clock;
+#[cfg(windows)]
 pub mod console;
 #[cfg(windows)]
 pub mod hide;
 #[cfg(windows)]
 pub mod input;
+#[cfg(windows)]
+pub mod ops;
+#[cfg(windows)]
+pub mod probe;
 #[cfg(windows)]
 pub mod puppet;
 #[cfg(windows)]

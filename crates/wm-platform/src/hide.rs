@@ -400,6 +400,12 @@ pub fn restore_all() -> RestoreReport {
     report
 }
 
+/// Con qué método está escondida la ventana, si tiene nuestra marca. Lee una
+/// propiedad: no envía mensajes, no se bloquea.
+pub fn hidden_with(id: WindowId) -> Option<HideMethod> {
+    marked_method(hwnd(id))
+}
+
 /// ¿La ventana está maximizada? (para la prueba de `minimize`).
 pub fn is_maximized(id: WindowId) -> bool {
     use windows::Win32::UI::WindowsAndMessaging::IsZoomed;

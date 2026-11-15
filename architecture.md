@@ -148,7 +148,7 @@ No hizo falta una segunda ronda con Fable: su informe ya cubre y corrige cada pu
 |---|---|---|
 | **input** | `WH_KEYBOARD_LL` y Raw Input vigía; `WH_MOUSE_LL` **solo** durante un arrastre o con Hyper apretado | `THREAD_PRIORITY_TIME_CRITICAL`. Sin asignar memoria, sin locks, sin logs: solo atómicos y una cola acotada |
 | **brain** | Único dueño del estado. Bucle de mensajes; recibe WinEvents, entrada, IPC y timers | Lógica pura `(estado, evento) → efectos`. Nunca llama a nada que pueda bloquearse |
-| **ops** (1–4) | Toda llamada que toca ventanas ajenas o a Explorer | Vigilado por plazo. Si una llamada pasa de ~250 ms, se abandona ese hilo y se crea otro (con tope) |
+| **ops** (3 carriles: `focus`, `win`, `shell`) | Toda llamada que toca ventanas ajenas o a Explorer | Vigilado por plazo (50–300 ms según el pedido). Si vence, se abandona ese hilo y se crea otro (tope: 4 trabados). Ver §13.6 |
 | **ui** | Ventanas overlay, `DispatcherQueue`, Compositor, D2D, bandeja | No espera a nadie |
 | **anim** | Solo existe durante animaciones con fantasmas | Prioridad alta mientras dura |
 | **io** | Configuración, caché de íconos, pipe | — |
@@ -722,6 +722,97 @@ Hecho y probado de forma automática la noche del 15/11/2026, sin intervención 
 - `catch_unwind` en el bucle del core y volcado de fallos (§9.3 y §9.10).
 - Diario en disco como segunda red (§9.2) y "ningún HWND reciclado tocado": hoy la marca vive en la ventana, así que un HWND reciclado no la tiene; falta la prueba explícita.
 - Hacer que el guardián sea el modo normal de arranque (`wm` sin argumentos o al iniciar sesión) cuando exista la bandeja.
+
+### 13.6 Estado del spike 4 (noviembre 2026)
+
+Diseño consultado con Fable 5.2; implementado y medido el 15/11/2026.
+
+**Decisión: tres carriles fijos, separados por de qué dependen** (`wm-platform::ops`):
+
+| Carril | Qué corre | Depende de | Plazo |
+|---|---|---|---|
+| `focus` | traer al frente (`SetForegroundWindow` + tecla neutra) | foco y hooks LL | 300 ms |
+| `win` | mover (`SWP_ASYNCWINDOWPOS`), esconder sin cloak, enumerar, abrir programas | nada que bloquee | 50 ms (abrir: 2 s) |
+| `shell` | cloak / uncloak y `restore_all`; único hilo STA | Explorer | 250 ms (restaurar todo: 1 s) |
+
+- **Hilos por app: descartados.** La sonda mostró que ninguna llamada nuestra se traba con la app colgada; lo que sí puede trabarse es Explorer, y lo usan todas las apps por igual.
+- **El brain es el dueño:**
+  - `submit` nunca bloquea;
+  - la cola vive en el brain, con un solo pedido en vuelo por carril;
+  - los resultados llegan por un canal y un único `WM_OPS` pendiente a la vez;
+  - el brain espera con `MsgWaitForMultipleObjectsEx` y timeout = próximo plazo (`INFINITE` si no hay nada en vuelo): **0 despertares en reposo, sin timers**.
+- **Plazo vencido:**
+  - el hilo se abandona (nunca `TerminateThread`) y se crea otro **sin esperar a que arranque**: esperar costó 5,2 ms con CPU al 100 %;
+  - el hilo viejo, al volver, avisa `Late` y termina;
+  - si el trabado es `shell` (Explorer), esconder con cloak pasa a `minimize` hasta que vuelva;
+  - el COM de un hilo abandonado no se libera, porque soltarlo sería otra llamada a Explorer.
+- **El carril se elige por la marca de la ventana:** `GetPropW` no envía mensajes. Mostrar una ventana marcada `cloak` siempre va a `shell`.
+- **Prioridades:**
+  - proceso `ABOVE_NORMAL` y sin power throttling;
+  - brain `HIGHEST`;
+  - carriles `ABOVE_NORMAL`.
+- **Consola en un hilo `wm-log`:** el brain nunca hace `println!`, que puede trabarse si el usuario selecciona texto en la terminal.
+- **`wm core` ya usa este modelo:** `Caps` + letra pide `Scan` a `win`, resuelve en el brain y pide `Focus` a `focus`. La restauración al arrancar y al salir va por `shell`.
+
+**Sonda de llamadas** (`wm hang-puppet` + `wm hang-probe [sleep|busy]`). El títere colgable vive en su propio proceso y se cuelga dentro del wndproc, dormido o con CPU al 100 %. Cada llamada corre en un hilo aparte con 2 s de plazo:
+
+| Llamada | Sana | Colgada < 5 s | Colgada, con fantasma |
+|---|---|---|---|
+| Título, visibilidad, rectángulo, `DwmGetWindowAttribute`, `IsZoomed` | 0,1–0,2 ms | 0,1–0,4 ms | 0,1–0,2 ms |
+| `user_windows` (enumerar + nombre de proceso) | 0,7 ms | 0,5 ms | 0,4–0,6 ms |
+| cloak esconder / mostrar (vía Explorer) | 6–10 ms | 2–5 ms | 6–7 ms |
+| `minimize` / `offscreen` esconder y mostrar | 0,1–0,2 ms | 0,1–0,4 ms | 0,1–0,4 ms |
+| `activate` (`SetForegroundWindow`) | 0,1 ms | 0,1 ms | **51 ms** (100 ms con la tecla neutra): no se bloquea, pero el foco no llega |
+| `restore_all` | 3,5 ms | 3,6 ms | 0,7 ms |
+| [control] `SendMessageTimeout(SMTO_ABORTIFHUNG)` | 1,7 ms | 100 ms (su timeout) | 0,1 ms |
+| [control] `SetWindowPos` **síncrono** | 0,2 ms | **trabada** | **trabada** |
+
+- **Ninguna llamada nuestra se traba**: solo el `SetWindowPos` síncrono, ya prohibido en §4.4.
+- `IsHungAppWindow` da TRUE a los **5,0 s**.
+- **Ventana fantasma:**
+  - aparece a los ~5 s, es de clase `Ghost`, del proceso `dwm.exe`, y tiene título «… (Not Responding)»;
+  - la ventana colgada **sigue visible, sin cloak y en nuestra lista**, así que `Caps` + letra la encuentra;
+  - el fantasma ahora se filtra **explícitamente por clase**; antes quedaba afuera por casualidad, porque falla `OpenProcess` sobre `dwm`.
+- **Trampas corregidas en `user_windows`:**
+  - se descartan las ventanas propias antes de leer nada de ellas;
+  - el título se lee con `InternalGetWindowText`, que nunca envía `WM_GETTEXT`. `GetWindowTextLengthW` sí lo envía a ventanas del mismo proceso.
+
+**Prueba de carga** (`wm ops-test [s] [focus] [burn]`):
+- un brain real con los carriles;
+- un hilo que le hace ping cada 1 ms;
+- teclas sintéticas cada 40 ms (cambiar de escritorio con cloak, mover 10 ventanas, enumerar y, con `focus`, traer al frente);
+- 9 títeres más el colgable;
+- tres fases: normal, colgado (con fantasma) y carriles trabados a propósito (400 ms en `win`, 600 ms en `shell`).
+
+| Criterio del spike | Meta | Sin carga | CPU al 100 % (`burn`) |
+|---|---|---|---|
+| Vuelta del brain | nunca > 5 ms | máx 0,66 ms, 0 > 5 ms | **máx 0,77 ms, 0 > 5 ms** |
+| Tecla → pedido emitido | p99 < 10 ms | p99 0,33 ms | **p99 0,17 ms** |
+| Operaciones sobre las demás ventanas, con 1 colgada entre 10 | p99 < 50 ms | `win` p99 3,7 ms, `shell` p99 5,4 ms | **`win` p99 3,5 ms, `shell` p99 7,0 ms** |
+| Ninguna llamada usada se bloquea | — | ✅ (sonda) | ✅ |
+
+- **Con carriles trabados a propósito:**
+  - los pedidos que esperan detrás de la llamada trabada tardan hasta el plazo: `win` máx 50 ms, `shell` máx 170 ms;
+  - el p99 de `shell` queda en ~50 ms; es el costo de tolerar las demoras normales de Explorer;
+  - 2 hilos abandonados, 2 vueltas tardías, y 10–15 escondidas hechas con `minimize` mientras `shell` estaba trabado.
+- **Explorer bajo carga:** con CPU al 100 %, un cloak ocasional tardó **~95 ms** sin estar trabado. Por eso el plazo de `shell` es de 250 ms y no de 20.
+- **Traer al frente:**
+  - a una ventana sana: 1,6 ms;
+  - a la colgada con fantasma: 102 ms, en su carril, sin afectar al resto.
+- **Ping al brain:**
+  - sin carga, nunca > 1 ms, ni siquiera con cambios de foco;
+  - con CPU al 100 % **y** cambios de foco, picos aislados de 6–14 ms con el brain ocioso: su vuelta más larga fue 0,5 ms, así que es el planificador de Windows y no trabajo nuestro;
+  - p99 0,37 ms.
+- **`wm core` real con `Caps` + letra simulado:** de la tecla a la ventana al frente en **1,9–4,4 ms**, sin hilos abandonados.
+
+**Pendiente:**
+- Investigar con WPR los picos de 6–14 ms del ping bajo CPU al 100 % con cambios de foco: ¿boost de primer plano? ¿DPC?
+- Probar Explorer suspendido de verdad (no simulado) y `CoCancelCall` para recuperar el hilo `shell` sin abandonarlo.
+- Reemplazar la espera de `activate` (hasta 2 × 50 ms en el carril `focus`) por `EVENT_SYSTEM_FOREGROUND`, y mapear el fantasma a su ventana (`HungWindowFromGhostWindow`, no documentada).
+- No mandar pedidos repetidos a una ventana "no responde" (guardar el último deseado y aplicarlo al recuperarse), y fusionar pedidos por ventana en el brain (lógica pura en `wm-model`, con proptest).
+- `WinRef` con pid/tid para no actuar sobre un HWND reciclado en pedidos retenidos.
+- Escuchar `TaskbarCreated` (necesita la ventana top-level del brain) para reconciliar tras reiniciar Explorer (§13.5).
+- Abrir programas con el entorno del usuario (`CreateEnvironmentBlock`), no con el de la terminal (§13.5).
 
 ---
 

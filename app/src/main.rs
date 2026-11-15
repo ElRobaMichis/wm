@@ -2,7 +2,8 @@
 //!
 //! Implementados: `doctor`, `version`, `core` (prototipo del spike 1),
 //! `puppet`, `hide-test` y `restore` (spike 2), `guardian`, `hidden`,
-//! `hide-hold` y `crash-test` (spike 3). `settings` llega más adelante.
+//! `hide-hold` y `crash-test` (spike 3), `hang-puppet` y `hang-probe`
+//! (spike 4). `settings` llega más adelante.
 
 use std::process::ExitCode;
 
@@ -11,7 +12,11 @@ mod core;
 #[cfg(windows)]
 mod guardian;
 #[cfg(windows)]
+mod hang_test;
+#[cfg(windows)]
 mod hide_test;
+#[cfg(windows)]
+mod ops_test;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(2).collect();
@@ -31,6 +36,12 @@ fn main() -> ExitCode {
         Some("crash-test") => hide_test::crash_test(&args),
         #[cfg(windows)]
         Some("max-test") => hide_test::max_test(),
+        #[cfg(windows)]
+        Some("hang-puppet") => hang_test::run_hang_puppet(),
+        #[cfg(windows)]
+        Some("hang-probe") => hang_test::probe(&args),
+        #[cfg(windows)]
+        Some("ops-test") => ops_test::run(&args),
         #[cfg(windows)]
         Some("guardian") => guardian::run(&args),
         #[cfg(windows)]

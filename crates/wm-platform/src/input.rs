@@ -343,31 +343,121 @@ pub enum ReinstallReason {
 /// Lo que recibe el brain del hilo de entrada.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputEvent {
-    /// Acción de Hyper. `time_ms` es la hora de la tecla (reloj de [`tick_ms`]).
-    Action { action: HyperAction, time_ms: u32 },
+    /// Acción de Hyper. `time_ms` es la hora de la tecla (reloj de [`tick_ms`]);
+    /// `qpc`, el instante en que el hook la vio (reloj de [`crate::clock`]).
+    Action { action: HyperAction, time_ms: u32, qpc: i64 },
     HookReinstalled(ReinstallReason),
     /// Un callback tardó `ms` milisegundos; el estado del teclado se reinició.
     HookStalled { ms: u32 },
 }
 
 fn post_raw(kind: usize, data: isize) {
-    let thread = BRAIN_THREAD.load(Ordering::Relaxed);
+    post_raw_to(BRAIN_THREAD.load(Ordering::Relaxed), kind, data);
+}
+
+fn post_raw_to(thread: u32, kind: usize, data: isize) {
     // SAFETY: PostThreadMessageW no bloquea; si el hilo no existe, falla sin efectos.
     let _ = unsafe { PostThreadMessageW(thread, WM_HYPER, WPARAM(kind), LPARAM(data)) };
 }
 
-fn post_action(action: HyperAction, time_ms: u32) {
+/// wParam: tipo en los bits 0–7, QPC del hook en los bits 8–63.
+fn kind_with_qpc(kind: usize, qpc: i64) -> usize {
+    kind | ((qpc.max(0) as usize) << 8)
+}
+
+/// Solo para pruebas: manda al brain `thread` una acción como si viniera del
+/// hook, con la hora actual.
+pub fn simulate_action(thread: u32, action: HyperAction) {
+    let (kind, data) = encode_action(action, tick_ms());
+    post_raw_to(thread, kind_with_qpc(kind, crate::clock::now()), data);
+}
+
+fn encode_action(action: HyperAction, time_ms: u32) -> (usize, isize) {
     let (kind, value, thumb) = match action {
         HyperAction::Letter { letter, thumb } => (KIND_LETTER, letter, thumb),
         HyperAction::Digit { digit, thumb } => (KIND_DIGIT, digit, thumb),
         HyperAction::Escape => (KIND_ESCAPE, 0, false),
         HyperAction::Other { vk, thumb } => (KIND_OTHER, vk, thumb),
     };
+    // lParam (64 bits): valor en 0–7, pulgar en 8, hora de la tecla en 16–47.
+    (kind, isize::from(value) | (isize::from(thumb) << 8) | ((time_ms as isize) << 16))
+}
+
+fn post_action(action: HyperAction, time_ms: u32, qpc: i64) {
     // Marca el pedido como pendiente (si no había otro más viejo).
     let _ = PENDING_SINCE.compare_exchange(0, time_ms.max(1), Ordering::AcqRel, Ordering::Relaxed);
-    // lParam (64 bits): valor en 0–7, pulgar en 8, hora de la tecla en 16–47.
-    let data = isize::from(value) | (isize::from(thumb) << 8) | ((time_ms as isize) << 16);
-    post_raw(kind, data);
+    let (kind, data) = encode_action(action, time_ms);
+    post_raw(kind_with_qpc(kind, qpc), data);
+}
+
+/// Mensaje al brain: hay resultados de ops para drenar (ver [`crate::ops`]).
+pub const WM_OPS: u32 = WM_APP + 3;
+/// Mensaje al brain (solo pruebas): ping con el QPC del emisor en `lParam`.
+pub const WM_PING: u32 = WM_APP + 4;
+
+/// Por qué se despertó el brain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wake {
+    Input(InputEvent),
+    /// Hay resultados de ops.
+    Ops,
+    /// Ping de prueba con el QPC del emisor.
+    Ping(i64),
+    /// Venció el plazo pedido.
+    Timeout,
+    /// `WM_QUIT`.
+    Quit,
+}
+
+/// Espera el próximo evento del brain, como mucho hasta `deadline` (`None` =
+/// sin límite: 0 % de CPU, sin timers). Despacha los demás mensajes del hilo.
+///
+/// Después de procesar cada evento de entrada, el brain debe llamar a
+/// [`acknowledge`].
+pub fn wait(deadline: Option<std::time::Instant>) -> Wake {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, QS_ALLINPUT,
+        WM_QUIT,
+    };
+    let mut msg = MSG::default();
+    loop {
+        // SAFETY: MSG válido; extracción estándar de la cola del hilo.
+        while unsafe { PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE) }.as_bool() {
+            match msg.message {
+                WM_QUIT => return Wake::Quit,
+                WM_OPS => return Wake::Ops,
+                WM_PING => return Wake::Ping(msg.lParam.0 as i64),
+                _ => {}
+            }
+            if let Some(event) = decode(&msg) {
+                return Wake::Input(event);
+            }
+            // SAFETY: mensaje recién obtenido de PeekMessageW.
+            unsafe {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+        let timeout = match deadline {
+            None => u32::MAX, // INFINITE
+            Some(d) => {
+                let left = d.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() {
+                    return Wake::Timeout;
+                }
+                // Redondeo hacia arriba: nunca despertar antes del plazo.
+                left.as_micros().div_ceil(1000).min(u128::from(u32::MAX - 1)) as u32
+            }
+        };
+        // SAFETY: sin handles; espera mensajes de la cola de este hilo.
+        let r = unsafe {
+            MsgWaitForMultipleObjectsEx(None, timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE)
+        };
+        if r.0 == 0x102 {
+            // WAIT_TIMEOUT
+            return Wake::Timeout;
+        }
+    }
 }
 
 /// Bloquea el hilo actual (el brain) hasta el próximo evento. Devuelve `None`
@@ -410,7 +500,8 @@ fn decode(msg: &MSG) -> Option<InputEvent> {
     let value = (msg.lParam.0 & 0xFF) as u8;
     let thumb = msg.lParam.0 & 0x100 != 0;
     let time_ms = (msg.lParam.0 >> 16) as u32;
-    let action = match msg.wParam.0 {
+    let qpc = (msg.wParam.0 >> 8) as i64;
+    let action = match msg.wParam.0 & 0xFF {
         KIND_LETTER => HyperAction::Letter { letter: value, thumb },
         KIND_DIGIT => HyperAction::Digit { digit: value, thumb },
         KIND_ESCAPE => HyperAction::Escape,
@@ -426,7 +517,7 @@ fn decode(msg: &MSG) -> Option<InputEvent> {
         KIND_STALL => return Some(InputEvent::HookStalled { ms: msg.lParam.0 as u32 }),
         _ => return None,
     };
-    Some(InputEvent::Action { action, time_ms })
+    Some(InputEvent::Action { action, time_ms, qpc })
 }
 
 // ---------------------------------------------------------------------------
@@ -464,7 +555,7 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             request_inject(decision.inject);
         }
         if let Some(action) = decision.action {
-            post_action(action, info.time);
+            post_action(action, info.time, start);
             if TEST_MODE.load(Ordering::Relaxed)
                 && matches!(action, HyperAction::Other { vk: TEST_STALL_VK, .. })
             {
@@ -744,4 +835,11 @@ pub fn quit_on_console_close(thread_id: u32) {
 pub fn current_thread_id() -> u32 {
     // SAFETY: sin precondiciones.
     unsafe { GetCurrentThreadId() }
+}
+
+/// Solo para pruebas: manda al brain `thread` un ping con el QPC actual.
+pub fn post_ping(thread: u32) {
+    let now = crate::clock::now();
+    // SAFETY: PostThreadMessageW no bloquea.
+    let _ = unsafe { PostThreadMessageW(thread, WM_PING, WPARAM(0), LPARAM(now as isize)) };
 }

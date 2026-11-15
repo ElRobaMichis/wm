@@ -1,6 +1,9 @@
 //! Ventanas "títere" para pruebas (architecture.md §10): ventanas comunes de
 //! otro proceso, de colores y numeradas, para probar esconder y mostrar sin
 //! tocar las apps reales del usuario.
+//!
+//! El títere "colgable" (spike 4) vive solo en su propio proceso y deja de
+//! atender mensajes cuando se le pide, como una app colgada de verdad.
 
 use std::mem::size_of;
 
@@ -15,14 +18,21 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DispatchMessageW, EnumWindows,
     GWLP_USERDATA, GetClassNameW, GetClientRect, GetMessageW, GetWindowLongPtrW, MSG,
-    PostQuitMessage, RegisterClassW, SetWindowLongPtrW, TranslateMessage, WINDOW_EX_STYLE,
-    WM_DESTROY, WM_PAINT, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    PostMessageW, PostQuitMessage, RegisterClassW, SetWindowLongPtrW, TranslateMessage,
+    WINDOW_EX_STYLE, WM_APP, WM_DESTROY, WM_PAINT, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
 use windows::core::{BOOL, PCWSTR, w};
 
 use crate::windows_list::WindowId;
 
 const CLASS: PCWSTR = w!("wm-puppet");
+
+/// Índice del títere colgable (los comunes van de 0 a 19).
+pub const HANG_INDEX: isize = 99;
+
+/// Pedido al títere colgable: colgarse `wparam` ms. `lparam` = 0 dormido
+/// (no atiende mensajes), 1 ocupado (CPU al 100 % en un núcleo).
+const WM_PUPPET_HANG: u32 = WM_APP + 0x10;
 
 /// Colores bien distintos para reconocer cada títere a simple vista.
 const COLORS: [u32; 10] = [
@@ -56,6 +66,18 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 let _ = DeleteObject(HGDIOBJ(font.0));
                 let _ = DeleteObject(HGDIOBJ(brush.0));
                 let _ = EndPaint(hwnd, &ps);
+            }
+            LRESULT(0)
+        }
+        WM_PUPPET_HANG => {
+            let duration = std::time::Duration::from_millis(wparam.0 as u64);
+            if lparam.0 == 0 {
+                std::thread::sleep(duration);
+            } else {
+                let start = std::time::Instant::now();
+                while start.elapsed() < duration {
+                    std::hint::spin_loop();
+                }
             }
             LRESULT(0)
         }
@@ -126,9 +148,69 @@ pub fn run_puppets(count: usize) -> windows::core::Result<()> {
     Ok(())
 }
 
+/// Abre el títere colgable: una sola ventana en su propio proceso, en el
+/// centro del monitor principal. Bloquea hasta que se cierre.
+pub fn run_hang_puppet() -> windows::core::Result<()> {
+    // SAFETY: igual que `run_puppets`.
+    unsafe {
+        let instance = HINSTANCE(GetModuleHandleW(None)?.0);
+        let class = WNDCLASSW {
+            style: CS_HREDRAW | CS_VREDRAW,
+            lpfnWndProc: Some(proc),
+            hInstance: instance,
+            lpszClassName: CLASS,
+            ..Default::default()
+        };
+        RegisterClassW(&class);
+        let monitor = MonitorFromWindow(HWND::default(), MONITOR_DEFAULTTOPRIMARY);
+        let mut info =
+            MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+        let _ = GetMonitorInfoW(monitor, &mut info);
+        let work = info.rcWork;
+        let (w, h) = ((work.right - work.left) / 4, (work.bottom - work.top) / 4);
+        let hwnd = CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            CLASS,
+            w!("Títere colgable"),
+            WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+            work.left + (work.right - work.left - w) / 2,
+            work.top + (work.bottom - work.top - h) / 2,
+            w,
+            h,
+            None,
+            None,
+            Some(instance),
+            None,
+        )?;
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, HANG_INDEX);
+        let mut msg = MSG::default();
+        while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+    Ok(())
+}
+
+/// Le pide al títere colgable que se cuelgue `ms` milisegundos (no bloquea).
+pub fn hang(id: WindowId, ms: u32, busy: bool) -> windows::core::Result<()> {
+    let hwnd = HWND(id.0 as *mut core::ffi::c_void);
+    // SAFETY: PostMessageW no espera a la ventana destino.
+    unsafe { PostMessageW(Some(hwnd), WM_PUPPET_HANG, WPARAM(ms as usize), LPARAM(busy.into())) }
+}
+
+/// El títere colgable, si está abierto.
+pub fn find_hang_puppet() -> Option<WindowId> {
+    find_all().into_iter().find(|(i, _)| *i == HANG_INDEX).map(|(_, id)| id)
+}
+
 /// Ventanas títere abiertas (de cualquier proceso), visibles o escondidas,
-/// ordenadas por número.
+/// ordenadas por número. No incluye al colgable.
 pub fn find_puppets() -> Vec<WindowId> {
+    find_all().into_iter().filter(|(i, _)| *i != HANG_INDEX).map(|(_, id)| id).collect()
+}
+
+fn find_all() -> Vec<(isize, WindowId)> {
     let mut found: Vec<(isize, WindowId)> = Vec::new();
 
     unsafe extern "system" fn collect(hwnd: HWND, data: LPARAM) -> BOOL {
@@ -150,5 +232,5 @@ pub fn find_puppets() -> Vec<WindowId> {
         EnumWindows(Some(collect), LPARAM(&mut found as *mut Vec<(isize, WindowId)> as isize))
     };
     found.sort_by_key(|(index, _)| *index);
-    found.into_iter().map(|(_, id)| id).collect()
+    found
 }
