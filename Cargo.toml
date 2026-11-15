@@ -1,0 +1,27 @@
+[workspace]
+resolver = "3"
+members = ["app", "crates/wm-model", "crates/wm-platform"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "GPL-3.0-or-later"
+rust-version = "1.91"
+publish = false
+
+[workspace.dependencies]
+wm-model = { path = "crates/wm-model" }
+wm-platform = { path = "crates/wm-platform" }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+# `unwind` (no `abort`) para poder restaurar las ventanas escondidas ante un pánico (architecture.md §9).
+panic = "unwind"
+debug = "line-tables-only"

@@ -1,0 +1,22 @@
+[package]
+name = "wm"
+description = "Gestor de ventanas para Windows (nombre definitivo pendiente)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "wm"
+path = "src/main.rs"
+
+[dependencies]
+wm-model.workspace = true
+wm-platform.workspace = true
+
+[build-dependencies]
+embed-manifest = "=1.5.1"
+
+[lints]
+workspace = true

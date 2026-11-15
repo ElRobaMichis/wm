@@ -1,0 +1,56 @@
+# CI del spike 0 (architecture.md §13): compila, prueba y verifica que el
+# ejecutable no dependa de ninguna DLL de runtime de C (VCRUNTIME, UCRT).
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: clippy, rustfmt
+
+      - name: Formato
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --target ${{ matrix.target }} -- -D warnings
+
+      - name: Pruebas
+        run: cargo test --workspace --target ${{ matrix.target }}
+
+      - name: Build de release
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Solo DLL del sistema (sin VCRUNTIME ni UCRT)
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC" -Recurse -Filter dumpbin.exe |
+            Select-Object -First 1
+          if (-not $dumpbin) { throw "No se encontró dumpbin.exe" }
+          $exe = "target\${{ matrix.target }}\release\wm.exe"
+          $deps = & $dumpbin.FullName /dependents $exe | Out-String
+          Write-Output $deps
+          if ($deps -match '(?i)vcruntime|msvcp|ucrtbase|api-ms-win-crt') {
+            throw "El ejecutable depende del runtime de C; revisar crt-static (.cargo/config.toml)."
+          }
+
+      - name: Doctor
+        run: target\${{ matrix.target }}\release\wm.exe doctor

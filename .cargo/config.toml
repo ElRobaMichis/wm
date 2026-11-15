@@ -1,0 +1,10 @@
+# Runtime de C enlazado dentro del ejecutable: sin VCRUNTIME140.dll ni redistributables (architecture.md §12.1).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# Toolchain GNU (solo desarrollo local): enlaza libgcc y winpthread de forma estática.
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "target-feature=+crt-static"]

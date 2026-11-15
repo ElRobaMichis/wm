@@ -1,0 +1,11 @@
+[package]
+name = "wm-model"
+description = "Núcleo puro del gestor: geometría, layouts y estado. Sin dependencias de plataforma ni unsafe."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
