@@ -95,6 +95,11 @@ fn is_user_window(h: HWND) -> bool {
     }
 }
 
+/// Título de una ventana (vacío si no tiene).
+pub fn window_title(id: WindowId) -> String {
+    title(HWND(id.0 as *mut core::ffi::c_void))
+}
+
 fn title(h: HWND) -> String {
     let mut buf = [0u16; 256];
     // SAFETY: buffer local válido; GetWindowTextW no bloquea con ventanas

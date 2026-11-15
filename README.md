@@ -2,14 +2,16 @@
 
 Gestor de ventanas para Windows, escrito en Rust. Pensado para que cualquiera lo use sin leer documentación: pocos atajos lógicos, mouse como opción de primera clase, consumo mínimo y animaciones fluidas a la frecuencia real del monitor.
 
-> **Estado:** spike 1 en curso: `Caps` como tecla Hyper e ir a una app por su inicial. Todavía no mueve ni esconde ventanas.
+> **Estado:** spikes 1 a 3 hechos: `Caps` como tecla Hyper e ir a una app por su inicial, esconder y mostrar ventanas sin parpadeo, y un guardián que nunca deja ventanas perdidas. Todavía no mueve ventanas ni tiene escritorios propios (ver [architecture.md](architecture.md) §13).
 
 ## Probar el prototipo
 
 ```bash
 cargo build --release
-target/release/wm core
+target/release/wm guardian
 ```
+
+`wm guardian` lanza `wm core` y lo vigila: si se cae, muestra las ventanas que haya escondido y lo vuelve a lanzar (como mucho 3 veces por minuto). También se puede correr `wm core` solo.
 
 Con `wm core` corriendo:
 
@@ -20,6 +22,8 @@ Con `wm core` corriendo:
 | `Caps` + `Esc` o `Ctrl+C` en la consola | Salir; muestra la latencia del hook |
 
 `wm apps` muestra a qué app apunta cada letra **sin mover el foco**.
+
+Si alguna vez una ventana queda escondida, `wm restore` la muestra (y `wm hidden` lista las que tengan la marca de `wm`).
 
 Sin configuración, cada letra va a la app abierta más reciente cuyo nombre de ejecutable empieza con esa letra. Para fijar letras, crear `%APPDATA%\wm\apps.txt`:
 

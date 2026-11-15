@@ -671,12 +671,57 @@ Lectura de la latencia:
 **Decisión:** `cloak` como método principal y **`minimize` con transiciones desactivadas como respaldo documentado**: visualmente quedaron iguales. `offscreen` y `hide` quedan como opciones de último recurso.
 
 **Pendiente:**
-- **Guardián** que ejecute la recuperación solo, sin que el usuario corra `wm restore` (spike 3, parte 2).
-- Qué pasa al **reiniciar Explorer** con ventanas cloaked.
-- `minimize`: verificar que una ventana **maximizada** vuelva maximizada (`SW_SHOWNOACTIVATE` podría restaurarla a tamaño normal).
+- ~~Guardián~~, ~~reinicio del Explorer~~ y ~~ventana maximizada~~: resueltos en el spike 3 (§13.5).
 - Matriz de apps más amplia (Office, Electron, Java, UWP).
 
 **Hito de producto:** con los spikes 0 y 1 ya existe la **capa de apps** del mapa oficial (`Caps` + inicial). Se puede probar con la usuaria de prueba (`keyboard-design.md` §12) antes de construir el resto.
+
+### 13.5 Estado del spike 3 (noviembre 2026)
+
+Hecho y probado de forma automática la noche del 15/11/2026, sin intervención del usuario.
+
+**Implementado:**
+- **`wm guardian [comando...]`** (`app/src/guardian.rs`; por defecto vigila `core`):
+  - lanza el mismo ejecutable con ese comando y lo espera bloqueado (0 % de CPU);
+  - cuando el hijo termina, **siempre** corre `restore_all`;
+  - salida limpia (código 0), error de uso (código 2) o parada pedida por el usuario: termina sin relanzar;
+  - cualquier otra salida: relanza tras 250 ms, 500 ms y 1 s; **a la 4.ª muerte en menos de 60 s se rinde**, con las ventanas ya restauradas;
+  - Ctrl+C, Ctrl+Break y cerrar la consola (`wm-platform::console`): el guardián no muere, marca la parada y espera al hijo. Al cerrar la consola, el manejador retiene a Windows hasta 4 s (el sistema mata a los ~5 s) mientras el hilo principal restaura.
+- **Arranque = recuperación** (§9.5): `wm core` corre `restore_all` antes de instalar el hook y al salir limpio. El guardián también lo corre al arrancar.
+- **`wm hidden`**: lista las ventanas con nuestra marca (código 1 si hay alguna, útil para scripts).
+- **Reconexión con el shell** (`ShellViews` en `hide.rs`): el objeto COM se pide a demanda; si una llamada falla con un error de "el otro proceso ya no existe" (`0x800706BA`, `0x80010108`, etc.), se descarta, se pide uno nuevo y se reintenta una vez.
+- **Herramientas de prueba:** `wm hide-hold <método> [cycle]` (un "core de mentira" que esconde los títeres impares y espera, o alterna cada 15 ms), `wm crash-test [método] [n]`, `wm max-test` y `wm ctrl-c <pid> [break | close]`.
+
+**Resultados:**
+
+| Prueba | Resultado |
+|---|---|
+| **1000 muertes** de `hide-hold cloak cycle` en un momento al azar (0–200 ms, a mitad de cualquier cambio), restaurar y esperar a que todo se vea | **0 ventanas perdidas**, 0 recuperaciones > 500 ms. Hasta verse todo: p50 3,5 ms, p95 4,2 ms, p99 4,9 ms, máx 11,9 ms ✅ |
+| Lo mismo con los otros métodos (300 muertes cada uno) | `minimize` p95 20 ms; `offscreen` p95 7 ms; `hide` p95 28 ms. 0 perdidas en todos ✅ |
+| Posición tras 100 muertes por método | **0 títeres fuera de su posición original** ✅ |
+| Guardián: matar al hijo 4 veces seguidas | Restauró 5/5 ventanas cada vez (~4 ms), relanzó a los 250/500/1000 ms y a la 4.ª se rindió dejando todo visible ✅ |
+| Matar guardián + hijo juntos (`taskkill /T /F`) | Quedan 5 ventanas escondidas (caso previsto en §9); `wm core` al arrancar las restauró: "Restauradas 5 ventanas de una sesión anterior" ✅ |
+| Hijo que sale limpio (`wm guardian version`) | No relanza ✅ |
+| Ctrl+Break en la consola del guardián | El hijo murió con `0xC000013A`, el guardián restauró 5/5 y no relanzó ✅ |
+| Cerrar la ventana de la consola | Igual: 5/5 restauradas, sin relanzar, antes de que Windows matara el proceso ✅ |
+| Ventana **maximizada** escondida y mostrada, con los 4 métodos, por `show` y por `restore_all` | **8/8: vuelve maximizada y visible** (la duda sobre `SW_SHOWNOACTIVATE` no se confirmó) ✅ |
+
+**Reinicio del Explorer con ventanas cloaked** (`AutoRestartShell = 1`):
+- **Las ventanas siguen cloaked** después del reinicio: el nuevo shell no las destapa solo. La marca en la ventana es lo único que permite recuperarlas.
+- Un proceso **nuevo** (`wm restore`) las recupera bien con el shell nuevo ✅.
+- **Bug encontrado y corregido:** un proceso que ya tenía el objeto COM abierto quedaba **roto para siempre** (`0x800706BA` en cada esconder/mostrar: 110 errores en 22 cambios). Con la reconexión, solo fallan los cambios mientras el shell todavía no existe (`0x80040154`, "Class not registered", ~2 s) y después sigue normal (1 reconexión, 0 errores el resto) ✅.
+- `taskkill /F` sobre el Explorer **no** dispara el reinicio automático en esta máquina: hubo que relanzarlo a mano.
+
+**Lecciones para el core real:**
+- **Escuchar `TaskbarCreated`** (mensaje registrado que el shell difunde al arrancar) y reconciliar: lo que debería verse y quedó cloaked durante el corte se muestra, y lo que debería estar escondido se vuelve a esconder. Mientras el shell no exista, usar `minimize` como respaldo o encolar.
+- **Lanzar apps con el entorno del usuario**, no con el del proceso: al relanzar el Explorer desde una terminal Git Bash heredó su `PATH` y variables (`HOME`, `MSYSTEM`). Lo mismo pasaría con `Caps` + letra que abre una app si `wm` se arrancó desde una terminal. Solución probada: `CreateEnvironmentBlock(token, FALSE)` + `CreateProcessW` con `CREATE_UNICODE_ENVIRONMENT`.
+- El orden mostrar → esconder sigue siendo correcto también con caídas: si muere entre medio, lo peor es una ventana marcada pero visible, que `restore_all` deja igual.
+
+**Pendiente:**
+- Ctrl+C real en una terminal (lo automatizado fue Ctrl+Break: `GenerateConsoleCtrlEvent` con Ctrl+C no llegó porque PowerShell crea el proceso con Ctrl+C desactivado en su grupo). Es la misma rama de código.
+- `catch_unwind` en el bucle del core y volcado de fallos (§9.3 y §9.10).
+- Diario en disco como segunda red (§9.2) y "ningún HWND reciclado tocado": hoy la marca vive en la ventana, así que un HWND reciclado no la tiene; falta la prueba explícita.
+- Hacer que el guardián sea el modo normal de arranque (`wm` sin argumentos o al iniciar sesión) cuando exista la bandeja.
 
 ---
 

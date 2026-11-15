@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use wm_model::apps::{AppBinding, Target, parse_bindings, resolve};
 use wm_model::keyboard::HyperAction;
+use wm_platform::hide;
 use wm_platform::input::{self, InputEvent, LatencyStats, ReinstallReason};
 use wm_platform::windows_list::{self, WindowId};
 
@@ -42,6 +43,13 @@ pub fn run() -> ExitCode {
     let config = config_path();
     let bindings = load_bindings(config.as_ref());
     let test_mode = std::env::var_os("WM_TEST").is_some_and(|v| v == "1");
+
+    // Arranque = recuperación (architecture.md §9.5): antes de gestionar nada,
+    // mostrar lo que una sesión anterior haya dejado escondido.
+    let leftovers = hide::restore_all();
+    if !leftovers.restored.is_empty() {
+        println!("Restauradas {} ventanas de una sesión anterior.", leftovers.restored.len());
+    }
 
     input::ensure_message_queue();
     let brain = input::current_thread_id();
@@ -103,6 +111,8 @@ pub fn run() -> ExitCode {
         }
     }
 
+    // Salida limpia (§9.7): siempre mostrar todo.
+    let _ = hide::restore_all();
     print_summary(&activations);
     ExitCode::SUCCESS
 }

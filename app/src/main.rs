@@ -1,13 +1,15 @@
 //! Ejecutable único con roles (architecture.md §4.1).
 //!
 //! Implementados: `doctor`, `version`, `core` (prototipo del spike 1),
-//! `puppet`, `hide-test` y `restore` (spike 2). `guardian` y `settings`
-//! llegan en los spikes siguientes.
+//! `puppet`, `hide-test` y `restore` (spike 2), `guardian`, `hidden`,
+//! `hide-hold` y `crash-test` (spike 3). `settings` llega más adelante.
 
 use std::process::ExitCode;
 
 #[cfg(windows)]
 mod core;
+#[cfg(windows)]
+mod guardian;
 #[cfg(windows)]
 mod hide_test;
 
@@ -21,6 +23,33 @@ fn main() -> ExitCode {
         Some("hide-test") => hide_test::run(&args),
         #[cfg(windows)]
         Some("restore") => hide_test::restore(),
+        #[cfg(windows)]
+        Some("hidden") => hide_test::hidden(),
+        #[cfg(windows)]
+        Some("hide-hold") => hide_test::hold(&args),
+        #[cfg(windows)]
+        Some("crash-test") => hide_test::crash_test(&args),
+        #[cfg(windows)]
+        Some("max-test") => hide_test::max_test(),
+        #[cfg(windows)]
+        Some("guardian") => guardian::run(&args),
+        #[cfg(windows)]
+        Some("ctrl-c") => {
+            // Herramienta de prueba del guardián: Ctrl+C a la consola de otro proceso.
+            let Some(pid) = args.first().and_then(|p| p.parse().ok()) else {
+                eprintln!("Uso: wm ctrl-c <pid> [break | close]");
+                return ExitCode::from(2);
+            };
+            let mode = args.get(1).map(String::as_str);
+            let result = match mode {
+                Some("close") => wm_platform::console::close_console(pid),
+                _ => wm_platform::console::send_ctrl_c(pid, mode == Some("break")),
+            };
+            match result {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(_) => ExitCode::FAILURE,
+            }
+        }
         None | Some("doctor") => doctor(),
         Some("version" | "--version" | "-V") => {
             println!("wm {}", env!("CARGO_PKG_VERSION"));
@@ -31,14 +60,16 @@ fn main() -> ExitCode {
         #[cfg(windows)]
         Some("apps") => core::list_apps(),
         Some("burn") => burn(std::env::args().nth(2)),
-        Some(role @ ("guardian" | "settings")) => {
-            eprintln!("`{role}` todavía no está implementado (ver architecture.md §13).");
+        Some("settings") => {
+            eprintln!("`settings` todavía no está implementado (ver architecture.md §13).");
             ExitCode::from(2)
         }
         Some(other) => {
             eprintln!("Comando desconocido: `{other}`.");
-            eprintln!("Uso: wm [doctor | core | apps | burn [s] | puppet [n] | restore | version");
-            eprintln!("          | hide-test <método> [rondas] [apps...]]");
+            eprintln!("Uso: wm [doctor | core | apps | burn [s] | puppet [n] | version");
+            eprintln!("          | guardian [comando...] | restore | hidden");
+            eprintln!("          | hide-test <método> [rondas] [apps...]");
+            eprintln!("          | hide-hold <método> [cycle] | crash-test [método] [n]]");
             ExitCode::from(2)
         }
     }

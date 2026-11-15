@@ -14,10 +14,11 @@
 //! la posición original). [`restore_all`] la recupera aunque este proceso haya
 //! muerto.
 
+use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::mem::size_of;
 
-use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, RECT};
+use windows::Win32::Foundation::{E_FAIL, HANDLE, HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Dwm::{
     DWMWA_CLOAKED, DWMWA_TRANSITIONS_FORCEDISABLED, DwmGetWindowAttribute, DwmSetWindowAttribute,
 };
@@ -133,14 +134,17 @@ const FALLBACK_POS: (i32, i32) = (50, 50);
 /// Esconde y muestra ventanas con un método fijo.
 pub struct Hider {
     method: HideMethod,
-    views: Option<IApplicationViewCollection>,
+    views: ShellViews,
 }
 
 impl Hider {
     /// Prepara el método. Para `cloak` inicializa COM en este hilo y obtiene la
     /// interfaz del shell; si no existe (otra versión de Windows), falla.
     pub fn new(method: HideMethod) -> Result<Self, String> {
-        let views = if method == HideMethod::ShellCloak { Some(view_collection()?) } else { None };
+        let views = ShellViews::default();
+        if method == HideMethod::ShellCloak {
+            views.get()?;
+        }
         Ok(Self { method, views })
     }
 
@@ -157,7 +161,7 @@ impl Hider {
             if previous == self.method {
                 return Ok(());
             }
-            show_marked(hwnd, self.views.as_ref())?;
+            show_marked(hwnd, &self.views)?;
         }
         let mut pos = None;
         if self.method == HideMethod::Offscreen {
@@ -191,13 +195,69 @@ impl Hider {
     }
 
     pub fn show(&self, id: WindowId) -> Result<(), String> {
-        show_marked(hwnd(id), self.views.as_ref())
+        show_marked(hwnd(id), &self.views)
     }
 
     fn cloak(&self, hwnd: HWND, cloaked: bool) -> Result<(), String> {
-        let views = self.views.as_ref().ok_or("el cloaking del shell no está disponible")?;
-        set_cloak(views, hwnd, cloaked)
+        self.views.cloak(hwnd, cloaked)
     }
+
+    /// Cuántas veces hubo que reconectar con el shell (reinicios del Explorer).
+    pub fn reconnects(&self) -> u32 {
+        self.views.reconnects.get()
+    }
+}
+
+/// Conexión con el shell para el cloaking, pedida a demanda.
+///
+/// Si el Explorer se reinicia, el objeto COM viejo queda muerto para siempre
+/// (`0x800706BA`, "RPC server unavailable"): se descarta, se pide uno nuevo
+/// y se reintenta una vez (spike 3).
+#[derive(Default)]
+struct ShellViews {
+    inner: RefCell<Option<IApplicationViewCollection>>,
+    reconnects: Cell<u32>,
+}
+
+impl ShellViews {
+    fn get(&self) -> Result<IApplicationViewCollection, String> {
+        if let Some(v) = self.inner.borrow().as_ref() {
+            return Ok(v.clone());
+        }
+        let v = view_collection()?;
+        *self.inner.borrow_mut() = Some(v.clone());
+        Ok(v)
+    }
+
+    fn cloak(&self, hwnd: HWND, cloaked: bool) -> Result<(), String> {
+        match set_cloak(&self.get()?, hwnd, cloaked) {
+            Err(e) if is_disconnected(e.code()) => {
+                *self.inner.borrow_mut() = None;
+                self.reconnects.set(self.reconnects.get() + 1);
+                set_cloak(&self.get()?, hwnd, cloaked).map_err(|e| e.message().to_string())
+            }
+            other => other.map_err(|e| e.message().to_string()),
+        }
+    }
+}
+
+/// Errores que significan "el proceso del otro lado ya no existe".
+fn is_disconnected(code: HRESULT) -> bool {
+    const RPC_S_SERVER_UNAVAILABLE: u32 = 0x8007_06BA;
+    const RPC_S_CALL_FAILED: u32 = 0x8007_06BE;
+    const RPC_E_DISCONNECTED: u32 = 0x8001_0108;
+    const RPC_E_SERVER_DIED: u32 = 0x8001_0007;
+    const RPC_E_SERVER_DIED_DNE: u32 = 0x8001_0012;
+    const CO_E_OBJNOTCONNECTED: u32 = 0x8004_01FD;
+    matches!(
+        code.0 as u32,
+        RPC_S_SERVER_UNAVAILABLE
+            | RPC_S_CALL_FAILED
+            | RPC_E_DISCONNECTED
+            | RPC_E_SERVER_DIED
+            | RPC_E_SERVER_DIED_DNE
+            | CO_E_OBJNOTCONNECTED
+    )
 }
 
 fn view_collection() -> Result<IApplicationViewCollection, String> {
@@ -213,18 +273,24 @@ fn view_collection() -> Result<IApplicationViewCollection, String> {
         .map_err(|e| format!("Windows no expone IApplicationViewCollection: {e}"))
 }
 
-fn set_cloak(views: &IApplicationViewCollection, hwnd: HWND, cloaked: bool) -> Result<(), String> {
+fn set_cloak(
+    views: &IApplicationViewCollection,
+    hwnd: HWND,
+    cloaked: bool,
+) -> windows::core::Result<()> {
     let mut view: Option<IApplicationView> = None;
     // SAFETY: interfaz válida y puntero a una variable local. Es una llamada
     // COM bloqueante a explorer.exe (architecture.md §6.2).
-    unsafe { views.get_view_for_hwnd(hwnd.0 as isize, &mut view) }
-        .ok()
-        .map_err(|e| format!("la ventana no tiene vista del shell: {e}"))?;
-    let view = view.ok_or("la ventana no tiene vista del shell")?;
+    unsafe { views.get_view_for_hwnd(hwnd.0 as isize, &mut view) }.ok().map_err(|e| {
+        windows::core::Error::new(e.code(), format!("la ventana no tiene vista del shell: {e}"))
+    })?;
+    let Some(view) = view else {
+        return Err(windows::core::Error::new(E_FAIL, "la ventana no tiene vista del shell"));
+    };
     // SAFETY: interfaz válida; argumentos (1, 2) = esconder, (1, 0) = mostrar.
     unsafe { view.set_cloak(1, if cloaked { 2 } else { 0 }) }
         .ok()
-        .map_err(|e| format!("SetCloak falló: {e}"))
+        .map_err(|e| windows::core::Error::new(e.code(), format!("SetCloak falló: {e}")))
 }
 
 // ---------------------------------------------------------------------------
@@ -273,13 +339,10 @@ fn marked_pos(hwnd: HWND) -> Option<(i32, i32)> {
 
 /// Muestra una ventana según el método con que se escondió (leído de su
 /// marca) y quita la marca. Sin marca, no hace nada.
-fn show_marked(hwnd: HWND, views: Option<&IApplicationViewCollection>) -> Result<(), String> {
+fn show_marked(hwnd: HWND, views: &ShellViews) -> Result<(), String> {
     let Some(method) = marked_method(hwnd) else { return Ok(()) };
     let result = match method {
-        HideMethod::ShellCloak => match views {
-            Some(v) => set_cloak(v, hwnd, false),
-            None => set_cloak(&view_collection()?, hwnd, false),
-        },
+        HideMethod::ShellCloak => views.cloak(hwnd, false),
         HideMethod::Minimize => show_async(hwnd, SW_SHOWNOACTIVATE.0),
         HideMethod::Offscreen => {
             // Sin la posición original, igual se trae la ventana a la
@@ -302,10 +365,9 @@ pub struct RestoreReport {
     pub failed: Vec<(WindowId, String)>,
 }
 
-/// Busca en **todas** las ventanas top-level (también las escondidas) las que
-/// tienen nuestra marca y las vuelve a mostrar. No depende de la memoria de
-/// ningún proceso: funciona aunque el gestor se haya caído.
-pub fn restore_all() -> RestoreReport {
+/// Todas las ventanas top-level (también las escondidas) que tienen nuestra
+/// marca, con el método con que se escondieron.
+pub fn marked_windows() -> Vec<(WindowId, HideMethod)> {
     let mut handles: Vec<HWND> = Vec::new();
 
     unsafe extern "system" fn collect(hwnd: HWND, data: LPARAM) -> BOOL {
@@ -318,21 +380,38 @@ pub fn restore_all() -> RestoreReport {
 
     // SAFETY: el callback solo usa `data` como el `&mut Vec` que le pasamos.
     let _ = unsafe { EnumWindows(Some(collect), LPARAM(&mut handles as *mut Vec<HWND> as isize)) };
+    handles
+        .into_iter()
+        .filter_map(|h| marked_method(h).map(|m| (WindowId(h.0 as isize), m)))
+        .collect()
+}
 
-    let mut views: Option<IApplicationViewCollection> = None;
+/// Busca las ventanas con nuestra marca y las vuelve a mostrar. No depende de
+/// la memoria de ningún proceso: funciona aunque el gestor se haya caído.
+pub fn restore_all() -> RestoreReport {
+    let views = ShellViews::default();
     let mut report = RestoreReport::default();
-    for hwnd in handles {
-        let Some(method) = marked_method(hwnd) else { continue };
-        let id = WindowId(hwnd.0 as isize);
-        if method == HideMethod::ShellCloak && views.is_none() {
-            views = view_collection().ok();
-        }
-        match show_marked(hwnd, views.as_ref()) {
+    for (id, method) in marked_windows() {
+        match show_marked(hwnd(id), &views) {
             Ok(()) => report.restored.push((id, method)),
             Err(e) => report.failed.push((id, e)),
         }
     }
     report
+}
+
+/// ¿La ventana está maximizada? (para la prueba de `minimize`).
+pub fn is_maximized(id: WindowId) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::IsZoomed;
+    // SAFETY: consulta de solo lectura.
+    unsafe { IsZoomed(hwnd(id)) }.as_bool()
+}
+
+/// Maximiza (o devuelve a tamaño normal) una ventana (solo para pruebas).
+pub fn set_maximized_for_test(id: WindowId, maximized: bool) {
+    use windows::Win32::UI::WindowsAndMessaging::{SW_MAXIMIZE, SW_RESTORE};
+    let cmd = if maximized { SW_MAXIMIZE.0 } else { SW_RESTORE.0 };
+    let _ = show_async(hwnd(id), cmd);
 }
 
 // ---------------------------------------------------------------------------
@@ -347,6 +426,8 @@ pub struct Visibility {
     pub cloaked: u32,
     pub left: i32,
     pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
 }
 
 pub fn visibility(id: WindowId) -> Visibility {
@@ -367,6 +448,8 @@ pub fn visibility(id: WindowId) -> Visibility {
             cloaked,
             left: rect.left,
             top: rect.top,
+            right: rect.right,
+            bottom: rect.bottom,
         }
     }
 }
@@ -385,6 +468,25 @@ pub fn looks_hidden(method: HideMethod, v: Visibility) -> bool {
         }
         HideMethod::Hide => !v.visible,
     }
+}
+
+/// ¿La ventana se ve de verdad? Visible, sin minimizar, sin cloak y con el
+/// centro dentro de la pantalla virtual (una maximizada empieza en -8, -8 por
+/// los bordes invisibles).
+pub fn fully_visible(v: Visibility) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN};
+    // SAFETY: sin precondiciones.
+    let (vx, vy, vw, vh) = unsafe {
+        (
+            GetSystemMetrics(SM_XVIRTUALSCREEN),
+            GetSystemMetrics(SM_YVIRTUALSCREEN),
+            GetSystemMetrics(SM_CXVIRTUALSCREEN),
+            GetSystemMetrics(SM_CYVIRTUALSCREEN),
+        )
+    };
+    let (cx, cy) = ((v.left + v.right) / 2, (v.top + v.bottom) / 2);
+    let on_screen = cx >= vx && cy >= vy && cx < vx + vw && cy < vy + vh;
+    v.visible && !v.minimized && v.cloaked == 0 && on_screen
 }
 
 // ---------------------------------------------------------------------------

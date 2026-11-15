@@ -5,6 +5,8 @@
 //! - Información del sistema para `wm doctor` (spike 0).
 
 #[cfg(windows)]
+pub mod console;
+#[cfg(windows)]
 pub mod hide;
 #[cfg(windows)]
 pub mod input;
