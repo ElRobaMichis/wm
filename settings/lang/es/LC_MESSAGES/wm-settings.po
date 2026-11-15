@@ -1,0 +1,61 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: es\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+msgid "wm settings"
+msgstr "Ajustes de wm"
+
+msgid "Apps and keys"
+msgstr "Apps y teclas"
+
+msgid "Search an app or a letter…"
+msgstr "Buscar app o letra…"
+
+msgid "What do you want closest at hand?"
+msgstr "¿Qué querés más a mano?"
+
+msgid "Apps first"
+msgstr "Apps primero"
+
+msgid "Windows first"
+msgstr "Ventanas primero"
+
+msgid "App for “{}”"
+msgstr "App para la «{}»"
+
+msgid "Options"
+msgstr "Opciones"
+
+msgid "Focus border"
+msgstr "Borde de foco"
+
+msgid "Mouse follows focus"
+msgstr "El puntero sigue al foco"
+
+msgid "Animate windows"
+msgstr "Animar ventanas"
+
+msgid "{n} letter assigned"
+msgid_plural "{n} letters assigned"
+msgstr[0] "{n} letra asignada"
+msgstr[1] "{n} letras asignadas"
+
+msgid "Cancel"
+msgstr "Cancelar"
+
+msgid "Save"
+msgstr "Guardar"
+
+msgid "(free)"
+msgstr "(libre)"
+
+msgid "(none)"
+msgstr "(ninguna)"
+
+msgid "Search"
+msgstr "Buscar"
+
+msgid "Letters"
+msgstr "Letras"

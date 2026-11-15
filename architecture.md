@@ -1051,6 +1051,62 @@ Al final, `Ctrl` + `C` en el vigilante imprime el resumen. Criterio: todos los c
 - títeres "difíciles": sin DPI awareness, PMv1, sin borde, con tamaño mínimo y que se reescalan solos con demora;
 - validar `EXTENDED_FRAME_BOUNDS` contra los píxeles con el telón de `wm-bench`.
 
+### 13.10 Estado del spike 8 (noviembre 2026)
+
+Planteo revisado con Fable 5.2; implementado y medido el 15/11/2026. **Decisión de toolkit: pendiente de confirmación del usuario.** La recomendación está al final.
+
+**Las dos versiones** muestran la misma pantalla, con los mismos datos (`wm_model::settings_demo`: 26 letras, 12 asignadas, 40 apps):
+- búsqueda que filtra en vivo;
+- perfil con dos botones de opción;
+- lista A–Z de selección única y un desplegable que edita la letra elegida;
+- tres opciones;
+- estado con plural ("12 letras asignadas");
+- Guardar, deshabilitado hasta que haya un cambio, y Cancelar, con `Enter` y `Esc`.
+
+| | **Slint** 1.18.1 (`wm-settings.exe`, crate `settings`) | **Nativa** Win32 / comctl32 v6 (`wm settings`, `wm-platform::native_settings`) |
+|---|---|---|
+| Backend | winit + renderer por software (sin GPU), `accessibility` (AccessKit → UIA), estilo `fluent` | `CreateWindowExW` + `IsDialogMessageW`, ~500 líneas |
+| **Arranque** (20 en frío, hasta el primer cuadro con la marca) | **p50 111 ms**, p95 116, máx 128 | p50 141 ms, p95 147, máx 207 (el primero) |
+| **Memoria** (1 s después de mostrarse) | 4,9 MB WS privado / 5,8 MB commit | **1,5 MB** / 2,2 MB |
+| CPU en reposo (3 s) | 0 | 0 |
+| **Tamaño** sin información de depuración (GNU) | **10,55 MB** solo para los ajustes | **0,88 MB todo `wm.exe`** (guardián, core, overlays y ajustes) |
+| DLL estáticas | `dwrite`, `uiautomationcore`, `comctl32`, `imm32`, `uxtheme`, `shell32`... → **binario aparte** (dentro de `wm.exe` las cargarían el guardián y el core, y la CI lo prohíbe) | solo `comctl32` (si gana, cargarla a demanda) |
+| Compilación | +2,5 min en release (LTO); `rust-version` sube a **1.92** | nada extra |
+| Aspecto | **Fluent, sigue el modo oscuro** del sistema | clásico claro; el modo oscuro de los controles exige APIs no documentadas |
+| **Narrador** (UIA nativa, `wm-bench uia`) | todos los controles con nombre **solo después de agregar `accessible-label`** a la búsqueda, la lista y el desplegable; los interruptores se anuncian como **"botón"** (de alternancia); la lista expone **solo los ítems visibles** (11 de 26); UIA informa los botones de opción, los interruptores y la lista como "sin foco de teclado", aunque en la práctica reciben el foco | **roles correctos** ("casilla", "opción"), los **26 ítems**, nombres de la etiqueta anterior (hay que crear cada etiqueta justo antes de su control) |
+| Manejo por UIA | buscar «brave» → 1 ítem ✅; activar una opción ✅ | igual ✅ |
+| `Tab` real | búsqueda → 2 opciones → ítem → desplegable → 3 interruptores → Cancelar, más una parada en la ventana | búsqueda → grupo de opciones (se cambia con flechas) → lista → desplegable → 3 casillas → Cancelar |
+| **Traducción** | `@tr()` con plurales; los `.po` se compilan **dentro** del binario; `select_bundled_translation` **solo funciona después de crear la primera ventana** (antes falla en silencio) | los **mismos `.po`**, leídos con `wm_model::i18n` (incluidos con `include_str!`) |
+| Español / inglés | ✅ / ✅ | ✅ / ✅ |
+| IME, teclas muertas, alto contraste | sin probar (AccessKit/winit manejan IME; alto contraste no encontrado en 1.18) | los da el sistema |
+
+- **Herramientas nuevas:**
+  - `wm-bench settings` (arranque, memoria y CPU de las dos);
+  - `wm-bench uia <exe> [args]`: vuelca el árbol con la UIA nativa y la maneja como un lector de pantalla, incluido `Tab` real;
+  - `wm_model::i18n`: lector de `.po` con plurales, 3 pruebas.
+- **Trampa:** la UIA de .NET de PowerShell 5.1 muestra todos los controles Win32 como "Pane", porque no carga sus adaptadores. Para medir lo que ve el Narrador hay que usar la UIA nativa (`IUIAutomation`).
+- **Licencia de Slint:** GPL-3.0-only O royalty-free O comercial. Con nuestro GPL-3.0-or-later, el binario combinado queda bajo GPLv3, sin cartel obligatorio.
+
+**Recomendación** (decide el usuario): **Slint, en un binario aparte (`wm-settings.exe`)**, con dos reglas:
+1. todo control con `accessible-label`;
+2. `wm-bench uia` en la CI: 0 controles sin nombre y `Tab` alcanza todo.
+
+- **Por qué:**
+  - arranca más rápido;
+  - sigue el modo oscuro y el estilo de Windows 11, algo que `findings.md` pide ("GUI simple y linda");
+  - es declarativo, y los ajustes van a crecer (selector de apps, perfiles);
+  - su costo en RAM (4,9 MB) es solo mientras está abierto.
+- **Lo que se paga:**
+  - 10,5 MB más en disco y un segundo ejecutable;
+  - accesibilidad algo peor: rol "botón" en los interruptores y una lista virtualizada.
+- **La alternativa nativa** es mejor en tamaño, RAM y accesibilidad, y conserva un solo ejecutable, pero se ve como una app de Windows 7 en modo claro.
+
+**Pendiente:**
+- la decisión del usuario;
+- IME japonés, teclas muertas y alto contraste en Slint;
+- la medición oficial de tamaño con MSVC en la CI;
+- el IPC con el core.
+
 ---
 
 ## 14. Decisiones pendientes

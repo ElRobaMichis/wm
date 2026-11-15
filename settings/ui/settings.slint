@@ -1,0 +1,164 @@
+// Ventana de ajustes en Slint (spike 8, architecture.md §13.10). Misma
+// pantalla que la versión nativa (`wm settings`): búsqueda, perfil, lista A–Z
+// de selección única, un selector que edita la letra elegida, tres
+// interruptores, estado con plural y Guardar/Cancelar. Textos con @tr(),
+// traducidos con settings/lang/*.po (incluidos en el binario).
+
+import { Button, ComboBox, Switch, LineEdit, StandardListView, GroupBox, RadioGroup, VerticalBox, HorizontalBox } from "std-widgets.slint";
+
+export component SettingsWindow inherits Window {
+    title: @tr("wm settings");
+    preferred-width: 560px;
+    preferred-height: 760px;
+    min-width: 420px;
+    min-height: 520px;
+
+    // Filas visibles ("K — brave" o "K — (free)").
+    in property <[StandardListViewItem]> rows;
+    in property <[string]> apps;
+    in property <int> assigned;
+    in property <bool> dirty;
+    in property <bool> bench-mark;
+    in-out property <int> selected: 0;
+    in-out property <int> choice: 0;
+    in-out property <string> query;
+    in-out property <int> profile: 0;
+    in-out property <bool> focus-border: true;
+    in-out property <bool> mouse-follows: false;
+    in-out property <bool> animations: true;
+    in property <string> selected-letter;
+    // Textos que arma el código en Rust, traducidos acá.
+    out property <string> free-text: @tr("(free)");
+    out property <string> none-text: @tr("(none)");
+
+    callback search(string);
+    callback select(int);
+    callback choose(int);
+    callback save();
+    callback cancel();
+
+    forward-focus: search-field;
+
+    FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.cancel();
+                return accept;
+            }
+            if (event.text == Key.Return && root.dirty) {
+                root.save();
+                return accept;
+            }
+            reject
+        }
+
+        VerticalBox {
+            Text {
+                text: @tr("Apps and keys");
+                font-size: 22px;
+                font-weight: 600;
+            }
+
+            search-field := LineEdit {
+                accessible-label: @tr("Search");
+                placeholder-text: @tr("Search an app or a letter…");
+                text <=> root.query;
+                edited(text) => {
+                    root.search(text);
+                }
+            }
+
+            RadioGroup {
+                title: @tr("What do you want closest at hand?");
+                orientation: horizontal;
+                selected(value) => {
+                    root.profile = value == @tr("Apps first") ? 0 : 1;
+                }
+                RadioButton {
+                    text: @tr("Apps first");
+                    checked: root.profile == 0;
+                }
+                RadioButton {
+                    text: @tr("Windows first");
+                    checked: root.profile == 1;
+                }
+            }
+
+            StandardListView {
+                accessible-label: @tr("Letters");
+                vertical-stretch: 1;
+                model: root.rows;
+                current-item <=> root.selected;
+                current-item-changed(index) => {
+                    root.select(index);
+                }
+            }
+
+            HorizontalBox {
+                padding: 0;
+                Text {
+                    text: @tr("App for “{}”", root.selected-letter);
+                    vertical-alignment: center;
+                }
+                ComboBox {
+                    accessible-label: @tr("App for “{}”", root.selected-letter);
+                    model: root.apps;
+                    current-index <=> root.choice;
+                    selected(value) => {
+                        root.choose(self.current-index);
+                    }
+                }
+            }
+
+            GroupBox {
+                title: @tr("Options");
+                vertical-stretch: 0;
+                VerticalBox {
+                    padding: 0;
+                    spacing: 4px;
+                    Switch {
+                        text: @tr("Focus border");
+                        checked <=> root.focus-border;
+                    }
+                    Switch {
+                        text: @tr("Mouse follows focus");
+                        checked <=> root.mouse-follows;
+                    }
+                    Switch {
+                        text: @tr("Animate windows");
+                        checked <=> root.animations;
+                    }
+                }
+            }
+
+            HorizontalBox {
+                padding: 0;
+                Text {
+                    text: @tr("{n} letter assigned" | "{n} letters assigned" % root.assigned);
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                Button {
+                    text: @tr("Cancel");
+                    clicked => { root.cancel(); }
+                }
+                Button {
+                    text: @tr("Save");
+                    primary: true;
+                    enabled: root.dirty;
+                    clicked => { root.save(); }
+                }
+            }
+        }
+    }
+
+    // Marca para medir el arranque (wm-bench settings): se pinta en el mismo
+    // cuadro que el resto, arriba a la izquierda del contenido.
+    if root.bench-mark: Rectangle {
+        x: 0;
+        y: 0;
+        width: 48px;
+        height: 64px;
+        background: #ff00ff;
+    }
+}

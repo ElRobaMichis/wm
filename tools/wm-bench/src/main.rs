@@ -23,6 +23,10 @@ mod ghost;
 #[cfg(windows)]
 mod meter;
 #[cfg(windows)]
+mod settings;
+#[cfg(windows)]
+mod uia;
+#[cfg(windows)]
 mod sysinfo;
 
 use std::process::ExitCode;
@@ -34,6 +38,16 @@ fn main() -> ExitCode {
         Some("overlay") => overlay::run(&args[1..]),
         #[cfg(windows)]
         Some("snapshot") => overlay::snapshot(),
+        #[cfg(windows)]
+        Some("settings") => match overlay::wm_exe() {
+            Some(exe) => settings::run(&args[1..], exe.parent().unwrap_or(&exe)),
+            None => {
+                eprintln!("No encuentro wm.exe junto a wm-bench.exe.");
+                ExitCode::FAILURE
+            }
+        },
+        #[cfg(windows)]
+        Some("uia") => uia::run(&args[1..]),
         #[cfg(windows)]
         Some("capture") => match meter::capture_primary() {
             Ok((img, w, h)) => {

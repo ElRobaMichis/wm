@@ -89,9 +89,27 @@ fn main() -> ExitCode {
         #[cfg(windows)]
         Some("apps") => core::list_apps(),
         Some("burn") => burn(std::env::args().nth(2)),
+        #[cfg(windows)]
         Some("settings") => {
-            eprintln!("`settings` todavía no está implementado (ver architecture.md §13).");
-            ExitCode::from(2)
+            // Versión nativa (spike 8). La de Slint es `wm-settings.exe`.
+            let flag = |name: &str| {
+                args.iter().position(|a| a == name).and_then(|i| args.get(i + 1).cloned())
+            };
+            let bench = flag("--bench").and_then(|s| {
+                let (x, y) = s.split_once(',')?;
+                Some((x.parse().ok()?, y.parse().ok()?))
+            });
+            let lang = flag("--lang").unwrap_or_else(|| "es".to_owned());
+            match wm_platform::native_settings::run(wm_platform::native_settings::Options {
+                lang,
+                bench,
+            }) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("No se pudo abrir la ventana de ajustes: {e}");
+                    ExitCode::FAILURE
+                }
+            }
         }
         Some(other) => {
             eprintln!("Comando desconocido: `{other}`.");
