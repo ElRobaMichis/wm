@@ -1,0 +1,60 @@
+// Tokens del lenguaje de diseño (design.md §3). Un solo lugar para colores,
+// tipografía, espacio, radios y movimiento; claro y oscuro siguen al sistema.
+
+import { Palette } from "std-widgets.slint";
+
+export global Theme {
+    in-out property <bool> dark: Palette.color-scheme == ColorScheme.dark;
+    // Reducir animaciones: lo fija el código según la preferencia del sistema.
+    in-out property <bool> reduce-motion: false;
+
+    // Color (design.md §3.2).
+    out property <color> bg: dark ? #0E0E0F : #F3F3F1;
+    out property <color> surface: dark ? #161618 : #FFFFFF;
+    out property <color> surface-header: dark ? #121214 : #F8F8F7;
+    out property <color> fill: dark ? #FFFFFF0F : #0000000A;
+    out property <color> fill-strong: dark ? #FFFFFF1A : #00000012;
+    out property <color> border: dark ? #FFFFFF12 : #0000000F;
+    out property <color> text: dark ? #EDEDEE : #141414;
+    out property <color> text-2: dark ? #8E8E93 : #6E6E73;
+    out property <color> text-3: dark ? #5A5A5F : #A1A1A6;
+    out property <color> accent: dark ? #5B8CFF : #2F6BFF;
+    out property <color> on-accent: #FFFFFF;
+    out property <color> primary: dark ? #EDEDEE : #141414;
+    out property <color> on-primary: dark ? #0E0E0F : #FFFFFF;
+    out property <color> danger: dark ? #E5484D : #D93036;
+    // Riel del interruptor apagado: más contraste que `fill-strong` (en
+    // claro, la perilla blanca se perdía sobre el fondo).
+    out property <color> track-off: dark ? #FFFFFF26 : #00000026;
+    out property <color> knob: #FFFFFF;
+    out property <color> shadow: dark ? #00000080 : #0000001F;
+
+    // Tipografía: una familia, tres tamaños (design.md §3.1).
+    out property <string> font: "Segoe UI Variable Text";
+    out property <string> font-display: "Segoe UI Variable Display";
+    out property <length> t-title: 20px;
+    out property <length> t-body: 13px;
+    out property <length> t-small: 12px;
+    out property <int> w-regular: 400;
+    out property <int> w-strong: 600;
+
+    // Espacio en escala de 4 (design.md §3.3).
+    out property <length> s1: 4px;
+    out property <length> s2: 8px;
+    out property <length> s3: 12px;
+    out property <length> s4: 16px;
+    out property <length> s6: 24px;
+
+    // Radios concéntricos: tarjeta 14 = fila 8 + relleno 6.
+    out property <length> r-card: 14px;
+    out property <length> card-pad: 6px;
+    out property <length> r-row: 8px;
+    out property <length> r-key: 6px;
+
+    // Alturas.
+    out property <length> h-row: 36px;
+    out property <length> h-field: 32px;
+
+    // Movimiento (design.md §3.4).
+    out property <duration> motion: reduce-motion ? 0ms : 140ms;
+}

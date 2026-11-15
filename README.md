@@ -39,6 +39,7 @@ n = notion | C:\Users\yo\AppData\Local\Programs\Notion\Notion.exe
 - [findings.md](findings.md): investigación de usuarios y mercado.
 - [keyboard-design.md](keyboard-design.md): modelo de interacción y mapa de atajos ("Apps primero").
 - [architecture.md](architecture.md): arquitectura técnica y plan de spikes.
+- [design.md](design.md): lenguaje de diseño (principios, tokens y componentes).
 
 ## Compilar
 

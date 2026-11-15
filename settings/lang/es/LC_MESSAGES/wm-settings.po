@@ -10,8 +10,14 @@ msgstr "Ajustes de wm"
 msgid "Apps and keys"
 msgstr "Apps y teclas"
 
-msgid "Search an app or a letter…"
-msgstr "Buscar app o letra…"
+msgid "Caps plus a letter opens its app."
+msgstr "Caps más una letra abre su app."
+
+msgid "Search an app or a letter"
+msgstr "Buscar una app o una letra"
+
+msgid "Search"
+msgstr "Buscar"
 
 msgid "What do you want closest at hand?"
 msgstr "¿Qué querés más a mano?"
@@ -22,6 +28,15 @@ msgstr "Apps primero"
 msgid "Windows first"
 msgstr "Ventanas primero"
 
+msgid "Letters"
+msgstr "Letras"
+
+msgid "↑ ↓ or type a letter"
+msgstr "↑ ↓ o escribí una letra"
+
+msgid "opens"
+msgstr "abre"
+
 msgid "App for “{}”"
 msgstr "App para la «{}»"
 
@@ -31,16 +46,31 @@ msgstr "Opciones"
 msgid "Focus border"
 msgstr "Borde de foco"
 
+msgid "A 2 px line around the active window."
+msgstr "Una línea de 2 px alrededor de la ventana activa."
+
 msgid "Mouse follows focus"
 msgstr "El puntero sigue al foco"
 
+msgid "When you switch apps, the pointer goes with it."
+msgstr "Al cambiar de app, el puntero va con ella."
+
 msgid "Animate windows"
 msgstr "Animar ventanas"
+
+msgid "Short movements, no bounce."
+msgstr "Movimientos cortos, sin rebotes."
 
 msgid "{n} letter assigned"
 msgid_plural "{n} letters assigned"
 msgstr[0] "{n} letra asignada"
 msgstr[1] "{n} letras asignadas"
+
+msgid "close"
+msgstr "cerrar"
+
+msgid "save"
+msgstr "guardar"
 
 msgid "Cancel"
 msgstr "Cancelar"
@@ -48,14 +78,17 @@ msgstr "Cancelar"
 msgid "Save"
 msgstr "Guardar"
 
+msgid "Free"
+msgstr "Libre"
+
+msgid "None"
+msgstr "Ninguna"
+
 msgid "(free)"
 msgstr "(libre)"
 
 msgid "(none)"
 msgstr "(ninguna)"
 
-msgid "Search"
-msgstr "Buscar"
-
-msgid "Letters"
-msgstr "Letras"
+msgid "Search an app or a letter…"
+msgstr "Buscar app o letra…"

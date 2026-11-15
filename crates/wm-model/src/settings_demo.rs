@@ -11,6 +11,15 @@ pub const APPS: [&str; 40] = [
     "gimp", "inkscape", "krita", "audacity", "keepassxc",
 ];
 
+/// Nombre visible de cada app de [`APPS`] (mismo orden).
+pub const APP_NAMES: [&str; 40] = [
+    "Brave", "Chrome", "Firefox", "Edge", "VS Code", "Windows Terminal", "Rayo", "Spotify",
+    "Discord", "Slack", "Teams", "Zoom", "Outlook", "Thunderbird", "Notion", "Obsidian", "Figma",
+    "Photoshop", "Blender", "Steam", "VLC", "OBS Studio", "Notepad", "Word", "Excel",
+    "PowerPoint", "OneNote", "WhatsApp", "Telegram", "Signal", "Postman", "Docker Desktop",
+    "IntelliJ IDEA", "PyCharm", "Rider", "GIMP", "Inkscape", "Krita", "Audacity", "KeePassXC",
+];
+
 /// Letras asignadas al empezar (12): letra → índice en [`APPS`].
 pub const ASSIGNED: [(u8, usize); 12] = [
     (b'B', 0),
@@ -41,7 +50,8 @@ pub fn matches(letter: char, app: Option<usize>, query: &str) -> bool {
         return true;
     }
     let letter_hit = q.len() == 1 && q.starts_with(letter.to_ascii_lowercase());
-    letter_hit || app.is_some_and(|a| APPS[a].contains(&q))
+    letter_hit
+        || app.is_some_and(|a| APPS[a].contains(&q) || APP_NAMES[a].to_lowercase().contains(&q))
 }
 
 #[cfg(test)]

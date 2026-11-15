@@ -1,22 +1,29 @@
-// Ventana de ajustes en Slint (spike 8, architecture.md §13.10). Misma
-// pantalla que la versión nativa (`wm settings`): búsqueda, perfil, lista A–Z
-// de selección única, un selector que edita la letra elegida, tres
-// interruptores, estado con plural y Guardar/Cancelar. Textos con @tr(),
-// traducidos con settings/lang/*.po (incluidos en el binario).
+// Ventana de ajustes (spike 8 + lenguaje de diseño, design.md). Misma
+// funcionalidad que la versión nativa: búsqueda, perfil, lista A–Z, la app de
+// la letra elegida, opciones, Guardar/Cancelar. Textos con @tr() (settings/lang).
 
-import { Button, ComboBox, Switch, LineEdit, StandardListView, GroupBox, RadioGroup, VerticalBox, HorizontalBox } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import {
+    SearchField, Segmented, ToggleRow, Button, Select, LetterList, LetterItem, SectionLabel,
+    Keycap, KeyHint
+} from "components.slint";
+
+export { LetterItem, Theme }
 
 export component SettingsWindow inherits Window {
     title: @tr("wm settings");
-    preferred-width: 560px;
-    preferred-height: 760px;
-    min-width: 420px;
-    min-height: 520px;
+    preferred-width: 520px;
+    preferred-height: 820px;
+    min-width: 440px;
+    min-height: 640px;
+    background: Theme.bg;
+    default-font-family: Theme.font;
+    default-font-size: Theme.t-body;
 
-    // Filas visibles ("K — brave" o "K — (free)").
-    in property <[StandardListViewItem]> rows;
+    in property <[LetterItem]> items;
     in property <[string]> apps;
     in property <int> assigned;
+    in property <int> total: 26;
     in property <bool> dirty;
     in property <bool> bench-mark;
     in-out property <int> selected: 0;
@@ -28,132 +35,265 @@ export component SettingsWindow inherits Window {
     in-out property <bool> animations: true;
     in property <string> selected-letter;
     // Textos que arma el código en Rust, traducidos acá.
-    out property <string> free-text: @tr("(free)");
-    out property <string> none-text: @tr("(none)");
+    out property <string> free-text: @tr("Free");
+    out property <string> none-text: @tr("None");
 
     callback search(string);
     callback select(int);
     callback choose(int);
     callback save();
     callback cancel();
+    pure callback find-letter(string) -> int;
 
-    forward-focus: search-field;
+    forward-focus: search;
 
     FocusScope {
+        // Atajos de toda la ventana: Esc cierra, Ctrl+S guarda, / busca.
         key-pressed(event) => {
             if (event.text == Key.Escape) {
                 root.cancel();
                 return accept;
             }
-            if (event.text == Key.Return && root.dirty) {
-                root.save();
+            if (event.modifiers.control && (event.text == "s" || event.text == "S")) {
+                if (root.dirty) {
+                    root.save();
+                }
+                return accept;
+            }
+            if (event.text == "/" && !search.has-focus) {
+                search.focus();
                 return accept;
             }
             reject
         }
 
-        VerticalBox {
-            Text {
-                text: @tr("Apps and keys");
-                font-size: 22px;
-                font-weight: 600;
+        VerticalLayout {
+            padding: Theme.s6;
+            spacing: 0;
+
+            // Encabezado: título y contador (número grande, unidad en gris).
+            HorizontalLayout {
+                spacing: Theme.s3;
+                VerticalLayout {
+                    spacing: 2px;
+                    Text {
+                        text: @tr("Apps and keys");
+                        font-family: Theme.font-display;
+                        font-size: Theme.t-title;
+                        font-weight: Theme.w-strong;
+                        color: Theme.text;
+                    }
+                    Text {
+                        text: @tr("Caps plus a letter opens its app.");
+                        color: Theme.text-2;
+                    }
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+                // Número y "unidad" en la misma línea, alineados abajo.
+                VerticalLayout {
+                    alignment: start;
+                    accessible-role: text;
+                    accessible-label: @tr("{n} letter assigned" | "{n} letters assigned" % root.assigned);
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Text {
+                            text: root.assigned;
+                            font-family: Theme.font-display;
+                            font-size: Theme.t-title;
+                            font-weight: Theme.w-strong;
+                            color: Theme.text;
+                            vertical-alignment: bottom;
+                            accessible-role: none;
+                        }
+                        Text {
+                            text: "/ " + root.total;
+                            color: Theme.text-2;
+                            vertical-alignment: bottom;
+                            accessible-role: none;
+                        }
+                    }
+                }
             }
 
-            search-field := LineEdit {
-                accessible-label: @tr("Search");
-                placeholder-text: @tr("Search an app or a letter…");
+            Rectangle { height: Theme.s4; }
+
+            search := SearchField {
+                placeholder: @tr("Search an app or a letter");
+                label: @tr("Search");
+                shortcut: "/";
                 text <=> root.query;
                 edited(text) => {
                     root.search(text);
                 }
             }
 
-            RadioGroup {
-                title: @tr("What do you want closest at hand?");
-                orientation: horizontal;
-                selected(value) => {
-                    root.profile = value == @tr("Apps first") ? 0 : 1;
-                }
-                RadioButton {
-                    text: @tr("Apps first");
-                    checked: root.profile == 0;
-                }
-                RadioButton {
-                    text: @tr("Windows first");
-                    checked: root.profile == 1;
-                }
+            Rectangle { height: Theme.s6; }
+
+            SectionLabel {
+                text: @tr("What do you want closest at hand?");
+            }
+            Rectangle { height: Theme.s2; }
+            Segmented {
+                options: [@tr("Apps first"), @tr("Windows first")];
+                label: @tr("What do you want closest at hand?");
+                current <=> root.profile;
             }
 
-            StandardListView {
-                accessible-label: @tr("Letters");
-                vertical-stretch: 1;
-                model: root.rows;
-                current-item <=> root.selected;
-                current-item-changed(index) => {
-                    root.select(index);
-                }
-            }
+            Rectangle { height: Theme.s6; }
 
-            HorizontalBox {
-                padding: 0;
+            HorizontalLayout {
+                SectionLabel {
+                    text: @tr("Letters");
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
                 Text {
-                    text: @tr("App for “{}”", root.selected-letter);
+                    text: @tr("↑ ↓ or type a letter");
+                    color: Theme.text-3;
+                    font-size: Theme.t-small;
+                }
+            }
+            Rectangle { height: Theme.s2; }
+
+            // Tarjeta con la lista (radio 14 = fila 8 + relleno 6).
+            Rectangle {
+                vertical-stretch: 1;
+                min-height: 5 * Theme.h-row + 2 * Theme.card-pad;
+                border-radius: Theme.r-card;
+                background: Theme.surface;
+                border-width: 1px;
+                border-color: Theme.border;
+                clip: true;
+                VerticalLayout {
+                    padding: Theme.card-pad;
+                    LetterList {
+                        items: root.items;
+                        label: @tr("Letters");
+                        free-text: root.free-text;
+                        current <=> root.selected;
+                        current-changed(index) => {
+                            root.select(index);
+                        }
+                        find-letter(text) => {
+                            return root.find-letter(text);
+                        }
+                    }
+                }
+            }
+
+            Rectangle { height: Theme.s3; }
+
+            // La app de la letra elegida.
+            HorizontalLayout {
+                spacing: Theme.s3;
+                VerticalLayout {
+                    alignment: center;
+                    Keycap {
+                        letter: root.selected-letter;
+                    }
+                }
+                Text {
+                    text: @tr("opens");
+                    color: Theme.text-2;
                     vertical-alignment: center;
                 }
-                ComboBox {
-                    accessible-label: @tr("App for “{}”", root.selected-letter);
+                Select {
+                    horizontal-stretch: 1;
                     model: root.apps;
-                    current-index <=> root.choice;
-                    selected(value) => {
-                        root.choose(self.current-index);
+                    label: @tr("App for “{}”", root.selected-letter);
+                    current <=> root.choice;
+                    selected(index) => {
+                        root.choose(index);
                     }
                 }
             }
 
-            GroupBox {
-                title: @tr("Options");
-                vertical-stretch: 0;
-                VerticalBox {
-                    padding: 0;
-                    spacing: 4px;
-                    Switch {
+            Rectangle { height: Theme.s6; }
+
+            SectionLabel {
+                text: @tr("Options");
+            }
+            Rectangle { height: Theme.s2; }
+            Rectangle {
+                border-radius: Theme.r-card;
+                background: Theme.surface;
+                border-width: 1px;
+                border-color: Theme.border;
+                VerticalLayout {
+                    padding: Theme.card-pad;
+                    ToggleRow {
                         text: @tr("Focus border");
+                        detail: @tr("A 2 px line around the active window.");
                         checked <=> root.focus-border;
                     }
-                    Switch {
+                    ToggleRow {
                         text: @tr("Mouse follows focus");
+                        detail: @tr("When you switch apps, the pointer goes with it.");
                         checked <=> root.mouse-follows;
                     }
-                    Switch {
+                    ToggleRow {
                         text: @tr("Animate windows");
+                        detail: @tr("Short movements, no bounce.");
                         checked <=> root.animations;
                     }
                 }
             }
 
-            HorizontalBox {
-                padding: 0;
-                Text {
-                    text: @tr("{n} letter assigned" | "{n} letters assigned" % root.assigned);
-                    vertical-alignment: center;
+            Rectangle { height: Theme.s6; }
+
+            // Pie: atajos en gris a la izquierda, botones a la derecha.
+            HorizontalLayout {
+                spacing: Theme.s2;
+                HorizontalLayout {
+                    spacing: 6px;
+                    alignment: start;
+                    VerticalLayout {
+                        alignment: center;
+                        KeyHint { text: "Esc"; }
+                    }
+                    Text {
+                        text: @tr("close");
+                        color: Theme.text-3;
+                        font-size: Theme.t-small;
+                        vertical-alignment: center;
+                    }
+                    Rectangle { width: 6px; }
+                    VerticalLayout {
+                        alignment: center;
+                        KeyHint { text: "Ctrl S"; }
+                    }
+                    Text {
+                        text: @tr("save");
+                        color: Theme.text-3;
+                        font-size: Theme.t-small;
+                        vertical-alignment: center;
+                    }
+                }
+                Rectangle {
                     horizontal-stretch: 1;
                 }
                 Button {
                     text: @tr("Cancel");
-                    clicked => { root.cancel(); }
+                    clicked => {
+                        root.cancel();
+                    }
                 }
                 Button {
                     text: @tr("Save");
                     primary: true;
                     enabled: root.dirty;
-                    clicked => { root.save(); }
+                    clicked => {
+                        root.save();
+                    }
                 }
             }
         }
     }
 
-    // Marca para medir el arranque (wm-bench settings): se pinta en el mismo
-    // cuadro que el resto, arriba a la izquierda del contenido.
+    // Marca para medir el arranque (wm-bench settings).
     if root.bench-mark: Rectangle {
         x: 0;
         y: 0;

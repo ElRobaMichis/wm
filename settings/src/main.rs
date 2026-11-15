@@ -14,8 +14,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use slint::{ModelRc, SharedString, StandardListViewItem, VecModel};
-use wm_model::settings_demo::{self, APPS};
+use slint::{ModelRc, SharedString, VecModel};
+use wm_model::settings_demo::{self, APP_NAMES, APPS};
 
 slint::include_modules!();
 
@@ -35,17 +35,20 @@ struct State {
 }
 
 fn refresh(ui: &SettingsWindow, st: &State) {
-    let free = ui.get_free_text();
-    let items: Vec<StandardListViewItem> = st
+    let items: Vec<LetterItem> = st
         .visible
         .iter()
         .map(|&i| {
             let (l, a) = st.assigned[i];
-            let app = a.map_or(free.clone(), |a| SharedString::from(APPS[a]));
-            StandardListViewItem::from(SharedString::from(format!("{l}  —  {app}")))
+            LetterItem {
+                letter: SharedString::from(l.to_string()),
+                name: a.map_or_else(SharedString::new, |a| SharedString::from(APP_NAMES[a])),
+                exe: a.map_or_else(SharedString::new, |a| format!("{}.exe", APPS[a]).into()),
+                assigned: a.is_some(),
+            }
         })
         .collect();
-    ui.set_rows(ModelRc::new(VecModel::from(items)));
+    ui.set_items(ModelRc::new(VecModel::from(items)));
     let sel = st.visible.iter().position(|&i| i == st.current).map_or(-1, |p| p as i32);
     ui.set_selected(sel);
     let (letter, app) = st.assigned[st.current];
@@ -63,13 +66,19 @@ fn main() -> Result<(), slint::PlatformError> {
     });
 
     let ui = SettingsWindow::new()?;
+    // Forzar tema (para revisar los dos sin cambiar el de Windows).
+    if std::env::args().any(|a| a == "--light") {
+        ui.global::<Theme>().set_dark(false);
+    } else if std::env::args().any(|a| a == "--dark") {
+        ui.global::<Theme>().set_dark(true);
+    }
     // Después de crear la primera ventana: antes, Slint no tiene contexto y
     // la selección falla (en silencio si no se mira el resultado).
     if let Err(e) = slint::select_bundled_translation(&lang) {
         eprintln!("No se pudo elegir el idioma «{lang}»: {e:?}");
     }
     let mut choices = vec![ui.get_none_text()];
-    choices.extend(APPS.iter().map(|a| SharedString::from(*a)));
+    choices.extend(APP_NAMES.iter().map(|a| SharedString::from(*a)));
     ui.set_apps(ModelRc::new(VecModel::from(choices)));
 
     let initial = settings_demo::initial();
@@ -111,6 +120,16 @@ fn main() -> Result<(), slint::PlatformError> {
             ui.set_selected_letter(SharedString::from(letter.to_string()));
             ui.set_choice(app.map_or(0, |a| a as i32 + 1));
         }
+    });
+    let s = st.clone();
+    ui.on_find_letter(move |text| {
+        let st = s.borrow();
+        let Some(c) = text.chars().next().filter(|c| c.is_ascii_alphabetic() && text.len() == 1)
+        else {
+            return -1;
+        };
+        let c = c.to_ascii_uppercase();
+        st.visible.iter().position(|&i| st.assigned[i].0 == c).map_or(-1, |p| p as i32)
     });
     let weak = ui.as_weak();
     let s = st.clone();

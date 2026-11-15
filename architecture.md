@@ -1053,7 +1053,17 @@ Al final, `Ctrl` + `C` en el vigilante imprime el resumen. Criterio: todos los c
 
 ### 13.10 Estado del spike 8 (noviembre 2026)
 
-Planteo revisado con Fable 5.2; implementado y medido el 15/11/2026. **Decisión de toolkit: pendiente de confirmación del usuario.** La recomendación está al final.
+Planteo revisado con Fable 5.2; implementado y medido el 15/11/2026.
+
+**Decisión (usuario, 15/11/2026): Slint, en un binario aparte, con un lenguaje de diseño propio** ([design.md](design.md)):
+- componentes propios (tecla, campo de búsqueda, control segmentado, lista, interruptor en fila, botones, desplegable) sobre tokens de color, tipografía, espacio, radios concéntricos y movimiento, en claro y oscuro;
+- no se usan los widgets `fluent` estándar.
+
+**Con el diseño propio:**
+- mismo arranque (p50 113 ms) y memoria (5,4 MB);
+- todos los controles con nombre;
+- `Tab` igual que en la versión nativa;
+- cada fila anuncia "letra, app" y el total (`accessible-item-count`).
 
 **Las dos versiones** muestran la misma pantalla, con los mismos datos (`wm_model::settings_demo`: 26 letras, 12 asignadas, 40 apps):
 - búsqueda que filtra en vivo;
