@@ -13,6 +13,7 @@ windows = { version = "=0.62.2", features = [
     # funciones libres se resuelven en tiempo de ejecución (src/dynlib.rs)
     # para que `wm.exe` no las importe en todos sus roles.
     "Graphics",
+    "Win32_Devices_Display",
     "Graphics_DirectX",
     "System",
     "UI_Composition",

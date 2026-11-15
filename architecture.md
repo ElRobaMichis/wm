@@ -374,7 +374,7 @@ Así no se ve el fondo de pantalla entre medio. Las ventanas escondidas se manti
 - **"Full":** rectángulo igual al área de trabajo con compensación de bordes, no `SW_MAXIMIZE`, para evitar la animación del sistema.
 - **Esquinas redondeadas de Windows 11:** `DWMWA_WINDOW_CORNER_PREFERENCE` **[DOC]**, aceptado entre procesos **[SONDA]**, permite cuadrarlas en ventanas en mosaico.
 - **Redondeo:** calcular **bordes compartidos**, no anchos, para no dejar huecos de 1 px.
-- **Identidad de monitores:** `QueryDisplayConfig` + `DisplayConfigGetDeviceInfo` (ruta del dispositivo, EDID, conector), no `\\.\DISPLAYn` ni `HMONITOR`.
+- **Identidad de monitores:** `QueryDisplayConfig` + `DisplayConfigGetDeviceInfo` + número de serie del EDID: la tupla EDID + serie + conector, emparejada por niveles. No `\\.\DISPLAYn`, `HMONITOR` ni el LUID del adaptador (§13.9).
 - **Tormentas de cambios de pantalla:** esperar a que se calmen (300–500 ms) antes de reaplicar. Windows 11 también recuerda posiciones por monitor y mueve ventanas por su cuenta: hay que reconciliar después, no pelear en el momento.
 
 ---
@@ -966,6 +966,74 @@ Diseño revisado con Fable 5.2; implementado y medido el 15/11/2026 a 144 Hz (no
   - el brain tiene que ignorar los `CLOAKED`/`UNCLOAKED` de ventanas en vuelo.
 - **Sin animación** con: ventanas maximizadas, minimizadas o a pantalla completa; contenido protegido (la miniatura sale negra); apps colgadas (`IsHungAppWindow` antes de empezar); y cloak degradado (§6.3).
 - **Esquinas redondeadas y sombra:** la sombra desaparece durante el vuelo. Mirar las esquinas en capturas; si difieren, `DWMWCP_DONOTROUND` en las ventanas en mosaico.
+
+### 13.9 Estado del spike 7 (noviembre 2026)
+
+Diseño revisado con Fable 5.2. Lo automatizable se implementó y midió el 15/11/2026; las pruebas con cambios físicos de pantallas las hace el usuario con el guion de abajo.
+
+**Decisión: motor de persistencia = una instantánea del layout por topología, y reconciliar *después* de la tormenta.** No se pelea con Windows mientras reacomoda ventanas.
+
+- **Identidad de monitor** (`wm_model::screens::MonitorId`):
+  - es la tupla EDID (fabricante + producto) + **número de serie** + conector;
+  - la serie sale del EDID en `HKLM\SYSTEM\CurrentControlSet\Enum\DISPLAY\…\Device Parameters\EDID`, bytes 12–15, sin admin;
+  - el LUID del adaptador, `HMONITOR` y `\\.\DISPLAYn` no sirven: cambian entre arranques;
+  - la ruta del dispositivo sola tampoco: no lleva la serie y cambia si se mueve el cable.
+- **Reconocer un monitor:** `match_monitors` empareja por niveles: EDID + serie + conector › EDID + serie (cable movido) › EDID + conector (sin serie: sigue al conector) › EDID solo, si es único en los dos lados.
+- **Clave de topología:** el conjunto de identidades. Resolución, escala y rotación no entran.
+- **Posiciones** relativas al área de trabajo (`RelRect`): exactas en la misma geometría y proporcionales en otra. Los bordes compartidos se conservan.
+- **Nunca fuera de pantalla** (`reachable` / `rescue`):
+  - el marco tiene que compartir con algún área de trabajo al menos `min(ancho, 120 DIP)` × 48 DIP, con la barra de título adentro;
+  - si no, se mueve lo mínimo (sin cambiar el tamaño);
+  - las minimizadas no cuentan.
+- **Fin de la tormenta** (`StormTracker`, puro y sin timers):
+  - cada aviso congela y pide 400 ms de silencio;
+  - después, dos instantáneas de la topología a 250 ms tienen que coincidir;
+  - recién entonces se reconcilia, una sola vez;
+  - un control más a +3 s, por la ola tardía de Windows;
+  - tope de 10 s;
+  - nunca con la sesión bloqueada.
+- **Mientras reconecta, Windows 11 recuerda posiciones por monitor y mueve ventanas solo.** Se lo deja terminar y después se reconcilia contra la instantánea de esa topología.
+- **Pendiente para el core** (cuando existan los workspaces):
+  - estado en `%LOCALAPPDATA%\wm\state.json`, local porque los ids son de esta máquina; JSON versionado con escritura atómica; guardado con 2 s de demora y nunca durante una tormenta;
+  - ventanas de la sesión por HWND + marcas `SetPropW`; entre reinicios, por (exe, clase, título), solo con `Hyper` + `R`;
+  - un monitor que desaparece deja a sus ventanas "de visita" con `home` recordado, y vuelven cuando reaparece.
+
+**Implementado y medido:**
+- **`wm displays`:** dos LG UltraGear distinguibles por producto (`5bb1` / `5bb2`), **serie (508158 / 224786)** y conector (`uid4352` HDMI / `uid4353` DisplayPort).
+- **Correcciones de robustez:**
+  - una topología a medio cambiar (un camino sin su monitor) da **error** en vez de una lista más corta, que haría mover ventanas por un monitor "desaparecido";
+  - `QueryDisplayConfig` se reintenta como mucho 4 veces;
+  - en espejo, un monitor por fuente.
+- **Colocación por marco visible** (`wm-platform::geometry`):
+  - el margen (`GetWindowRect` − `EXTENDED_FRAME_BOUNDS`) se mide por ventana en el momento; si la ventana cruza a otro DPI, la primera pasada lo escala;
+  - verificar y corregir **una** vez más solo si el error pasa de 1 px;
+  - en un cruce de DPI no se da por terminado hasta que la ventana informe el DPI nuevo (`GetDpiForWindow`) y el marco quede quieto; un control a +250 ms mide si la app se movió tarde.
+
+| Prueba (100 %, 2 monitores) | Resultado |
+|---|---|
+| `place-test`: 10 lugares por monitor (full, mitades, cuartos, tercios) × 2 monitores, en títere, Brave y Windows Terminal | **60/60 con 0 px de error**, 1 pasada, ~8 ms cada una |
+| `place-test cross`: monitor 1 ↔ monitor 2 (mismo DPI, línea de base) | 6/6 con 0 px, sin movimientos tardíos |
+| Lógica pura (`wm-model::screens`): emparejamiento (2000 casos al azar: biyección parcial, mismo EDID, independiente del orden), rescate (20 000 marcos al azar: siempre alcanzable, idempotente, sin cambiar tamaño), `RelRect` (10 000 ida y vuelta exactas; bordes compartidos), tormenta (termina siempre; espera con sesión bloqueada; una reconciliación por calma) | **33/33 pruebas** |
+| Prototipo del motor (`wm display-watch restore`): se movió un títere a mano y se le mandó a la ventana del vigilante un `WM_DISPLAYCHANGE` falso | Calma → **configuración conocida** → «devuelta "Títere 1" a su lugar» → ciclo 1 ok |
+
+- **Detalle de Windows:** `WM_SETTINGCHANGE` no se puede postear (lleva un puntero: `PostMessage` falla), solo enviar; `WM_DISPLAYCHANGE` sí.
+
+**Guion para el usuario** (~15 min), con `wm display-watch restore` corriendo en una terminal:
+1. **Escala:** monitor 2 a 150 %, después a 200 %, y de vuelta a 100 %. En cada escala, en otra terminal: `wm place-test app windowsterminal cross 10`, y lo mismo con Brave.
+2. **Cable:** desconectar y reconectar cada monitor 5 veces; además, 3 veces apagarlo con el botón.
+3. **Bloqueo:** `Win` + `L` y volver, 10 veces.
+4. **Reposo:** suspender y despertar 3 veces; una de ellas, desconectando un monitor durante el reposo.
+
+Al final, `Ctrl` + `C` en el vigilante imprime el resumen. Criterio: todos los ciclos "ok", configuraciones reconocidas al volver y 0 ventanas fuera de pantalla sin rescatar.
+
+**Sobre el 50/50:** 0 fallas en ~30 ciclos manuales acota la tasa real a ~10 %. Para acercarse a 50/50 hace falta repetir las trazas reales en la lógica pura y dejar `display-watch` (sin `restore`, solo observando) varios días de uso normal.
+
+**Pendiente:**
+- las pruebas manuales;
+- la integración en el core: el sumidero de avisos en el brain, `Op::Displays` en el carril `win` y el estado en disco;
+- la colocación por lotes en el core: todas las ventanas a la vez, una sola espera y una segunda pasada solo para las que fallaron; el sondeo bloqueante actual sirve para medir, no para el carril (plazo de 50 ms);
+- títeres "difíciles": sin DPI awareness, PMv1, sin borde, con tamaño mínimo y que se reescalan solos con demora;
+- validar `EXTENDED_FRAME_BOUNDS` contra los píxeles con el telón de `wm-bench`.
 
 ---
 

@@ -142,6 +142,14 @@ pub fn place_async_top(id: WindowId, rect: wm_model::Rect) -> Result<(), String>
     .map_err(|e| format!("SetWindowPos: {e}"))
 }
 
+/// Le pide a la ventana que se cierre (`WM_CLOSE`, sin esperar).
+pub fn close(id: WindowId) {
+    use windows::Win32::Foundation::WPARAM;
+    use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+    // SAFETY: PostMessageW no bloquea; si la ventana ya no existe, falla.
+    let _ = unsafe { PostMessageW(Some(id.hwnd()), WM_CLOSE, WPARAM(0), LPARAM(0)) };
+}
+
 /// Mueve y redimensiona sin esperar a la app (`SWP_ASYNCWINDOWPOS`).
 pub fn place_async(id: WindowId, rect: wm_model::Rect) -> Result<(), String> {
     use windows::Win32::UI::WindowsAndMessaging::{

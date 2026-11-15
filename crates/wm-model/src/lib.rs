@@ -7,6 +7,7 @@
 
 pub mod apps;
 pub mod keyboard;
+pub mod screens;
 
 /// Rectángulo en píxeles físicos de la pantalla virtual.
 ///
@@ -37,11 +38,11 @@ impl Rect {
     /// Borde vertical que divide el rectángulo en la proporción `num / den`
     /// desde la izquierda. Usa aritmética entera para que el resultado sea
     /// idéntico en cada llamada.
-    fn split_x(&self, num: i32, den: i32) -> i32 {
+    pub fn split_x(&self, num: i32, den: i32) -> i32 {
         self.left + (i64::from(self.width()) * i64::from(num) / i64::from(den)) as i32
     }
 
-    fn split_y(&self, num: i32, den: i32) -> i32 {
+    pub fn split_y(&self, num: i32, den: i32) -> i32 {
         self.top + (i64::from(self.height()) * i64::from(num) / i64::from(den)) as i32
     }
 }

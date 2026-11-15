@@ -10,6 +10,8 @@ use std::process::ExitCode;
 #[cfg(windows)]
 mod core;
 #[cfg(windows)]
+mod display_test;
+#[cfg(windows)]
 mod ghost_test;
 #[cfg(windows)]
 mod guardian;
@@ -21,6 +23,8 @@ mod hide_test;
 mod ops_test;
 #[cfg(windows)]
 mod overlay_test;
+#[cfg(windows)]
+mod place_test;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(2).collect();
@@ -50,6 +54,12 @@ fn main() -> ExitCode {
         Some("overlay-demo") => overlay_test::demo(&args),
         #[cfg(windows)]
         Some("ghost-demo") => ghost_test::demo(&args),
+        #[cfg(windows)]
+        Some("displays") => displays(),
+        #[cfg(windows)]
+        Some("display-watch") => display_test::run(&args),
+        #[cfg(windows)]
+        Some("place-test") => place_test::run(&args),
         #[cfg(windows)]
         Some("guardian") => guardian::run(&args),
         #[cfg(windows)]
@@ -121,6 +131,52 @@ fn burn(seconds: Option<String>) -> ExitCode {
     }
     println!("Listo.");
     ExitCode::SUCCESS
+}
+
+/// `wm displays`: monitores activos con su identidad estable (spike 7).
+#[cfg(windows)]
+fn displays() -> ExitCode {
+    match wm_platform::displays::displays() {
+        Ok(list) => {
+            for d in list {
+                let hz = d.refresh_hz.map_or("?".to_owned(), |h| h.to_string());
+                println!(
+                    "{}{}: «{}» EDID {:04x}:{:04x}, conector {}, salida {}",
+                    d.gdi_name,
+                    if d.primary { " (principal)" } else { "" },
+                    d.name,
+                    d.edid_manufacturer,
+                    d.edid_product,
+                    d.connector,
+                    d.output_technology
+                );
+                println!(
+                    "    {}x{} en ({}, {}), {} Hz, {} DPI, área de trabajo {:?}",
+                    d.bounds.width(),
+                    d.bounds.height(),
+                    d.bounds.left,
+                    d.bounds.top,
+                    hz,
+                    d.dpi,
+                    d.work_area
+                );
+                let serial = d.id.serial.map_or("sin serie".to_owned(), |s| format!("serie {s}"));
+                println!(
+                    "    identidad: EDID {:04x}:{:04x}, {serial}, conector {}{}",
+                    d.id.manufacturer,
+                    d.id.product,
+                    d.id.connector,
+                    if d.edid_valid { "" } else { " (EDID NO confiable)" }
+                );
+                println!("    ruta: {}", d.key);
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("QueryDisplayConfig: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 #[cfg(windows)]
