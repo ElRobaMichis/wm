@@ -718,7 +718,7 @@ Hecho y probado de forma automática la noche del 15/11/2026, sin intervención 
 - El orden mostrar → esconder sigue siendo correcto también con caídas: si muere entre medio, lo peor es una ventana marcada pero visible, que `restore_all` deja igual.
 
 **Pendiente:**
-- Ctrl+C real en una terminal (lo automatizado fue Ctrl+Break: `GenerateConsoleCtrlEvent` con Ctrl+C no llegó porque PowerShell crea el proceso con Ctrl+C desactivado en su grupo). Es la misma rama de código.
+- ~~Ctrl+C real en una terminal~~: **verificado a mano por el usuario el 15/11/2026**, junto con matar el hijo, cerrar la consola con la X y `wm guardian` con el core real (matado con `Stop-Process -Force`, código `0xffffffff`: relanzado a los 250 ms y `Caps` + letra siguió funcionando; `Caps` + `Esc` salió limpio sin relanzar). Tras cada relanzamiento, la primera activación vuelve a necesitar la tecla neutra (una vez por proceso, como en el spike 1).
 - `catch_unwind` en el bucle del core y volcado de fallos (§9.3 y §9.10).
 - Diario en disco como segunda red (§9.2) y "ningún HWND reciclado tocado": hoy la marca vive en la ventana, así que un HWND reciclado no la tiene; falta la prueba explícita.
 - Hacer que el guardián sea el modo normal de arranque (`wm` sin argumentos o al iniciar sesión) cuando exista la bandeja.
