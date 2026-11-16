@@ -21,6 +21,8 @@ rm -rf "$T"; mkdir -p "$T/feed1" "$T/feed2" "$T/install"
 export WM_INSTANCE=utest
 export WM_INSTALL_ROOT=$(cygpath -w "$T/install")
 export WM_UPDATE=1
+# La arquitectura del binario (x64 o arm64).
+ARCH=$("$BIN/wm.exe" update status | sed -n 's/^Versión .* (\(.*\))$/\1/p')
 
 sign() { openssl dgst -sha256 -sign "$KEY" -out "$1.sig" "$1"; }
 
@@ -28,21 +30,21 @@ sign() { openssl dgst -sha256 -sign "$KEY" -out "$1.sig" "$1"; }
 # ejecuta en la prueba).
 mkdir -p "$T/src"; cp "$BIN/wm.exe" "$BIN/wmw.exe" "$T/src/"
 if [ -f "$BIN/wm-settings.exe" ]; then cp "$BIN/wm-settings.exe" "$T/src/"; else cp "$BIN/wm.exe" "$T/src/wm-settings.exe"; fi
-"$BIN/wm.exe" release-pack "$(cygpath -w "$T/src")" --arch x64 --notes "Primera" --out "$(cygpath -w "$T/feed1")" >/dev/null
-sign "$T/feed1/latest-x64.txt"
+"$BIN/wm.exe" release-pack "$(cygpath -w "$T/src")" --arch $ARCH --notes "Primera" --out "$(cygpath -w "$T/feed1")" >/dev/null
+sign "$T/feed1/latest-$ARCH.txt"
 
 # Feed 2: "99.0.0": los mismos exe con bytes agregados al final.
 for f in wmw wm wm-settings; do
-  cp "$T/src/$f.exe" "$T/feed2/$f-x64.exe"; printf 'version 99' >> "$T/feed2/$f-x64.exe"
+  cp "$T/src/$f.exe" "$T/feed2/$f-$ARCH.exe"; printf 'version 99' >> "$T/feed2/$f-$ARCH.exe"
 done
 {
-  echo "wm-update 1"; echo "version = 99.0.0"; echo "arch = x64"; echo "notes = Prueba"
+  echo "wm-update 1"; echo "version = 99.0.0"; echo "arch = $ARCH"; echo "notes = Prueba"
   for f in wmw wm wm-settings; do
-    size=$(stat -c %s "$T/feed2/$f-x64.exe"); sha=$(sha256sum "$T/feed2/$f-x64.exe" | cut -d' ' -f1)
-    echo "file = $f.exe | $f-x64.exe | $size | $sha"
+    size=$(stat -c %s "$T/feed2/$f-$ARCH.exe"); sha=$(sha256sum "$T/feed2/$f-$ARCH.exe" | cut -d' ' -f1)
+    echo "file = $f.exe | $f-$ARCH.exe | $size | $sha"
   done
-} > "$T/feed2/latest-x64.txt"
-sign "$T/feed2/latest-x64.txt"
+} > "$T/feed2/latest-$ARCH.txt"
+sign "$T/feed2/latest-$ARCH.txt"
 
 echo "== 1. instalar"
 WM_UPDATE_FEED=$(cygpath -w "$T/feed1") "$BIN/wm.exe" setup --quiet
@@ -53,7 +55,7 @@ check "acceso directo" '[ -f "$APPDATA/Microsoft/Windows/Start Menu/Programs/wm-
 check "wm arrancó (guardián y core)" '[ "$(tasklist //FI "IMAGENAME eq wmw.exe" | grep -c wmw.exe)" -ge 2 ]'
 
 echo "== 2. feed con firma mala: no prepara nada"
-cp -r "$T/feed2" "$T/feedbad"; printf 'x' >> "$T/feedbad/latest-x64.txt"
+cp -r "$T/feed2" "$T/feedbad"; printf 'x' >> "$T/feedbad/latest-$ARCH.txt"
 WM_UPDATE_FEED=$(cygpath -w "$T/feedbad") "$T/install/wm.exe" update run --force
 check "firma mala: no preparó nada" '[ ! -d "$T/install/update/99.0.0" ]'
 
@@ -65,7 +67,7 @@ echo "== 4. actualizar ahora"
 "$T/install/wm.exe" actualizar
 sleep 5
 for f in wmw wm wm-settings; do
-  check "$f.exe es el de 99.0.0" '[ "$(sha256sum "$T/install/$f.exe" | cut -d" " -f1)" = "$(sha256sum "$T/feed2/$f-x64.exe" | cut -d" " -f1)" ]'
+  check "$f.exe es el de 99.0.0" '[ "$(sha256sum "$T/install/$f.exe" | cut -d" " -f1)" = "$(sha256sum "$T/feed2/$f-$ARCH.exe" | cut -d" " -f1)" ]'
 done
 check "la versión anterior quedó en .old" '[ -f "$T/install/wmw.exe.old" ]'
 check "wm volvió a arrancar" '[ "$(tasklist //FI "IMAGENAME eq wmw.exe" | grep -c wmw.exe)" -ge 2 ]'

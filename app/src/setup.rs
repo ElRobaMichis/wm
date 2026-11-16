@@ -68,6 +68,15 @@ fn place(dir: &Path, stage: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Un aviso de error: en un cuadro, o (con `--quiet`, pruebas y la CI) solo
+/// en el log: un cuadro sin nadie que lo cierre trabaría el proceso.
+fn warn(quiet: bool, text: &str) {
+    log(text);
+    if !quiet {
+        warning_box(TITLE, text);
+    }
+}
+
 /// El modo instalador (doble clic en `wm-setup-x64.exe`).
 pub fn run_setup(quiet: bool, tag: Option<String>) -> ExitCode {
     let Some(dir) = crate::update::install_dir() else { return ExitCode::FAILURE };
@@ -83,11 +92,11 @@ pub fn run_setup(quiet: bool, tag: Option<String>) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if !stop_running(Duration::from_secs(10)) {
-        warning_box(TITLE, "Primero cerrá wm: clic en su ícono → Salir. Después probá de nuevo.");
+        warn(quiet, "Primero cerrá wm: clic en su ícono → Salir. Después probá de nuevo.");
         return ExitCode::FAILURE;
     }
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        warning_box(TITLE, &format!("No se pudo crear la carpeta de wm ({e})."));
+        warn(quiet, &format!("No se pudo crear la carpeta de wm ({e})."));
         return ExitCode::FAILURE;
     }
     log(&format!("instalando en {}", dir.display()));
@@ -103,7 +112,7 @@ pub fn run_setup(quiet: bool, tag: Option<String>) -> ExitCode {
             return ExitCode::FAILURE;
         }
         Ok(crate::update::Prepared::Skipped(why)) => {
-            warning_box(TITLE, &format!("No se instaló nada: {why}."));
+            warn(quiet, &format!("No se instaló nada: {why}."));
             return ExitCode::FAILURE;
         }
         Err(e) => {
@@ -113,13 +122,13 @@ pub fn run_setup(quiet: bool, tag: Option<String>) -> ExitCode {
             } else {
                 "La descarga llegó mal y no se instaló nada. Probá de nuevo en un rato."
             };
-            warning_box(TITLE, text);
+            warn(quiet, text);
             return ExitCode::FAILURE;
         }
     };
     if let Err(e) = place(&dir, &crate::update::staged_dir_for(&dir, v)) {
         log(&format!("no se pudieron colocar los archivos: {e}"));
-        warning_box(TITLE, "No se pudieron copiar los archivos. Probá de nuevo.");
+        warn(quiet, "No se pudieron copiar los archivos. Probá de nuevo.");
         return ExitCode::FAILURE;
     }
     // El registro, el acceso directo y el arranque los hace la copia
@@ -130,7 +139,7 @@ pub fn run_setup(quiet: bool, tag: Option<String>) -> ExitCode {
         cmd.arg("--quiet");
     }
     if let Err(e) = cmd.spawn() {
-        warning_box(TITLE, &format!("wm se copió pero no arrancó ({e})."));
+        warn(quiet, &format!("wm se copió pero no arrancó ({e})."));
         return ExitCode::FAILURE;
     }
     log(&format!("versión {v} instalada"));
