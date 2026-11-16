@@ -224,10 +224,7 @@ pub struct Inspection {
 /// Por qué no animar esta ventana (hito 1e): lecturas que no envían
 /// mensajes a la app, así que no bloquean aunque esté colgada.
 fn no_fly(id: WindowId) -> Option<wm_model::world::NoFly> {
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowDisplayAffinity, IsHungAppWindow, SPI_GETCLIENTAREAANIMATION,
-        SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
-    };
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowDisplayAffinity, IsHungAppWindow};
     use wm_model::world::NoFly;
     // El vuelo sube la ventana al frente: solo se anima la que ya lo está.
     if foreground() != Some(id) {
@@ -243,6 +240,18 @@ fn no_fly(id: WindowId) -> Option<wm_model::world::NoFly> {
         return Some(NoFly::Protected);
     }
     // Se lee en cada observación: no depende de WM_SETTINGCHANGE.
+    if reduced_motion() {
+        return Some(NoFly::ReducedMotion);
+    }
+    None
+}
+
+/// ¿El sistema pide reducir animaciones? (Configuración > Accesibilidad >
+/// Efectos de animación; en Windows Server viene así por defecto.)
+pub fn reduced_motion() -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
+    };
     let mut animate = BOOL(1);
     // SAFETY: SPI_GETCLIENTAREAANIMATION escribe un BOOL en la variable local.
     let ok = unsafe {
@@ -253,10 +262,7 @@ fn no_fly(id: WindowId) -> Option<wm_model::world::NoFly> {
             SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
         )
     };
-    if ok.is_ok() && !animate.as_bool() {
-        return Some(NoFly::ReducedMotion);
-    }
-    None
+    ok.is_ok() && !animate.as_bool()
 }
 
 /// Observa una ventana. `None` = la que tiene el foco, si es una ventana de

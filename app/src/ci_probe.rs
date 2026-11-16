@@ -231,6 +231,8 @@ fn environment(r: &mut Report) {
     };
     r.env("Elevado", elevated.into());
     r.env("Shell", if s.shell { "sí" } else { "no" }.into());
+    let reduced = windows_list::reduced_motion();
+    r.env("Reducir animaciones", if reduced { "sí" } else { "no" }.into());
     // Solo la clase: el título puede tener datos personales y el resumen de
     // la CI es público. La clase alcanza para ver, por ejemplo, si quedó
     // abierta la configuración inicial de Windows.
@@ -493,8 +495,21 @@ fn arrange_checks(r: &mut Report, id: WindowId) {
 /// Hito 1e: mitad izquierda → derecha es del mismo tamaño, así que vuela.
 /// Durante el vuelo la real está con cloak (debajo del fantasma); al final,
 /// en el destino y visible, a tiempo.
+/// Con "reducir animaciones" el core no anima (a propósito): los chequeos de
+/// vuelo se omiten.
+fn skip_if_reduced_motion(r: &mut Report, name: &str) -> bool {
+    let reduced = windows_list::reduced_motion();
+    if reduced {
+        r.check(name, Status::Skip, "el sistema pide reducir animaciones: no se anima".into());
+    }
+    reduced
+}
+
 fn fly_check(r: &mut Report, id: WindowId, work: wm_model::Rect) {
     let name = "vuelo";
+    if skip_if_reduced_motion(r, name) {
+        return;
+    }
     let left = place(work, Placement::LeftHalf);
     let right = place(work, Placement::RightHalf);
     std::thread::sleep(Duration::from_millis(200));
@@ -537,6 +552,9 @@ fn fly_check(r: &mut Report, id: WindowId, work: wm_model::Rect) {
 /// marca) y `restore_all`, lo que hace el guardián al relanzar, la devuelve.
 fn fly_crash_check(r: &mut Report, id: WindowId) {
     let name = "vuelo + caída";
+    if skip_if_reduced_motion(r, name) {
+        return;
+    }
     let (mut child, _lines) = match spawn_core() {
         Ok(x) => x,
         Err(e) => {
