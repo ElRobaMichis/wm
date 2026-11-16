@@ -290,7 +290,6 @@ impl Ops {
 
     /// Resultados disponibles. Llamar en cada vuelta del brain.
     pub fn drain(&mut self) -> Vec<OpsEvent> {
-        WAKE_PENDING.store(false, Ordering::Release);
         let mut out = std::mem::take(&mut self.local);
         while let Ok(event) = self.results_rx.try_recv() {
             match &event {
@@ -389,6 +388,15 @@ fn route(op: &Op) -> Lane {
         Op::RestoreAll => Lane::Shell,
         Op::Stall { lane, .. } => *lane,
     }
+}
+
+/// El brain va a leer todo lo pendiente (ops, `anim`, `ui`): desde ahora,
+/// una respuesta nueva tiene que volver a despertarlo. Se llama **antes** de
+/// leer cualquier carril: antes se limpiaba al final de `Ops::drain`, después
+/// de leer `anim` y `ui`, y una respuesta que llegaba en el medio no
+/// despertaba a nadie (un clic en "Salir" quedaba muerto; Fable, hito 3).
+pub fn rearm_wake() {
+    WAKE_PENDING.store(false, Ordering::Release);
 }
 
 /// Despierta al brain con `WM_OPS` (uno pendiente a la vez). También lo usa

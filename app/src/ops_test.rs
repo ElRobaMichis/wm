@@ -298,6 +298,7 @@ pub fn run(args: &[String]) -> ExitCode {
         for event in brain.ops.expire(now) {
             brain.record(event);
         }
+        wm_platform::ops::rearm_wake();
         for event in brain.ops.drain() {
             brain.record(event);
         }

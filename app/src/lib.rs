@@ -115,6 +115,8 @@ pub fn run() -> ExitCode {
         #[cfg(not(windows))]
         None => doctor(),
         Some("doctor") => doctor(),
+        #[cfg(windows)]
+        Some("autostart") => autostart(args.first().map(String::as_str)),
         Some("version" | "--version" | "-V") => {
             println!("wm {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
@@ -282,4 +284,32 @@ fn log_panics() {
         brain::append_line(&format!("PÁNICO en el hilo {thread}: {info}"));
         previous(info);
     }));
+}
+
+/// `wm autostart [on | off]`: iniciar con Windows (hito 3a).
+#[cfg(windows)]
+fn autostart(arg: Option<&str>) -> ExitCode {
+    use wm_platform::autostart;
+    let result = match arg {
+        Some("on") => autostart::set(true),
+        Some("off") => autostart::set(false),
+        None | Some("status") => Ok(()),
+        Some(_) => {
+            eprintln!("Uso: wm autostart [on | off]");
+            return ExitCode::from(2);
+        }
+    };
+    if let Err(e) = result {
+        eprintln!("No se pudo cambiar el inicio con Windows: {e}");
+        return ExitCode::FAILURE;
+    }
+    match autostart::status() {
+        Some(true) => println!(
+            "wm arranca con Windows ({}).",
+            autostart::target().map(|p| p.display().to_string()).unwrap_or_default()
+        ),
+        Some(false) => println!("wm no arranca con Windows."),
+        None => println!("No se puede: falta wmw.exe al lado de wm.exe."),
+    }
+    ExitCode::SUCCESS
 }

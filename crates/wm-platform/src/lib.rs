@@ -7,6 +7,8 @@
 #[cfg(windows)]
 pub mod anim;
 #[cfg(windows)]
+pub mod autostart;
+#[cfg(windows)]
 pub mod clock;
 #[cfg(windows)]
 pub mod console;

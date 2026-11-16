@@ -406,6 +406,7 @@ impl Brain {
 
     /// Resultados de los carriles (y plazos vencidos).
     pub fn collect(&mut self) {
+        wm_platform::ops::rearm_wake();
         self.collect_anim();
         self.collect_ui();
         let mut events = self.ops.expire(Instant::now());
