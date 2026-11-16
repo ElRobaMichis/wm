@@ -130,14 +130,6 @@ impl Brain {
         }
     }
 
-    /// Las dos capas del mapa con las asignaciones actuales.
-    fn map_views(&self) -> wm_platform::ui::Views {
-        use wm_model::keyboard::Layer;
-        use wm_model::mapview::map_view;
-        let b = self.world.bindings();
-        std::sync::Arc::new([map_view(Layer::Apps, b), map_view(Layer::Window, b)])
-    }
-
     /// Respuestas del hilo `ui` (y su vigilante).
     fn collect_ui(&mut self) {
         let Some(ui) = self.ui.as_mut() else { return };
@@ -235,10 +227,14 @@ impl Brain {
                         anim.land(WindowId(win.hwnd));
                     }
                 }
-                Effect::ShowMap { layer } => {
-                    let views = self.map_views();
+                Effect::ShowMap { layer, views } => {
+                    if let (Some(ui), [apps, window]) = (self.ui.as_mut(), views.as_slice()) {
+                        ui.show(layer, std::sync::Arc::new([apps.clone(), window.clone()]));
+                    }
+                }
+                Effect::MapKey { letter } => {
                     if let Some(ui) = self.ui.as_mut() {
-                        ui.show(layer, views);
+                        ui.light(letter);
                     }
                 }
                 Effect::MapLayer { layer } => {

@@ -379,9 +379,15 @@ pub enum Effect {
     Land {
         win: WinKey,
     },
-    /// Mostrar el mapa de teclado con esta capa (plan-core.md §5).
+    /// Mostrar el mapa de teclado con esta capa (plan-core.md §5). `views`:
+    /// las dos capas (apps y ventana), con las apps abiertas ahora.
     ShowMap {
         layer: Layer,
+        views: Vec<crate::mapview::MapView>,
+    },
+    /// Con el mapa visible se usó esta tecla: pintarla en `accent`.
+    MapKey {
+        letter: char,
     },
     /// El mapa ya visible: mostrar otra capa.
     MapLayer {
@@ -470,6 +476,8 @@ enum Pending {
         win: WinKey,
         job: u64,
     },
+    /// Las ventanas abiertas, para el contenido del mapa.
+    MapScan,
     /// Respuesta del pedido de ubicación.
     PlaceCmd {
         win: WinKey,
@@ -512,6 +520,10 @@ pub struct World {
     fly: bool,
     /// El mapa de teclado (hito 2a).
     map: Map,
+    /// Pedido de ventanas en curso para mostrar el mapa.
+    map_scan: Option<Req>,
+    /// Ya se mandó `ShowMap` (y todavía no `HideMap`).
+    map_shown: bool,
     /// Lo que se sabe del tamaño mínimo o máximo de cada ventana (de las
     /// veces que no tomó el tamaño pedido): un cambio de tamaño que no
     /// respeta esos límites va sin animación.
@@ -598,20 +610,54 @@ impl World {
         self.map.visible()
     }
 
+    /// Traduce lo que pide el mapa. Mostrarlo necesita las ventanas abiertas
+    /// (las apps automáticas por inicial): se pide un `Scan` y `ShowMap` sale
+    /// con la respuesta (~2 ms). Si se oculta antes, no sale nada.
     fn map_effects(&mut self, outs: Vec<MapOut>, out: &mut Vec<Effect>) {
         for o in outs {
-            out.push(match o {
-                MapOut::Show(layer) => Effect::ShowMap { layer },
-                MapOut::Layer(layer) => Effect::MapLayer { layer },
-                MapOut::Hide => Effect::HideMap,
+            match o {
+                MapOut::Show(_) => {
+                    let req = self.req();
+                    self.pending.insert(req, Pending::MapScan);
+                    self.map_scan = Some(req);
+                    out.push(Effect::Scan { req });
+                }
+                MapOut::Layer(layer) => {
+                    if self.map_shown {
+                        out.push(Effect::MapLayer { layer });
+                    }
+                }
+                MapOut::Hide => {
+                    if let Some(req) = self.map_scan.take() {
+                        self.pending.remove(&req);
+                    }
+                    if std::mem::take(&mut self.map_shown) {
+                        out.push(Effect::HideMap);
+                    }
+                }
                 MapOut::ResetKeyboard => {
                     // El hook vuelve a Off sin avisar: lo mismo acá.
                     self.layer = Layer::Off;
                     self.keys = None;
-                    Effect::ResetKeyboard
+                    out.push(Effect::ResetKeyboard);
                 }
-            });
+            }
         }
+    }
+
+    /// Llegaron las ventanas para el mapa: mostrarlo (si sigue visible).
+    fn show_map(&mut self, windows: &[WinInfo], out: &mut Vec<Effect>) {
+        self.map_scan = None;
+        if !self.map.visible() {
+            return;
+        }
+        let open: Vec<&str> = windows.iter().map(|w| w.app.as_str()).collect();
+        let views = vec![
+            crate::mapview::map_view(Layer::Apps, &self.bindings, &open),
+            crate::mapview::map_view(Layer::Window, &self.bindings, &open),
+        ];
+        self.map_shown = true;
+        out.push(Effect::ShowMap { layer: self.layer, views });
     }
 
     fn req(&mut self) -> Req {
@@ -632,6 +678,11 @@ impl World {
                 self.map_effects(m, &mut out);
                 if consumed {
                     return out;
+                }
+                if self.map_shown
+                    && let HyperAction::Letter { letter, .. } = action
+                {
+                    out.push(Effect::MapKey { letter: letter as char });
                 }
                 if age_ms > MAX_ACTION_AGE_MS {
                     let what = describe(action);
@@ -665,6 +716,12 @@ impl World {
             }
             Event::Bindings(b) => self.bindings = b,
             Event::Windows { req, result } => {
+                if let Some(Pending::MapScan) = self.pending.get(&req) {
+                    self.pending.remove(&req);
+                    let windows = result.map(|(w, _)| w).unwrap_or_default();
+                    self.show_map(&windows, &mut out);
+                    return out;
+                }
                 let Some(Pending::Scan { letter, key_us }) = self.pending.remove(&req) else {
                     return out;
                 };
@@ -1763,6 +1820,7 @@ mod tests {
                         | Effect::Fly { .. }
                         | Effect::Land { .. }
                         | Effect::ShowMap { .. }
+                        | Effect::MapKey { .. }
                         | Effect::MapLayer { .. }
                         | Effect::HideMap
                         | Effect::ResetKeyboard

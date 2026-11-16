@@ -17,7 +17,6 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use windows::UI::Composition::ContainerVisual;
 use windows::Win32::Foundation::{LPARAM, POINT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetCursorPos, GetMessageW, KillTimer, MSG, PostThreadMessageW, SetTimer,
@@ -54,8 +53,14 @@ pub enum UiEvent {
 }
 
 enum Cmd {
-    Show { layer: Layer, views: Views, at: Instant },
+    Show {
+        layer: Layer,
+        views: Views,
+        at: Instant,
+    },
     Layer(Layer),
+    /// Pintar esta tecla en `accent` (la recién usada).
+    Light(char),
     Hide,
 }
 
@@ -125,6 +130,10 @@ impl Ui {
         self.send(Cmd::Hide);
     }
 
+    pub fn light(&mut self, letter: char) {
+        self.send(Cmd::Light(letter));
+    }
+
     pub fn next_deadline(&self) -> Option<Instant> {
         self.waiting
     }
@@ -170,7 +179,7 @@ impl Ui {
 struct Built {
     views: Views,
     /// Por monitor: (apps, ventana), armados la primera vez que se muestran ahí.
-    screens: Vec<Option<(ContainerVisual, ContainerVisual)>>,
+    screens: Vec<Option<(overlay_text::MapVisual, overlay_text::MapVisual)>>,
 }
 
 struct State {
@@ -237,6 +246,16 @@ impl State {
                 }
                 UiEvent::Shown { ms: 0.0, monitor: self.shown.unwrap_or(0) }
             }
+            Cmd::Light(letter) => {
+                if let Some(i) = self.shown
+                    && let Some(Some((apps, window))) =
+                        self.built.as_mut().map(|b| &mut b.screens[i])
+                {
+                    let _ = apps.light(Some(letter));
+                    let _ = window.light(Some(letter));
+                }
+                UiEvent::Shown { ms: 0.0, monitor: self.shown.unwrap_or(0) }
+            }
             Cmd::Hide => {
                 self.hide();
                 UiEvent::Shown { ms: 0.0, monitor: usize::MAX }
@@ -251,7 +270,7 @@ impl State {
             for s in self.overlays.screens() {
                 s.root.Children()?.RemoveAll()?;
             }
-            self.built = Some(Built { views, screens: vec![None; n] });
+            self.built = Some(Built { views, screens: (0..n).map(|_| None).collect() });
         }
         let i = pick_monitor(&self.overlays);
         let built = self.built.as_mut().expect("recién armado");
@@ -262,6 +281,11 @@ impl State {
             let apps = overlay_text::build_view(c, &s.root, w, h, &built.views[0])?;
             let window = overlay_text::build_view(c, &s.root, w, h, &built.views[1])?;
             built.screens[i] = Some((apps, window));
+        }
+        // Pulsación nueva: ninguna tecla en `accent` todavía.
+        if let Some(Some((apps, window))) = self.built.as_mut().map(|b| &mut b.screens[i]) {
+            apps.light(None)?;
+            window.light(None)?;
         }
         self.set_layer(i, layer)?;
         self.overlays.show_only(i);
@@ -277,8 +301,8 @@ impl State {
         let Some(Some((apps, window))) = self.built.as_ref().map(|b| &b.screens[i]) else {
             return Ok(());
         };
-        apps.SetIsVisible(layer != Layer::Window)?;
-        window.SetIsVisible(layer == Layer::Window)
+        apps.container.SetIsVisible(layer != Layer::Window)?;
+        window.container.SetIsVisible(layer == Layer::Window)
     }
 
     fn hide(&mut self) {

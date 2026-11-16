@@ -354,20 +354,78 @@ fn build_shapes(
     container: &ContainerVisual,
     keep: &mut Vec<IUnknown>,
 ) -> windows::core::Result<()> {
-    let items: Vec<(f32, f32, char, String, bool)> =
-        keys().into_iter().map(|(x, y, l, app)| (x, y, l, app.to_owned(), true)).collect();
-    keep.push(shape_keys(compositor, container, &items)?.cast()?);
+    let items: Vec<(f32, f32, char, String, Tone)> =
+        keys().into_iter().map(|(x, y, l, app)| (x, y, l, app.to_owned(), Tone::Open)).collect();
+    let (visual, _) = shape_keys(compositor, &items, None)?;
+    container.Children()?.InsertAtTop(&visual)?;
+    keep.push(visual.cast()?);
     Ok(())
 }
 
-/// Dibuja las teclas `(x, y, letra, etiqueta, activa)` como formas (texto en
-/// contornos, lo rasteriza DWM) dentro de `container`. Las inactivas van
-/// tenues y sin etiqueta.
+use wm_model::mapview::Tone;
+
+/// Tokens oscuros de design.md §3.2 (el mapa es siempre oscuro).
+mod tokens {
+    use windows::UI::Color;
+    const fn c(a: u8, r: u8, g: u8, b: u8) -> Color {
+        Color { A: a, R: r, G: g, B: b }
+    }
+    /// `bg`, apenas translúcido (más transparente, el texto de las ventanas
+    /// de atrás se leía a través del mapa).
+    pub const PANEL: Color = c(0xF8, 0x0E, 0x0E, 0x0F);
+    pub const SURFACE: Color = c(0xFF, 0x16, 0x16, 0x18);
+    /// `border` (7 %).
+    pub const BORDER: Color = c(0x12, 0xFF, 0xFF, 0xFF);
+    pub const TEXT: Color = c(0xFF, 0xED, 0xED, 0xEE);
+    pub const TEXT_2: Color = c(0xFF, 0x8E, 0x8E, 0x93);
+    pub const TEXT_3: Color = c(0xFF, 0x5A, 0x5A, 0x5F);
+    pub const ACCENT: Color = c(0xFF, 0x5B, 0x8C, 0xFF);
+}
+
+/// Margen del panel alrededor de las teclas, y alto del pie.
+const PAD: f32 = 24.0;
+const FOOTER: f32 = 36.0;
+const FOOTER_EM: f32 = 15.0;
+
+/// Las teclas de una capa ya dibujadas: su fondo, para pintar la elegida en
+/// `accent` ([`MapVisual::light`]).
+pub struct MapVisual {
+    pub container: ContainerVisual,
+    keys: Vec<(char, windows::UI::Composition::CompositionSpriteShape)>,
+    key_brush: CompositionColorBrush,
+    accent_brush: CompositionColorBrush,
+    lit: Option<char>,
+}
+
+impl MapVisual {
+    /// Pinta `letter` en `accent` (y despinta la anterior). `None`: ninguna.
+    pub fn light(&mut self, letter: Option<char>) -> windows::core::Result<()> {
+        if self.lit == letter {
+            return Ok(());
+        }
+        for (l, shape) in &self.keys {
+            if Some(*l) == self.lit {
+                shape.SetFillBrush(&self.key_brush)?;
+            }
+            if Some(*l) == letter {
+                shape.SetFillBrush(&self.accent_brush)?;
+            }
+        }
+        self.lit = letter;
+        Ok(())
+    }
+}
+
+type KeyShapes = Vec<(char, windows::UI::Composition::CompositionSpriteShape)>;
+
+/// Dibuja las teclas `(x, y, letra, etiqueta, tono)` como formas (texto en
+/// contornos, lo rasteriza DWM) y, si hay, el pie debajo. Devuelve el visual
+/// y el fondo de cada tecla.
 fn shape_keys(
     compositor: &Compositor,
-    container: &ContainerVisual,
-    items: &[(f32, f32, char, String, bool)],
-) -> windows::core::Result<windows::UI::Composition::ShapeVisual> {
+    items: &[(f32, f32, char, String, Tone)],
+    footer: Option<&str>,
+) -> windows::core::Result<(windows::UI::Composition::ShapeVisual, KeyShapes)> {
     let geist = Geist::load()?;
     let d2d: ID2D1Factory = d2d_factory()?;
     let bold = font(&geist, &geist.semibold)?;
@@ -375,48 +433,62 @@ fn shape_keys(
 
     let (w, h) = map_size();
     let visual = compositor.CreateShapeVisual()?;
-    visual.SetSize(Vector2 { X: w, Y: h })?;
+    visual.SetSize(Vector2 { X: w, Y: h + if footer.is_some() { FOOTER } else { 0.0 } })?;
     let shapes = visual.Shapes()?;
-    let color = |a, r, g, b| compositor.CreateColorBrushWithColor(Color { A: a, R: r, G: g, B: b });
-    let key_brush = color(230, 32, 32, 36)?;
-    let dim_key_brush = color(200, 24, 24, 28)?;
-    let text_brush = color(255, 240, 240, 240)?;
-    let dim_text_brush = color(255, 90, 94, 102)?;
-    let name_brush = color(255, 150, 160, 175)?;
-    for (x, y, letter, label, active) in items {
+    let brush = |c: Color| compositor.CreateColorBrushWithColor(c);
+    let key_brush = brush(tokens::SURFACE)?;
+    let border_brush = brush(tokens::BORDER)?;
+    let text = brush(tokens::TEXT)?;
+    let text_2 = brush(tokens::TEXT_2)?;
+    let text_3 = brush(tokens::TEXT_3)?;
+    let mut key_shapes = Vec::new();
+    for (x, y, letter, label, tone) in items {
         let (x, y) = (*x, *y);
         let rect = compositor.CreateRoundedRectangleGeometry()?;
         rect.SetSize(Vector2 { X: KEY, Y: KEY })?;
         rect.SetCornerRadius(Vector2 { X: 10.0, Y: 10.0 })?;
         let key = compositor.CreateSpriteShapeWithGeometry(&rect)?;
-        key.SetFillBrush(if *active { &key_brush } else { &dim_key_brush })?;
+        key.SetFillBrush(&key_brush)?;
+        key.SetStrokeBrush(&border_brush)?;
+        key.SetStrokeThickness(1.0)?;
         key.SetOffset(Vector2 { X: x, Y: y })?;
         shapes.Append(&key)?;
+        key_shapes.push((*letter, key));
 
-        let brush = if *active { &text_brush } else { &dim_text_brush };
+        let letter_brush = if *tone == Tone::Dim { &text_3 } else { &text };
         let (g, lw) = text_geometry(&d2d, &bold, &letter.to_string(), LETTER_EM)?;
-        shape_text(compositor, &shapes, g, brush, x + (KEY - lw) / 2.0, y + 8.0)?;
-        if *active && !label.is_empty() {
-            let (g, nw) = text_geometry(&d2d, &regular, label, NAME_EM)?;
-            let nx = x + ((KEY - nw) / 2.0).max(4.0);
-            shape_text(compositor, &shapes, g, &name_brush, nx, y + KEY - 26.0)?;
+        shape_text(compositor, &shapes, g, letter_brush, x + (KEY - lw) / 2.0, y + 8.0)?;
+        if *tone != Tone::Dim && !label.is_empty() {
+            let label_brush = if *tone == Tone::Open { &text } else { &text_2 };
+            let (mut g, mut nw) = text_geometry(&d2d, &regular, label, NAME_EM)?;
+            // Si no entra en la tecla, más chica.
+            let room = KEY - 10.0;
+            if nw > room {
+                (g, nw) = text_geometry(&d2d, &regular, label, NAME_EM * room / nw)?;
+            }
+            let nx = x + (KEY - nw) / 2.0;
+            shape_text(compositor, &shapes, g, label_brush, nx, y + KEY - 26.0)?;
         }
     }
-    container.Children()?.InsertAtTop(&visual)?;
-    Ok(visual)
+    if let Some(footer) = footer {
+        let (g, fw) = text_geometry(&d2d, &regular, footer, FOOTER_EM)?;
+        shape_text(compositor, &shapes, g, &text_2, (w - fw) / 2.0, h + 14.0)?;
+    }
+    Ok((visual, key_shapes))
 }
 
-/// El mapa de una capa (hito 2a): las teclas de `view`, centradas en un área
-/// de `area_w` × `area_h`, dentro de `parent`. Devuelve el contenedor (para
-/// mostrarlo u ocultarlo con `SetIsVisible`).
+/// El mapa de una capa: panel, teclas de `view` y pie, centrado en un área
+/// de `area_w` × `area_h`, dentro de `parent`. Se muestra u oculta con
+/// `SetIsVisible` sobre [`MapVisual::container`].
 pub fn build_view(
     compositor: &Compositor,
     parent: &ContainerVisual,
     area_w: f32,
     area_h: f32,
     view: &wm_model::mapview::MapView,
-) -> windows::core::Result<ContainerVisual> {
-    let (w, h) = map_size();
+) -> windows::core::Result<MapVisual> {
+    let (kw, kh) = map_size();
+    let (w, h) = (kw + 2.0 * PAD, kh + FOOTER + 2.0 * PAD);
     let container = compositor.CreateContainerVisual()?;
     container.SetSize(Vector2 { X: w, Y: h })?;
     // Si no entra en el 90 % del monitor, se achica entero.
@@ -424,18 +496,36 @@ pub fn build_view(
     container.SetScale(Vector3 { X: scale, Y: scale, Z: 1.0 })?;
     let (sw, sh) = (w * scale, h * scale);
     container.SetOffset(Vector3 { X: (area_w - sw) / 2.0, Y: (area_h - sh) / 2.0, Z: 0.0 })?;
-    let positions = keys();
-    let items: Vec<(f32, f32, char, String, bool)> = view
+
+    let panel = compositor.CreateShapeVisual()?;
+    panel.SetSize(Vector2 { X: w, Y: h })?;
+    let rect = compositor.CreateRoundedRectangleGeometry()?;
+    rect.SetSize(Vector2 { X: w, Y: h })?;
+    rect.SetCornerRadius(Vector2 { X: 14.0, Y: 14.0 })?;
+    let bg = compositor.CreateSpriteShapeWithGeometry(&rect)?;
+    bg.SetFillBrush(&compositor.CreateColorBrushWithColor(tokens::PANEL)?)?;
+    bg.SetStrokeBrush(&compositor.CreateColorBrushWithColor(tokens::BORDER)?)?;
+    bg.SetStrokeThickness(1.0)?;
+    panel.Shapes()?.Append(&bg)?;
+    container.Children()?.InsertAtTop(&panel)?;
+
+    let items: Vec<(f32, f32, char, String, Tone)> = view
         .cells
         .iter()
-        .zip(positions)
-        .map(|(c, (x, y, _, _))| {
-            (x, y, c.letter, c.label.clone(), c.tone == wm_model::mapview::Tone::Normal)
-        })
+        .zip(keys())
+        .map(|(c, (x, y, _, _))| (x, y, c.letter, c.label.clone(), c.tone))
         .collect();
-    shape_keys(compositor, &container, &items)?;
+    let (keys_visual, key_shapes) = shape_keys(compositor, &items, Some(&view.footer))?;
+    keys_visual.SetOffset(Vector3 { X: PAD, Y: PAD, Z: 0.0 })?;
+    container.Children()?.InsertAtTop(&keys_visual)?;
     parent.Children()?.InsertAtTop(&container)?;
-    Ok(container)
+    Ok(MapVisual {
+        container,
+        keys: key_shapes,
+        key_brush: compositor.CreateColorBrushWithColor(tokens::SURFACE)?,
+        accent_brush: compositor.CreateColorBrushWithColor(tokens::ACCENT)?,
+        lit: None,
+    })
 }
 
 // ---------------------------------------------------------------------------

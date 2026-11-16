@@ -6,7 +6,7 @@ use crate::keyboard::{
     HyperKeyboard, Inject, KeyEvent, Layer, MAP_DELAY_MS, VK_CAPITAL, VK_ESCAPE, VK_LMENU,
 };
 use crate::map::MAP_MAX_US;
-use crate::world::{Effect, Event, World};
+use crate::world::{Effect, Event, WinInfo, WinKey, World};
 
 const MS: u64 = 1000;
 
@@ -21,6 +21,10 @@ struct Rig {
     quit: bool,
     toggles: usize,
     resets: usize,
+    /// Ventanas abiertas que ve el `Scan` del mapa.
+    open: Vec<WinInfo>,
+    views: Vec<crate::mapview::MapView>,
+    keys_lit: Vec<char>,
 }
 
 impl Rig {
@@ -36,13 +40,26 @@ impl Rig {
             quit: false,
             toggles: 0,
             resets: 0,
+            open: Vec::new(),
+            views: Vec::new(),
+            keys_lit: Vec::new(),
         }
     }
 
     fn apply(&mut self, effects: Vec<Effect>) {
         for e in effects {
             match e {
-                Effect::ShowMap { layer } => {
+                Effect::Scan { req } => {
+                    let windows = self.open.clone();
+                    self.feed(Event::Windows { req, result: Ok((windows, None)) });
+                }
+                Effect::MapKey { letter } => {
+                    assert!(self.shown.is_some(), "MapKey sin mapa");
+                    self.keys_lit.push(letter);
+                }
+                Effect::ShowMap { layer, views } => {
+                    assert_eq!(views.len(), 2);
+                    self.views = views;
                     assert!(self.shown.is_none(), "dos ShowMap seguidos");
                     self.shown = Some(layer);
                     self.shows += 1;
@@ -326,4 +343,36 @@ fn the_map_always_ends_hidden_and_only_shows_with_hyper_down() {
         assert!(!r.visible(), "secuencia {seq}: el mapa quedó visible");
         assert_eq!(r.w.deadline(), None, "secuencia {seq}: quedó un plazo");
     }
+}
+
+#[test]
+fn the_map_lists_the_open_apps_and_lights_the_key_just_used() {
+    use crate::mapview::Tone;
+    let mut r = Rig::new();
+    r.open =
+        vec![WinInfo { key: WinKey { hwnd: 1, pid: 10 }, app: "brave".into(), title: "x".into() }];
+    r.key(VK_CAPITAL, true);
+    r.wait(500);
+    let apps = &r.views[0];
+    let b = apps.cells.iter().find(|c| c.letter == 'B').unwrap();
+    assert_eq!((b.label.as_str(), b.tone), ("Brave", Tone::Normal), "automática por inicial");
+    r.key(b'Q', true);
+    r.key(b'Q', false);
+    assert_eq!(r.keys_lit, vec!['Q']);
+    r.key(VK_CAPITAL, false);
+}
+
+#[test]
+fn releasing_caps_before_the_scan_answers_shows_nothing() {
+    let mut r = Rig::new();
+    r.key(VK_CAPITAL, true);
+    r.wait(399);
+    // El plazo vence y pide las ventanas; Caps se suelta antes de la respuesta.
+    r.now_us += 1000;
+    let effects = r.w.step(Event::Tick, r.now_us);
+    let Some(Effect::Scan { req }) = effects.first().cloned() else { panic!("{effects:?}") };
+    r.key(VK_CAPITAL, false);
+    let effects = r.w.step(Event::Windows { req, result: Ok((Vec::new(), None)) }, r.now_us);
+    assert!(effects.is_empty(), "{effects:?}");
+    assert_eq!(r.shows, 0);
 }
