@@ -12,7 +12,10 @@
 //! 4. **marco DWM**: colocar por el marco visible con error ≤ 1 px;
 //! 5. **overlay**: crear los overlays de Composition con el mapa de teclado;
 //! 6. **`wm core`**: el core real, manejado con teclas inyectadas: `Caps` + W
-//!    lleva a otro títere (son `wm.exe`) y `Caps` + Esc lo cierra con código 0.
+//!    lleva a otro títere (son `wm.exe`) y `Caps` + Esc lo cierra con código 0;
+//! 7. **capa de ventana** (con el mismo core): `Caps` + Alt + A = mitad
+//!    izquierda, W enseguida = esquina, D + S juntas = la otra esquina, con
+//!    el marco visible a ≤ 1 px.
 //!
 //! Imprime una línea por chequeo y, con `--summary`, agrega una tabla en
 //! Markdown a ese archivo (en la CI, `$GITHUB_STEP_SUMMARY`). Sale con 0 si
@@ -158,7 +161,9 @@ pub fn run(args: &[String]) -> ExitCode {
         hiding(&mut r, puppets[1]);
         frame(&mut r, puppets[2]);
     } else {
-        for name in ["foco", "wm core", "hook + SendInput", "esconder", "marco DWM"] {
+        for name in
+            ["foco", "wm core", "capa de ventana", "hook + SendInput", "esconder", "marco DWM"]
+        {
             r.check(name, Status::Skip, "sin títeres".into());
         }
     }
@@ -355,6 +360,13 @@ fn core(r: &mut Report, puppets: &[WindowId]) {
         std::thread::sleep(Duration::from_millis(2));
     };
 
+    // Capa de ventana sobre el títere que quedó al frente.
+    if let Some(id) = windows_list::foreground().filter(|id| puppets.contains(id)) {
+        arrange_checks(r, id);
+    } else {
+        r.check("capa de ventana", Status::Skip, "no quedó un títere al frente".into());
+    }
+
     session::send_hyper_chord(0x1B); // Caps + Esc: salir
     let exit = Instant::now();
     let code = loop {
@@ -375,6 +387,65 @@ fn core(r: &mut Report, puppets: &[WindowId]) {
         code.map_or_else(|| "no salió en 3 s".into(), |c| format!("código {c}")),
     );
     r.check(name, if ok { Status::Ok } else { Status::Fail }, detail);
+}
+
+/// `Caps` + Alt + teclas con el core real corriendo; mide cuándo el marco
+/// visible llega a cada ubicación.
+fn arrange_checks(r: &mut Report, id: WindowId) {
+    use wm_model::place::{MonitorObs, edge_error, monitor_of};
+    use wm_model::{Placement, place};
+    const CAPS: u8 = 0x14;
+    const ALT: u8 = 0xA4;
+
+    let monitors: Vec<MonitorObs> = wm_platform::monitors()
+        .iter()
+        .map(|m| MonitorObs { bounds: m.bounds, work: m.work_area, dpi: m.dpi })
+        .collect();
+    let Some(frame) = wm_platform::ghost::frame_bounds(id) else {
+        r.check("capa de ventana", Status::Fail, "no se pudo leer el marco".into());
+        return;
+    };
+    let Some(m) = monitor_of(&monitors, frame) else {
+        r.check("capa de ventana", Status::Fail, "no hay monitores".into());
+        return;
+    };
+    let work = monitors[m].work;
+    // (teclas después de Caps + Alt, ubicación esperada, nombre)
+    let steps: [(&[u8], Placement, &str); 3] = [
+        (b"A", Placement::LeftHalf, "A → mitad izquierda"),
+        (b"W", Placement::TopLeft, "W enseguida → esquina"),
+        (b"DS", Placement::BottomRight, "D + S juntas → esquina"),
+    ];
+    let mut parts = Vec::new();
+    let mut all_ok = true;
+    for (keys, placement, label) in steps {
+        let mut seq = vec![(CAPS, true), (ALT, true)];
+        seq.extend(keys.iter().map(|&k| (k, true)));
+        seq.extend(keys.iter().rev().map(|&k| (k, false)));
+        seq.extend([(ALT, false), (CAPS, false)]);
+        let target = place(work, placement);
+        let start = Instant::now();
+        session::send_keys(&seq);
+        let reached = loop {
+            let err =
+                wm_platform::ghost::frame_bounds(id).map_or(i32::MAX, |f| edge_error(f, target));
+            if err <= 1 {
+                break Some(start.elapsed());
+            }
+            if start.elapsed() > Duration::from_secs(1) {
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        all_ok &= reached.is_some();
+        parts.push(match reached {
+            Some(d) => format!("{label} en {}", ms(d)),
+            None => format!("{label}: NO llegó"),
+        });
+        std::thread::sleep(Duration::from_millis(150));
+    }
+    let status = if all_ok { Status::Ok } else { Status::Fail };
+    r.check("capa de ventana", status, parts.join("; "));
 }
 
 fn hook(r: &mut Report, target: WindowId) {

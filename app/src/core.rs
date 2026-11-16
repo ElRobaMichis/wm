@@ -88,7 +88,7 @@ pub fn run() -> ExitCode {
 
 fn main_loop(brain: &mut Brain) {
     loop {
-        match input::wait(brain.ops.next_deadline()) {
+        match input::wait(brain.next_deadline()) {
             Wake::Quit => break,
             Wake::Input(event) => {
                 brain.on_input(event);
@@ -102,6 +102,7 @@ fn main_loop(brain: &mut Brain) {
             Wake::Ops | Wake::Timeout | Wake::Ping(_) => {}
         }
         brain.collect();
+        brain.tick();
         if brain.quit {
             break;
         }
@@ -112,6 +113,7 @@ fn banner(log: &Log, bindings: &[AppBinding], config: Option<&PathBuf>, test_mod
     log.line("wm core activo.");
     log.line("  Caps + letra    ir a la app con esa inicial (repetir = siguiente ventana)");
     log.line("  Caps (toque)    Bloq Mayús normal");
+    log.line("  Caps + Alt + W/A/S/D   mitades; dos juntas (o seguidas) = esquina");
     log.line("  Caps + Esc      salir (también Ctrl+C)");
     if test_mode {
         log.line("  MODO PRUEBA     Caps + F10 = pánico a propósito (muestra todo y sale con 3)");

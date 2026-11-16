@@ -162,6 +162,14 @@ pub fn send_hyper_chord(vk: u8) -> u32 {
     unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) }
 }
 
+/// Inyecta una secuencia de teclas (`(vk, abajo)`) como si fuera el usuario,
+/// sin nuestra marca. Devuelve cuántos eventos aceptó `SendInput`.
+pub fn send_keys(keys: &[(u8, bool)]) -> u32 {
+    let inputs: Vec<INPUT> = keys.iter().map(|&(vk, down)| key(vk.into(), !down)).collect();
+    // SAFETY: slice válido de estructuras INPUT completas.
+    unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) }
+}
+
 /// ¿La tecla figura apretada en el estado asíncrono del sistema?
 pub fn key_down(vk: u8) -> bool {
     // SAFETY: sin precondiciones.

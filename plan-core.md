@@ -311,6 +311,7 @@ Latencia esperada: dos saltos de carril, como `Caps + letra` hoy (1,9-4,4 ms de 
 
 **Avance:**
 - **Hito 0 (15/11/2026): hecho, salvo `Inspect`, que pasa al hito 1a** (es su primer consumidor). Señales de capa y direcciones mantenidas en el teclado; `wm_model::world` con la capa de apps y una plataforma de mentira en sus pruebas; `app/src/brain.rs` y `core.rs` como cáscara; `WinKey` (HWND + proceso, verificado antes de traer al frente); `Scan` que incluye nuestras ventanas escondidas; log en `%LOCALAPPDATA%\wm\wm.log`; pánico → mostrar todo y salir con 3 (probado con `Caps + F10` en `WM_TEST=1`). En `wm ci-probe`, el chequeo "wm core" maneja el core real con teclas inyectadas.
+- **Hito 1a (15/11/2026): hecho en el modelo y con títeres.** `wm_model::place` (direcciones, esquinas, monitor de la ventana, rect exterior con bordes invisibles) y la colocación en `World` (Inspect → Place → chequeos a +16/50/120/250/600 ms → segunda pasada solo si la ventana ya se movió y quedó quieta en otro lugar; la última tecla gana; sin plazos pendientes, el brain duerme). 13 pruebas con una plataforma simulada (app lenta, tamaño mínimo, maximizada, pantalla completa, ventana que desaparece). Con el core real y un títere (`ci-probe`): A → mitad en 2,8 ms, W enseguida → esquina en 1,5 ms, D + S juntas → esquina en 1,7 ms, a ≤ 1 px. **Falta:** la prueba manual con Brave y Terminal.
 
 Pruebas: **P** = puras (`cargo test`, en la CI), **C** = `wm ci-probe` ampliado (job `ventanas`, x64 obligatorio), **M** = manual del autor, **U** = con la usuaria.
 

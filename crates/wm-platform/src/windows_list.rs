@@ -201,6 +201,76 @@ pub fn window_pid(id: WindowId) -> u32 {
     pid
 }
 
+/// Lo que el core necesita saber de una ventana para acomodarla
+/// (`wm_model::world::Obs`).
+#[derive(Debug, Clone)]
+pub struct Inspection {
+    pub id: WindowId,
+    pub pid: u32,
+    pub app: String,
+    pub title: String,
+    /// Marco visible (`DWMWA_EXTENDED_FRAME_BOUNDS`).
+    pub frame: wm_model::Rect,
+    /// `GetWindowRect`, con los bordes invisibles.
+    pub outer: wm_model::Rect,
+    pub dpi: u32,
+    pub maximized: bool,
+    pub minimized: bool,
+    pub monitors: Vec<crate::MonitorInfo>,
+}
+
+/// Observa una ventana. `None` = la que tiene el foco, si es una ventana de
+/// usuario de otro proceso (si no, error: no se acomoda). Con `(id, pid)`,
+/// falla si el HWND ahora es de otro proceso. Solo lecturas que no se traban
+/// con apps colgadas (architecture.md §13.6).
+pub fn inspect(target: Option<(WindowId, u32)>) -> Result<Inspection, String> {
+    let id = match target {
+        Some((id, pid)) => {
+            if window_pid(id) != pid {
+                return Err("la ventana ya no existe".to_owned());
+            }
+            id
+        }
+        None => {
+            let id = foreground().ok_or("no hay ninguna ventana al frente")?;
+            let pid = window_pid(id);
+            if pid == std::process::id() || !is_user_window(id.hwnd()) {
+                return Err("la ventana al frente no se acomoda".to_owned());
+            }
+            id
+        }
+    };
+    let pid = window_pid(id);
+    let frame = crate::ghost::frame_bounds(id).ok_or("no se pudo leer el marco")?;
+    let outer = crate::ghost::window_rect(id).ok_or("no se pudo leer la ventana")?;
+    // SAFETY: lectura sin efectos sobre un HWND (si ya no existe, falso).
+    let minimized = unsafe { IsIconic(id.hwnd()) }.as_bool();
+    Ok(Inspection {
+        id,
+        pid,
+        app: process_name(pid).unwrap_or_default(),
+        title: title(id.hwnd()),
+        frame,
+        outer,
+        dpi: crate::geometry::window_dpi(id),
+        maximized: crate::hide::is_maximized(id),
+        minimized,
+        monitors: crate::monitors(),
+    })
+}
+
+/// Saca una ventana de maximizada o minimizada sin activarla (asíncrono: se
+/// postea al hilo de la app, que lo aplica antes que un `place_async`
+/// posterior).
+pub fn normalize(id: WindowId) -> Result<(), String> {
+    use windows::Win32::UI::WindowsAndMessaging::{SW_SHOWNOACTIVATE, ShowWindowAsync};
+    // SAFETY: pedido asíncrono a un HWND; si no existe, falla sin efectos.
+    let ok = unsafe { ShowWindowAsync(id.hwnd(), SW_SHOWNOACTIVATE) }.as_bool();
+    // Devuelve si antes era visible, no si funcionó: solo es error si la
+    // ventana ya no existe.
+    if !ok && window_pid(id) == 0 { Err("la ventana ya no existe".to_owned()) } else { Ok(()) }
+}
+
 pub fn foreground() -> Option<WindowId> {
     // SAFETY: sin precondiciones.
     let h = unsafe { GetForegroundWindow() };

@@ -79,6 +79,10 @@ pub enum Op {
     Focus(WindowId, u32),
     /// Mover y redimensionar (asíncrono).
     Place { id: WindowId, rect: Rect },
+    /// Observar una ventana (`None` = la que tiene el foco).
+    Inspect(Option<(WindowId, u32)>),
+    /// Sacar de maximizada o minimizada sin activar (asíncrono).
+    Normalize(WindowId),
     /// Esconder con un método.
     Hide { id: WindowId, method: HideMethod },
     /// Mostrar una ventana escondida por nosotros (con el método de su marca).
@@ -99,7 +103,9 @@ impl Op {
         match self {
             // `activate` puede esperar hasta 2 × 50 ms a que cambie el foco.
             Op::Focus(..) => Duration::from_millis(300),
-            Op::Place { .. } | Op::Scan => Duration::from_millis(50),
+            Op::Place { .. } | Op::Scan | Op::Inspect(_) | Op::Normalize(_) => {
+                Duration::from_millis(50)
+            }
             Op::Hide { method: HideMethod::ShellCloak, .. } | Op::Unhide(_) => {
                 Duration::from_millis(250)
             }
@@ -120,6 +126,7 @@ impl Op {
 pub enum Output {
     Nothing,
     Windows(Vec<WindowInfo>),
+    Inspection(windows_list::Inspection),
     Activation(Activation),
     Restored(RestoreReport),
 }
@@ -357,7 +364,9 @@ fn route(op: &Op) -> Lane {
     let cloaked = |id: &WindowId| hide::hidden_with(*id) == Some(HideMethod::ShellCloak);
     match op {
         Op::Focus(..) => Lane::Focus,
-        Op::Place { .. } | Op::Scan | Op::Launch(_) => Lane::Win,
+        Op::Place { .. } | Op::Scan | Op::Launch(_) | Op::Inspect(_) | Op::Normalize(_) => {
+            Lane::Win
+        }
         Op::Hide { id, method } => {
             if *method == HideMethod::ShellCloak || cloaked(id) {
                 Lane::Shell
@@ -474,6 +483,8 @@ impl Context {
             Op::Place { id, rect } => {
                 windows_list::place_async(*id, *rect).map(|()| Output::Nothing)
             }
+            Op::Inspect(target) => windows_list::inspect(*target).map(Output::Inspection),
+            Op::Normalize(id) => windows_list::normalize(*id).map(|()| Output::Nothing),
             Op::Hide { id, method } => self.hider(*method)?.hide(*id).map(|()| Output::Nothing),
             Op::Unhide(id) => {
                 // `show` usa el método de la marca; en `win` no hace falta COM.

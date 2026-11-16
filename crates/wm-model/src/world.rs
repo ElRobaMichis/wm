@@ -6,13 +6,81 @@
 //! devuelve los resultados como eventos. Así toda la lógica se prueba sin
 //! Windows, con una plataforma de mentira.
 //!
-//! Hito 0: la capa de apps (`Caps` + letra) y la capa del teclado. La capa de
-//! ventana y los escritorios se suman en los hitos 1 y 4.
+//! Hecho: la capa de apps (`Caps` + letra), la capa del teclado y, de la capa
+//! de ventana, mitades y esquinas (hito 1a). Los escritorios llegan en el
+//! hito 4.
+//!
+//! **Colocar una ventana** (plan-core.md §2.5): leer la ventana al frente
+//! (`Inspect`), pedir el rectángulo (`Place`) y verificar con plazos (+16,
+//! +50, +120, +250, +600 ms). Si el marco quedó lejos y ya no cambia, una
+//! segunda pasada con los márgenes nuevos; si sigue lejos (tamaño mínimo,
+//! app que no responde), se acepta lo logrado. Una sola colocación en curso
+//! por ventana: la última tecla gana. Sin plazos pendientes, el brain duerme.
 
 use std::collections::HashMap;
 
 use crate::apps::{AppBinding, Target, resolve};
 use crate::keyboard::{HyperAction, Layer};
+use crate::place::{
+    Dir, MonitorObs, edge_error, monitor_of, outer_for, placement_for, placement_name,
+};
+use crate::{Rect, place};
+
+/// Una ventana observada con `Inspect` (siempre viene de Windows).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Obs {
+    pub key: WinKey,
+    pub app: String,
+    pub title: String,
+    /// Marco visible (`DWMWA_EXTENDED_FRAME_BOUNDS`).
+    pub frame: Rect,
+    /// Rectángulo de la ventana (`GetWindowRect`), con los bordes invisibles.
+    pub outer: Rect,
+    pub dpi: u32,
+    pub maximized: bool,
+    pub minimized: bool,
+    /// Los monitores en el momento de la observación.
+    pub monitors: Vec<MonitorObs>,
+}
+
+/// Chequeos después de pedir una ubicación, en ms desde el pedido.
+const CHECKS_MS: [u64; 5] = [16, 50, 120, 250, 600];
+
+/// Una segunda tecla perpendicular dentro de este plazo forma una esquina
+/// (keyboard-design.md §14.5).
+const COMBO_US: u64 = 1_000_000;
+
+/// Error aceptado por borde.
+const TOLERANCE_PX: i32 = 1;
+
+/// Una colocación en curso.
+#[derive(Debug, Clone)]
+struct Job {
+    id: u64,
+    what: String,
+    target: Rect,
+    key_us: u64,
+    pass: u8,
+    /// Cuándo se pidió la ubicación de esta pasada.
+    placed_us: u64,
+    /// Próximo chequeo (índice en `CHECKS_MS`).
+    check: usize,
+    /// Esperando un `Inspect` de verificación.
+    inspecting: bool,
+    last_frame: Option<Rect>,
+    /// Marco al pedir esta pasada: mientras siga igual, la app todavía no
+    /// aplicó el pedido (no es "quedó quieta en otro lugar").
+    from_frame: Rect,
+}
+
+/// La última dirección aplicada, para formar esquinas en secuencia.
+#[derive(Debug, Clone, Copy)]
+struct Combo {
+    win: WinKey,
+    dir: Dir,
+    at_us: u64,
+    target: Rect,
+}
 
 /// Identificador de un pedido del modelo a la plataforma.
 pub type Req = u64;
@@ -72,6 +140,16 @@ pub enum Event {
     },
     /// Asignaciones nuevas (al arrancar o al recargar `apps.txt`).
     Bindings(Vec<AppBinding>),
+    Inspected {
+        req: Req,
+        result: Result<Obs, String>,
+    },
+    Placed {
+        req: Req,
+        result: Result<(), String>,
+    },
+    /// Venció el plazo de [`World::deadline`].
+    Tick,
 }
 
 /// Lo que el modelo le pide a la plataforma.
@@ -87,6 +165,22 @@ pub enum Effect {
     Launch {
         req: Req,
         path: String,
+    },
+    /// Observar una ventana (`None` = la que tiene el foco, si se puede
+    /// acomodar).
+    Inspect {
+        req: Req,
+        win: Option<WinKey>,
+    },
+    /// Pedir el rectángulo exterior (asíncrono, sin activar).
+    Place {
+        req: Req,
+        win: WinKey,
+        rect: Rect,
+    },
+    /// Sacarla de maximizada (o minimizada) sin activarla.
+    Normalize {
+        win: WinKey,
     },
     Log(String),
     /// Terminar el core (Hyper + Esc, hasta que exista la bandeja).
@@ -123,6 +217,23 @@ enum Pending {
         app: String,
         path: String,
     },
+    /// Capa de ventana: esperando la ventana al frente.
+    Arrange {
+        dir: Dir,
+        held: u8,
+        key_us: u64,
+        what: String,
+    },
+    /// Verificar una colocación.
+    Verify {
+        win: WinKey,
+        job: u64,
+    },
+    /// Respuesta del pedido de ubicación.
+    PlaceCmd {
+        win: WinKey,
+        job: u64,
+    },
 }
 
 /// El estado del core.
@@ -133,6 +244,9 @@ pub struct World {
     next_req: Req,
     pending: HashMap<Req, Pending>,
     activations: Activations,
+    jobs: HashMap<WinKey, Job>,
+    next_job: u64,
+    combo: Option<Combo>,
 }
 
 impl World {
@@ -157,6 +271,17 @@ impl World {
         self.pending.len()
     }
 
+    /// Colocaciones en curso.
+    pub fn placing(&self) -> usize {
+        self.jobs.len()
+    }
+
+    /// Cuándo hay que despertar al modelo con [`Event::Tick`] (µs del mismo
+    /// reloj que `step`). `None`: nada pendiente, el brain duerme.
+    pub fn deadline(&self) -> Option<u64> {
+        self.jobs.values().filter(|j| !j.inspecting).map(next_check_us).min()
+    }
+
     fn req(&mut self) -> Req {
         self.next_req += 1;
         self.next_req
@@ -167,14 +292,14 @@ impl World {
     pub fn step(&mut self, event: Event, now_us: u64) -> Vec<Effect> {
         let mut out = Vec::new();
         match event {
-            Event::Action { action, held: _, age_ms } => {
+            Event::Action { action, held, age_ms } => {
                 if age_ms > MAX_ACTION_AGE_MS {
                     let what = describe(action);
                     out.push(Effect::Log(format!(
                         "Acción descartada: llegó {age_ms} ms tarde ({what})."
                     )));
                 } else {
-                    self.action(action, age_ms, now_us, &mut out);
+                    self.action(action, held, age_ms, now_us, &mut out);
                 }
             }
             Event::Layer(layer) => self.layer = layer,
@@ -213,6 +338,26 @@ impl World {
                     Err(e) => out.push(Effect::Log(format!("Caps + {key}: {e}"))),
                 }
             }
+            Event::Inspected { req, result } => match self.pending.remove(&req) {
+                Some(Pending::Arrange { dir, held, key_us, what }) => match result {
+                    Ok(obs) => self.arrange(dir, held, key_us, what, obs, now_us, &mut out),
+                    Err(e) => out.push(Effect::Log(format!("{what}: {e}"))),
+                },
+                Some(Pending::Verify { win, job }) => {
+                    self.verify(win, job, result, now_us, &mut out)
+                }
+                _ => {}
+            },
+            Event::Placed { req, result } => {
+                if let Some(Pending::PlaceCmd { win, job }) = self.pending.remove(&req)
+                    && let Err(e) = result
+                    && self.jobs.get(&win).is_some_and(|j| j.id == job)
+                {
+                    let j = self.jobs.remove(&win).expect("recién visto");
+                    out.push(Effect::Log(format!("{}: {e}", j.what)));
+                }
+            }
+            Event::Tick => self.tick(now_us, &mut out),
             Event::Launched { req, result } => {
                 let Some(Pending::Launch { letter, app, path }) = self.pending.remove(&req) else {
                     return out;
@@ -227,7 +372,14 @@ impl World {
         out
     }
 
-    fn action(&mut self, action: HyperAction, age_ms: u32, now_us: u64, out: &mut Vec<Effect>) {
+    fn action(
+        &mut self,
+        action: HyperAction,
+        held: u8,
+        age_ms: u32,
+        now_us: u64,
+        out: &mut Vec<Effect>,
+    ) {
         match action {
             HyperAction::Letter { letter, thumb: false } => {
                 let req = self.req();
@@ -236,8 +388,15 @@ impl World {
                 out.push(Effect::Scan { req });
             }
             HyperAction::Letter { letter, thumb: true } => {
-                let key = letter as char;
-                out.push(Effect::Log(format!("Caps + Alt + {key}: capa de ventana, pendiente.")));
+                let what = format!("Caps + Alt + {}", letter as char);
+                if let Some(dir) = Dir::from_letter(letter) {
+                    let req = self.req();
+                    let key_us = now_us.saturating_sub(u64::from(age_ms) * 1000);
+                    self.pending.insert(req, Pending::Arrange { dir, held, key_us, what });
+                    out.push(Effect::Inspect { req, win: None });
+                } else {
+                    out.push(Effect::Log(format!("{what}: todavía no hace nada.")));
+                }
             }
             HyperAction::Digit { digit, thumb } => {
                 let what = if thumb { "llevar a" } else { "ir a" };
@@ -248,6 +407,160 @@ impl World {
             HyperAction::Escape => out.push(Effect::Quit),
             HyperAction::Other { .. } => {}
         }
+    }
+
+    /// Mitades y esquinas: la ventana al frente ya observada.
+    #[allow(clippy::too_many_arguments)]
+    fn arrange(
+        &mut self,
+        dir: Dir,
+        held: u8,
+        key_us: u64,
+        what: String,
+        obs: Obs,
+        now_us: u64,
+        out: &mut Vec<Effect>,
+    ) {
+        if obs.minimized {
+            out.push(Effect::Log(format!("{what}: la ventana está minimizada.")));
+            return;
+        }
+        let Some(m) = monitor_of(&obs.monitors, obs.frame) else {
+            out.push(Effect::Log(format!("{what}: no hay monitores.")));
+            return;
+        };
+        let monitor = obs.monitors[m];
+        if !obs.maximized && obs.frame == monitor.bounds {
+            out.push(Effect::Log(format!("{what}: {} está en pantalla completa.", obs.app)));
+            return;
+        }
+        let perp = dir.held_perpendicular(held).or_else(|| {
+            self.combo
+                .filter(|c| {
+                    c.win == obs.key
+                        && c.dir.perpendicular(dir)
+                        && now_us.saturating_sub(c.at_us) <= COMBO_US
+                        && edge_error(obs.frame, c.target) <= TOLERANCE_PX
+                })
+                .map(|c| c.dir)
+        });
+        let placement = placement_for(dir, perp);
+        let target = place(monitor.work, placement);
+        self.combo = Some(Combo { win: obs.key, dir, at_us: now_us, target });
+        let what = format!("{what} → {} ({})", placement_name(placement), obs.app);
+        if !obs.maximized && edge_error(obs.frame, target) <= TOLERANCE_PX {
+            // Repetir la dirección empuja al monitor vecino (hito 1b).
+            self.jobs.remove(&obs.key);
+            out.push(Effect::Log(format!("{what}: ya estaba ahí.")));
+            return;
+        }
+        if obs.maximized {
+            out.push(Effect::Normalize { win: obs.key });
+        }
+        let rect = outer_for(obs.frame, obs.outer, target, obs.dpi, obs.dpi);
+        self.next_job += 1;
+        let job = Job {
+            id: self.next_job,
+            what,
+            target,
+            key_us,
+            pass: 1,
+            placed_us: now_us,
+            check: 0,
+            inspecting: false,
+            last_frame: None,
+            from_frame: obs.frame,
+        };
+        // La última tecla gana: la colocación anterior de esta ventana se olvida.
+        self.jobs.insert(obs.key, job);
+        self.send_place(obs.key, rect, out);
+    }
+
+    fn send_place(&mut self, win: WinKey, rect: Rect, out: &mut Vec<Effect>) {
+        let job = self.jobs[&win].id;
+        let req = self.req();
+        self.pending.insert(req, Pending::PlaceCmd { win, job });
+        out.push(Effect::Place { req, win, rect });
+    }
+
+    /// Lanza los chequeos vencidos.
+    fn tick(&mut self, now_us: u64, out: &mut Vec<Effect>) {
+        let due: Vec<(WinKey, u64)> = self
+            .jobs
+            .iter()
+            .filter(|(_, j)| !j.inspecting && next_check_us(j) <= now_us)
+            .map(|(w, j)| (*w, j.id))
+            .collect();
+        for (win, job) in due {
+            if let Some(j) = self.jobs.get_mut(&win) {
+                j.inspecting = true;
+            }
+            let req = self.req();
+            self.pending.insert(req, Pending::Verify { win, job });
+            out.push(Effect::Inspect { req, win: Some(win) });
+        }
+    }
+
+    fn verify(
+        &mut self,
+        win: WinKey,
+        job: u64,
+        result: Result<Obs, String>,
+        now_us: u64,
+        out: &mut Vec<Effect>,
+    ) {
+        let Some(j) = self.jobs.get_mut(&win).filter(|j| j.id == job) else {
+            return; // una colocación más nueva la reemplazó
+        };
+        j.inspecting = false;
+        let obs = match result {
+            Ok(obs) => obs,
+            Err(e) => {
+                let what = j.what.clone();
+                self.jobs.remove(&win);
+                out.push(Effect::Log(format!("{what}: {e}")));
+                return;
+            }
+        };
+        let error = edge_error(obs.frame, j.target);
+        let stable = j.last_frame == Some(obs.frame);
+        j.last_frame = Some(obs.frame);
+        j.check += 1;
+        let exhausted = j.check >= CHECKS_MS.len();
+        let since = |j: &Job| now_us.saturating_sub(j.key_us) as f64 / 1000.0;
+        if error <= TOLERANCE_PX {
+            let passes = if j.pass == 1 { "1 pasada" } else { "2 pasadas" };
+            let line =
+                format!("{}: {error} px en {passes}, {:.1} ms desde la tecla", j.what, since(j));
+            self.jobs.remove(&win);
+            out.push(Effect::Log(line));
+            return;
+        }
+        let moved = obs.frame != j.from_frame;
+        if !(stable && moved || exhausted) {
+            return; // la app todavía no aplicó el pedido o se está acomodando
+        }
+        if j.pass == 1 {
+            // Segunda pasada con los márgenes que tiene ahora (cambian al
+            // cruzar de DPI o al salir de maximizada).
+            j.pass = 2;
+            j.placed_us = now_us;
+            j.check = 0;
+            j.last_frame = None;
+            j.from_frame = obs.frame;
+            let dpi = obs.dpi;
+            let rect = outer_for(obs.frame, obs.outer, j.target, dpi, dpi);
+            self.send_place(win, rect, out);
+            return;
+        }
+        let (w, h) = (obs.frame.width(), obs.frame.height());
+        let line = format!(
+            "{}: quedó a {error} px ({w}×{h}; tamaño mínimo o app que no responde), {:.1} ms",
+            j.what,
+            since(j)
+        );
+        self.jobs.remove(&win);
+        out.push(Effect::Log(line));
     }
 
     fn go_to_app(
@@ -284,6 +597,11 @@ impl World {
             }
         }
     }
+}
+
+fn next_check_us(j: &Job) -> u64 {
+    let ms = CHECKS_MS.get(j.check).copied().unwrap_or(CHECKS_MS[CHECKS_MS.len() - 1]);
+    j.placed_us + ms * 1000
 }
 
 /// Texto corto de una acción, para el log.
@@ -380,6 +698,11 @@ mod tests {
                         }
                         Effect::Log(line) => self.logs.push(line),
                         Effect::Quit => self.quit = true,
+                        Effect::Inspect { .. }
+                        | Effect::Place { .. }
+                        | Effect::Normalize { .. } => {
+                            panic!("la capa de apps no coloca ventanas")
+                        }
                     }
                 }
             }

@@ -12,7 +12,8 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Sender};
 use std::time::{Duration, Instant};
 
-use wm_model::world::{Effect, Event, FocusReport, Req, WinInfo, WinKey, World};
+use wm_model::place::MonitorObs;
+use wm_model::world::{Effect, Event, FocusReport, Obs, Req, WinInfo, WinKey, World};
 use wm_platform::input::{self, InputEvent, ReinstallReason};
 use wm_platform::ops::{Op, Ops, OpsEvent, Output, Ticket};
 use wm_platform::windows_list::{self, WindowId};
@@ -80,6 +81,8 @@ enum Wait {
     Scan(Req),
     Focus(Req),
     Launch(Req),
+    Inspect(Req),
+    Place(Req),
     RestoreAtStart,
     RestoreAtExit,
 }
@@ -112,6 +115,23 @@ impl Brain {
         self.started.elapsed().as_micros() as u64
     }
 
+    /// Hasta cuándo puede dormir el brain: el primer plazo entre los carriles
+    /// de `ops` y los chequeos del modelo. `None`: nada pendiente.
+    pub fn next_deadline(&self) -> Option<Instant> {
+        let world = self.world.deadline().map(|us| self.started + Duration::from_micros(us));
+        match (self.ops.next_deadline(), world) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// Si venció el plazo del modelo, lo despierta.
+    pub fn tick(&mut self) {
+        if self.world.deadline().is_some_and(|t| t <= self.now_us()) {
+            self.feed(Event::Tick);
+        }
+    }
+
     /// Le pasa un evento al modelo y ejecuta lo que pida.
     pub fn feed(&mut self, event: Event) {
         let effects = self.world.step(event, self.now_us());
@@ -128,6 +148,18 @@ impl Brain {
                 Effect::Launch { req, path } => {
                     let t = self.ops.submit(Op::Launch(path));
                     self.waits.insert(t, Wait::Launch(req));
+                }
+                Effect::Inspect { req, win } => {
+                    let target = win.map(|k| (WindowId(k.hwnd), k.pid));
+                    let t = self.ops.submit(Op::Inspect(target));
+                    self.waits.insert(t, Wait::Inspect(req));
+                }
+                Effect::Place { req, win, rect } => {
+                    let t = self.ops.submit(Op::Place { id: WindowId(win.hwnd), rect });
+                    self.waits.insert(t, Wait::Place(req));
+                }
+                Effect::Normalize { win } => {
+                    self.ops.submit(Op::Normalize(WindowId(win.hwnd)));
                 }
                 Effect::Log(line) => self.log.line(line),
                 Effect::Quit => self.quit = true,
@@ -250,6 +282,14 @@ impl Brain {
                 self.feed(Event::Focused { req, result });
             }
             Wait::Launch(req) => self.feed(Event::Launched { req, result: result.map(|_| ()) }),
+            Wait::Inspect(req) => {
+                let result = result.and_then(|out| match out {
+                    Output::Inspection(i) => Ok(obs(i)),
+                    _ => Err("respuesta inesperada".to_owned()),
+                });
+                self.feed(Event::Inspected { req, result });
+            }
+            Wait::Place(req) => self.feed(Event::Placed { req, result: result.map(|_| ()) }),
             Wait::RestoreAtStart => {
                 if let Ok(Output::Restored(r)) = result
                     && !r.restored.is_empty()
@@ -260,6 +300,24 @@ impl Brain {
             }
             Wait::RestoreAtExit => {}
         }
+    }
+}
+
+fn obs(i: windows_list::Inspection) -> Obs {
+    Obs {
+        key: WinKey { hwnd: i.id.0, pid: i.pid },
+        app: i.app,
+        title: i.title,
+        frame: i.frame,
+        outer: i.outer,
+        dpi: i.dpi,
+        maximized: i.maximized,
+        minimized: i.minimized,
+        monitors: i
+            .monitors
+            .iter()
+            .map(|m| MonitorObs { bounds: m.bounds, work: m.work_area, dpi: m.dpi })
+            .collect(),
     }
 }
 
