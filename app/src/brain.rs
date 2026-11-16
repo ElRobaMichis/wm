@@ -36,7 +36,8 @@ const LOG_MAX_BYTES: u64 = 1024 * 1024;
 /// escribir a disco también, así que el brain nunca escribe directo.
 ///
 /// Escribe en la consola (si hay) y en `%LOCALAPPDATA%\wm\wm.log`, con la
-/// hora desde el arranque.
+/// fecha y hora local. Cada línea va en una sola escritura (el guardián
+/// escribe en el mismo archivo, ver [`append_line`]).
 #[derive(Clone)]
 pub struct Log(Sender<String>);
 
@@ -46,13 +47,12 @@ impl Log {
         let handle = std::thread::Builder::new()
             .name("wm-log".into())
             .spawn(move || {
-                let started = Instant::now();
                 let mut file = open_log_file();
                 for line in rx {
                     println!("{line}");
                     if let Some(f) = file.as_mut() {
-                        let t = started.elapsed().as_secs_f64();
-                        if writeln!(f, "[{t:9.3}] {line}").is_err() {
+                        let stamped = format!("[{}] {line}\n", wm_platform::clock::local_stamp());
+                        if f.write_all(stamped.as_bytes()).is_err() {
                             file = None; // disco lleno o sin permiso: solo consola
                         }
                     }
@@ -64,6 +64,20 @@ impl Log {
 
     pub fn line(&self, s: impl Into<String>) {
         let _ = self.0.send(s.into());
+    }
+}
+
+/// Una línea al log desde fuera del core (el guardián, el hook de pánico):
+/// abre, agrega y cierra, para no trabar la rotación. Sin consola es la
+/// única salida que queda.
+pub fn append_line(line: &str) {
+    let Some(path) = log_path() else { return };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let stamped = format!("[{}] {line}\n", wm_platform::clock::local_stamp());
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = f.write_all(stamped.as_bytes());
     }
 }
 

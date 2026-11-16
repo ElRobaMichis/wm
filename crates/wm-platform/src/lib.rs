@@ -27,6 +27,8 @@ pub mod hide;
 #[cfg(windows)]
 pub mod input;
 #[cfg(windows)]
+pub mod instance;
+#[cfg(windows)]
 pub mod native_settings;
 #[cfg(windows)]
 pub mod ops;

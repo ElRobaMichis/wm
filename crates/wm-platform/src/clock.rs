@@ -42,3 +42,14 @@ pub fn micros_since(earlier: i64) -> u64 {
 pub fn plus_micros(qpc: i64, us: u64) -> i64 {
     qpc + (i128::from(us) * i128::from(freq()) / 1_000_000) as i64
 }
+
+/// Fecha y hora local, para el log: `2026-11-16 04:21:07.123`.
+pub fn local_stamp() -> String {
+    use windows::Win32::System::SystemInformation::GetLocalTime;
+    // SAFETY: sin precondiciones.
+    let t = unsafe { GetLocalTime() };
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
+        t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, t.wMilliseconds
+    )
+}

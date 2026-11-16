@@ -182,3 +182,27 @@ pub fn caps_lock_on() -> bool {
     // SAFETY: sin precondiciones.
     unsafe { GetKeyState(0x14) & 1 != 0 }
 }
+
+/// ¿Windows se está apagando o cerrando la sesión?
+pub fn shutting_down() -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_SHUTTINGDOWN};
+    // SAFETY: sin precondiciones.
+    unsafe { GetSystemMetrics(SM_SHUTTINGDOWN) != 0 }
+}
+
+/// ¿Este proceso tiene consola? (`wmw.exe` no.)
+pub fn has_console() -> bool {
+    use windows::Win32::System::Console::GetConsoleWindow;
+    // SAFETY: sin precondiciones.
+    !unsafe { GetConsoleWindow() }.is_invalid()
+}
+
+/// Un cuadro de aviso (bloquea hasta que se cierra).
+pub fn warning_box(title: &str, text: &str) {
+    use windows::Win32::UI::WindowsAndMessaging::{MB_ICONWARNING, MB_OK, MessageBoxW};
+    use windows::core::HSTRING;
+    // SAFETY: cadenas válidas; sin ventana dueña.
+    let _ = unsafe {
+        MessageBoxW(None, &HSTRING::from(text), &HSTRING::from(title), MB_OK | MB_ICONWARNING)
+    };
+}

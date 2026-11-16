@@ -474,6 +474,8 @@ fn spawn_core() -> Result<(std::process::Child, std::sync::mpsc::Receiver<String
     let exe = std::env::current_exe().map_err(|_| "no se encontró el ejecutable".to_owned())?;
     let mut child = Command::new(exe)
         .arg("core")
+        // Su propia instancia: el usuario puede tener un core abierto.
+        .env("WM_INSTANCE", "ci-probe")
         .env_remove("WM_TEST")
         .env_remove("WM_ANIM")
         .stdin(Stdio::null())

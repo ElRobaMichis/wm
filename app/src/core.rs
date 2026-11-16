@@ -34,6 +34,16 @@ const EXIT_RESTORE_WAIT: Duration = Duration::from_millis(1500);
 const EXIT_PANIC: u8 = 3;
 
 pub fn run() -> ExitCode {
+    // Instancia única (hito 3a): otro core en esta sesión → error de uso (el
+    // guardián no relanza), antes de tocar ninguna ventana.
+    let Some(_instance) = wm_platform::instance::acquire("core") else {
+        eprintln!("Ya hay un wm core corriendo en esta sesión.");
+        crate::brain::append_line("wm core: ya hay otro corriendo en esta sesión; salgo.");
+        return ExitCode::from(2);
+    };
+    if let Some(n) = std::env::var("WM_RELAUNCH").ok().filter(|n| n != "0") {
+        crate::brain::append_line(&format!("wm core relanzado por el guardián (vez {n})."));
+    }
     let config = bindings_path();
     let bindings = load_bindings(config.as_ref());
     let test_mode = std::env::var_os("WM_TEST").is_some_and(|v| v == "1");

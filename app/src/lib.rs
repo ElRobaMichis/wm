@@ -35,6 +35,8 @@ mod place_test;
 /// Lo que hacen los dos ejecutables (`wm.exe` de consola y `wmw.exe` sin
 /// consola, plan-core.md D5): elegir el rol por el primer argumento.
 pub fn run() -> ExitCode {
+    #[cfg(windows)]
+    log_panics();
     let args: Vec<String> = std::env::args().skip(2).collect();
     let command = std::env::args().nth(1);
     match command.as_deref() {
@@ -107,7 +109,12 @@ pub fn run() -> ExitCode {
                 Err(_) => ExitCode::FAILURE,
             }
         }
-        None | Some("doctor") => doctor(),
+        // Sin argumentos: el uso normal, el guardián con el core (hito 3a).
+        #[cfg(windows)]
+        None => guardian::run(&[]),
+        #[cfg(not(windows))]
+        None => doctor(),
+        Some("doctor") => doctor(),
         Some("version" | "--version" | "-V") => {
             println!("wm {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
@@ -263,4 +270,16 @@ fn doctor() -> ExitCode {
 fn doctor() -> ExitCode {
     eprintln!("Este programa solo funciona en Windows.");
     ExitCode::FAILURE
+}
+
+/// Anota en `wm.log` los pánicos de cualquier hilo (sin consola, sería lo
+/// único que queda) y deja el comportamiento de siempre.
+#[cfg(windows)]
+fn log_panics() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current().name().unwrap_or("sin nombre").to_owned();
+        brain::append_line(&format!("PÁNICO en el hilo {thread}: {info}"));
+        previous(info);
+    }));
 }

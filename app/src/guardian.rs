@@ -9,7 +9,14 @@
 //!   termina sin relanzar.
 //! - Error de uso (código 2): restaurar y terminar.
 //! - Cualquier otra salida (matado, pánico, error): restaurar, esperar un
-//!   poco (250 ms, 500 ms, 1 s) y relanzar.
+//!   poco (250 ms, 500 ms, 1 s) y relanzar (con `WM_RELAUNCH=n`, el gancho
+//!   de D4 para el hito 4).
+//! - Cierre de sesión o apagado: no se relanza ni se avisa.
+//!
+//! **Instancia única** (hito 3a): si vigila al core, toma el mutex
+//! `Local\wm.guardian` **antes** de restaurar nada; un segundo guardián
+//! sale sin tocar las ventanas del primero. Sin consola, todo va a
+//! `%LOCALAPPDATA%\wm\wm.log`, y si se rinde lo dice en un cuadro.
 
 use std::collections::VecDeque;
 use std::process::{Command, ExitCode};
@@ -42,6 +49,18 @@ pub fn run(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // Instancia única: antes de restaurar nada.
+    let _instance = if child_args.first().is_some_and(|c| c == "core") {
+        match wm_platform::instance::acquire("guardian") {
+            Some(i) => Some(i),
+            None => {
+                log("ya hay un wm corriendo en esta sesión: no arranco otro");
+                return ExitCode::SUCCESS;
+            }
+        }
+    } else {
+        None
+    };
     console::trap_stop_requests();
 
     let pid = std::process::id();
@@ -52,7 +71,9 @@ pub fn run(args: &[String]) -> ExitCode {
     let mut restarts: VecDeque<Instant> = VecDeque::new();
     let code = loop {
         let started = Instant::now();
-        let mut child = match Command::new(&exe).args(&child_args).spawn() {
+        let mut cmd = Command::new(&exe);
+        cmd.args(&child_args).env("WM_RELAUNCH", restarts.len().to_string());
+        let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
                 log(&format!("no se pudo lanzar el hijo: {e}"));
@@ -92,6 +113,10 @@ pub fn run(args: &[String]) -> ExitCode {
             log("error de uso del comando: no se relanza");
             break ExitCode::from(2);
         }
+        if shutting_down() {
+            log("Windows se está apagando o cerrando la sesión: no se relanza");
+            break ExitCode::SUCCESS;
+        }
 
         let now = Instant::now();
         while restarts.front().is_some_and(|t| now.duration_since(*t) > RESTART_WINDOW) {
@@ -103,6 +128,7 @@ pub fn run(args: &[String]) -> ExitCode {
                 MAX_RESTARTS + 1,
                 RESTART_WINDOW.as_secs()
             ));
+            tell_gave_up();
             break ExitCode::FAILURE;
         }
         let backoff = FIRST_BACKOFF * (1u32 << restarts.len());
@@ -129,6 +155,32 @@ fn report(when: &str, r: &RestoreReport) {
 }
 
 fn log(msg: &str) {
-    // A stderr: el hijo usa la misma consola para lo suyo.
+    // A stderr (el hijo usa la misma consola para lo suyo) y al archivo: sin
+    // consola (wmw.exe) es lo único que queda.
     eprintln!("[guardián] {msg}");
+    crate::brain::append_line(&format!("[guardián] {msg}"));
+}
+
+/// ¿Windows se está apagando o cerrando la sesión?
+fn shutting_down() -> bool {
+    wm_platform::session::shutting_down()
+}
+
+/// Sin consola, rendirse en silencio dejaría a la usuaria sin saber qué
+/// pasó: un cuadro con lo esencial.
+fn tell_gave_up() {
+    if wm_platform::session::has_console() {
+        return; // con consola, el mensaje ya se vio
+    }
+    let path = crate::brain::log_path().map(|p| p.display().to_string()).unwrap_or_default();
+    wm_platform::session::warning_box(
+        "wm",
+        &format!(
+            "wm se cerró por un error que se repitió.
+
+Tus ventanas quedaron visibles.
+
+Detalle: {path}"
+        ),
+    );
 }
