@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 pub mod apps;
+pub mod desks;
 pub mod i18n;
 pub mod keyboard;
 pub mod map;
@@ -16,6 +17,8 @@ pub mod settings_demo;
 pub mod world;
 #[cfg(test)]
 mod world_arrange_tests;
+#[cfg(test)]
+mod world_desk_tests;
 #[cfg(test)]
 mod world_map_tests;
 

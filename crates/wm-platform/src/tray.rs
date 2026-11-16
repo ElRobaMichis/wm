@@ -181,6 +181,13 @@ pub fn send_order_in(instance: &str, order: Order) -> bool {
     send_order_to(&HSTRING::from(format!("Local\\wm.ui.{instance}")), order)
 }
 
+/// ¿Hay un `wm` corriendo en esta sesión (instancia normal, sin
+/// `WM_INSTANCE`)? Lo usa el `ci-probe` para no pisarle los escritorios.
+pub fn user_instance_running() -> bool {
+    // SAFETY: nombres válidos; solo busca.
+    unsafe { FindWindowW(w!("wm-ui"), &HSTRING::from("Local\\wm.ui")) }.is_ok()
+}
+
 fn send_order_to(name: &HSTRING, order: Order) -> bool {
     use windows::Win32::UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWindow};
     // SAFETY: nombres válidos.

@@ -166,6 +166,13 @@ pub fn run(args: &[String]) -> ExitCode {
         std::process::exit(3);
     });
 
+    // Con un `wm` del usuario abierto, el `restore_all` de la sonda le
+    // mostraría las ventanas de otros escritorios y las dos instancias
+    // recibirían las mismas teclas.
+    if wm_platform::tray::user_instance_running() {
+        eprintln!("ci-probe: hay un wm abierto; cerralo (Salir en la bandeja) y volvé a correrlo.");
+        return ExitCode::from(2);
+    }
     let cleanup = Cleanup;
     let mut r = Report { env: Vec::new(), checks: Vec::new() };
     out!("Entorno");
@@ -525,6 +532,10 @@ fn spawn_core() -> Result<(std::process::Child, std::sync::mpsc::Receiver<String
         .env("WM_INSTANCE", "ci-probe")
         // Sus propias asignaciones: no toca el apps.txt del usuario.
         .env("APPDATA", probe_appdata())
+        // Escritorios: solo esconde sus títeres (app "wm"), nunca las
+        // ventanas del usuario.
+        .env("WM_SCOPE", "wm")
+        .env_remove("WM_RELAUNCH")
         .env_remove("WM_TEST")
         .env_remove("WM_ANIM")
         .stdin(Stdio::null())
@@ -656,6 +667,7 @@ fn core(r: &mut Report, puppets: &[WindowId]) {
     reload_check(r, &lines, puppets);
     hard_checks(r);
     hung_check(r);
+    desks_check(r, puppets);
 
     // "Salir" como en el menú de la bandeja (`Caps` + Esc ya no sale fuera
     // del modo prueba).
@@ -683,6 +695,88 @@ fn core(r: &mut Report, puppets: &[WindowId]) {
         },
     );
     r.check(name, if ok { Status::Ok } else { Status::Fail }, detail);
+}
+
+/// Hito 4a: llevar, ir y deshacer con el core real y teclas inyectadas.
+fn desks_check(r: &mut Report, puppets: &[WindowId]) {
+    const NAME: &str = "escritorios";
+    const CAPS: u8 = 0x14;
+    const ALT: u8 = 0xA4;
+    let go = |digit: u8| {
+        session::send_keys(&[(CAPS, true), (digit, true), (digit, false), (CAPS, false)]);
+    };
+    let carry = |key: u8| {
+        session::send_keys(&[
+            (CAPS, true),
+            (ALT, true),
+            (key, true),
+            (key, false),
+            (ALT, false),
+            (CAPS, false),
+        ]);
+    };
+    let hidden = |id: WindowId| hide::visibility(id).cloaked == hide::DWM_CLOAKED_SHELL;
+    let shown = |id: WindowId| hide::fully_visible(hide::visibility(id));
+    let limit = Duration::from_secs(1);
+    let (a, others) = (puppets[0], &puppets[1..]);
+    let _ = windows_list::activate(a);
+    std::thread::sleep(Duration::from_millis(100));
+    let mut parts = Vec::new();
+    let mut ok = true;
+    let step = |label: &str, t: Option<Duration>, parts: &mut Vec<String>, ok: &mut bool| {
+        *ok &= t.is_some();
+        parts.push(format!("{label}: {}", t.map_or_else(|| "NO".into(), ms)));
+    };
+
+    carry(b'2');
+    let t = wait_for(limit, || {
+        hidden(a)
+            && hide::desk_of(a) == Some(2)
+            && windows_list::foreground().is_some_and(|f| others.contains(&f))
+    });
+    step("Caps + Alt + 2 lleva", t, &mut parts, &mut ok);
+
+    go(b'2');
+    let t = wait_for(limit, || {
+        shown(a) && windows_list::foreground() == Some(a) && others.iter().all(|&o| hidden(o))
+    });
+    step("Caps + 2", t, &mut parts, &mut ok);
+
+    go(b'1');
+    let t = wait_for(limit, || hidden(a) && others.iter().all(|&o| shown(o)));
+    step("Caps + 1", t, &mut parts, &mut ok);
+
+    // Alternar y medir hasta el estado verificado.
+    let mut times = Vec::new();
+    for i in 0..20 {
+        let two = i % 2 == 0;
+        go(if two { b'2' } else { b'1' });
+        let t = wait_for(limit, || {
+            if two {
+                shown(a) && others.iter().all(|&o| hidden(o))
+            } else {
+                hidden(a) && others.iter().all(|&o| shown(o))
+            }
+        });
+        match t {
+            Some(d) => times.push(d),
+            None => {
+                ok = false;
+                break;
+            }
+        }
+    }
+    times.sort();
+    if let Some(p95) = times.get(times.len() * 95 / 100).or(times.last()) {
+        parts.push(format!("20 cambios: p95 {}", ms(*p95)));
+    }
+
+    // Deshacer el "llevar" (estamos en el 1).
+    carry(b'Z');
+    let t = wait_for(limit, || shown(a) && hide::desk_of(a) == Some(1));
+    step("Caps + Alt + Z la trae", t, &mut parts, &mut ok);
+
+    r.check(NAME, if ok { Status::Ok } else { Status::Fail }, parts.join("; "));
 }
 
 /// `Caps` + Alt + teclas con el core real corriendo; mide cuándo el marco
@@ -1296,6 +1390,10 @@ fn batch_check(r: &mut Report, ids: &[WindowId]) {
         Ok(h) => h,
         Err(e) => return r.check("lotes", Status::Skip, format!("sin cloak: {e}")),
     };
+    // La tercera queda visible con el foco: el core nunca esconde la del
+    // frente (mueve el foco antes), y esconder la recién activada a veces no
+    // toma el cloak (plan-hito4.md §6).
+    let (holder, ids) = (ids[2], &ids[..2]);
     let wins: Vec<(WindowId, u32)> =
         ids.iter().map(|&id| (id, windows_list::window_pid(id))).collect();
     let mut problems = Vec::new();
@@ -1305,7 +1403,7 @@ fn batch_check(r: &mut Report, ids: &[WindowId]) {
         }
     }
     // El foco en otra: activar la que ya está al frente no la destapa.
-    let _ = windows_list::activate(ids[2]);
+    let _ = windows_list::activate(holder);
     let start = Instant::now();
     let hid = hider.hide_many(&wins);
     let hide_time = start.elapsed();
@@ -1351,7 +1449,7 @@ fn batch_check(r: &mut Report, ids: &[WindowId]) {
         "lotes",
         if ok { Status::Ok } else { Status::Fail },
         format!(
-            "3 ventanas: esconder {}, mostrar {}; destapada al activarla: {uncloaked}, re-escondida: {recloaked}; wm.desk: {desks_ok}, visibles y sin marca: {}, wm.desk borrado: {forgotten}{}",
+            "2 ventanas: esconder {}, mostrar {}; destapada al activarla: {uncloaked}, re-escondida: {recloaked}; wm.desk: {desks_ok}, visibles y sin marca: {}, wm.desk borrado: {forgotten}{}",
             ms(hide_time),
             ms(show_time),
             visible && unmarked,

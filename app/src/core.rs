@@ -68,7 +68,12 @@ pub fn run() -> ExitCode {
     // prueba (un toque accidental cerraba todo en silencio). Si el ícono no
     // se puede crear, el brain lo vuelve a activar.
     world.set_esc_quits(test_mode);
+    // `ci-probe`: solo se esconden sus títeres, nunca las ventanas del usuario.
+    if let Some(app) = std::env::var("WM_SCOPE").ok().filter(|s| !s.is_empty()) {
+        world.set_desk_scope(Some(app));
+    }
     let mut brain = Brain::new(world, ops, log.clone(), test_mode);
+    brain.relaunched = std::env::var("WM_RELAUNCH").ok().is_some_and(|n| n != "0" && !n.is_empty());
     brain.restore_at_start();
 
     input::quit_on_console_close(brain_thread);
@@ -93,7 +98,8 @@ pub fn run() -> ExitCode {
     };
 
     // Salida (§9.7), limpia o tras un pánico: siempre mostrar todo, con plazo.
-    brain.restore_at_exit(EXIT_RESTORE_WAIT);
+    let clean = code == ExitCode::SUCCESS;
+    brain.restore_at_exit(EXIT_RESTORE_WAIT, clean);
     print_summary(&brain);
     drop(brain);
     drop(log);

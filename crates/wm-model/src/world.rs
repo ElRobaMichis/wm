@@ -134,6 +134,9 @@ struct Entry {
     maximized: bool,
     /// Gesto que la anotó: un acorde (varias teclas) es una sola entrada.
     tag: u64,
+    /// `Some(n)`: un "llevar" desde el escritorio n (hito 4); deshacerla la
+    /// devuelve ahí (`frame` y `maximized` no se usan).
+    desk: Option<u8>,
 }
 
 /// Los pasos de centrar (C): primero sin cambiar el tamaño; repetir alterna
@@ -264,19 +267,26 @@ pub type Req = u64;
 
 /// Una ventana: su HWND y el proceso dueño. El proceso evita actuar sobre un
 /// HWND que Windows reutilizó para otra ventana (plan-core.md §1.1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct WinKey {
     pub hwnd: isize,
     pub pid: u32,
 }
 
 /// Una ventana de usuario, como la ve un `Scan`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct WinInfo {
     pub key: WinKey,
     /// Ejecutable sin extensión, en minúsculas.
     pub app: String,
     pub title: String,
+    /// Escritorio anotado en la ventana (`wm.desk`).
+    pub desk: Option<u8>,
+    /// Tiene nuestra marca de escondida.
+    pub marked: bool,
+    /// No se ve: con cloak o minimizada.
+    pub concealed: bool,
+    pub minimized: bool,
 }
 
 /// Resultado de traer una ventana al frente.
@@ -338,6 +348,26 @@ pub enum Event {
     Command(Command),
     /// Venció el plazo de [`World::deadline`].
     Tick,
+    /// Hito 4: el core terminó de restaurar al arrancar. `recover`: lo
+    /// relanzó el guardián tras una caída (D4).
+    Boot {
+        recover: bool,
+    },
+    /// Resultado de `SetDesks`: las ventanas que no se pudieron anotar.
+    DesksSet {
+        req: Req,
+        failed: Vec<WinKey>,
+    },
+    /// Resultado de `Show` (`Ok`: las que fallaron).
+    Shown {
+        req: Req,
+        result: Result<Vec<WinKey>, String>,
+    },
+    /// Resultado de `Hide` (`Ok`: las que fallaron).
+    Hidden {
+        req: Req,
+        result: Result<Vec<WinKey>, String>,
+    },
 }
 
 /// Lo que el modelo le pide a la plataforma.
@@ -413,6 +443,26 @@ pub enum Effect {
     /// Terminar el core ("Salir" en la bandeja; `Caps` + Esc solo si
     /// [`World::set_esc_quits`]).
     Quit,
+    /// Hito 4: anotar el escritorio en cada ventana (`wm.desk`).
+    SetDesks {
+        req: Req,
+        items: Vec<(WinKey, u8)>,
+    },
+    /// Hito 4: mostrar estas ventanas (las escondimos nosotros).
+    Show {
+        req: Req,
+        wins: Vec<WinKey>,
+    },
+    /// Hito 4: esconderlas (marca + cloak, o minimize si no hay cloak).
+    Hide {
+        req: Req,
+        wins: Vec<WinKey>,
+    },
+    /// Hito 4: foco al escritorio de Windows (destino vacío). Responde con
+    /// `Focused`.
+    FocusShell {
+        req: Req,
+    },
 }
 
 /// Antigüedad máxima de una acción para ejecutarla: una que llega tarde (el
@@ -495,6 +545,12 @@ enum Pending {
         job: u64,
         rect: Rect,
     },
+    /// Hito 4: pasos de la transacción de escritorios.
+    DeskScan,
+    DeskSet,
+    DeskShow,
+    DeskFocus,
+    DeskHide,
 }
 
 /// El estado del core.
@@ -540,6 +596,12 @@ pub struct World {
     /// veces que no tomó el tamaño pedido): un cambio de tamaño que no
     /// respeta esos límites va sin animación.
     limits: HashMap<WinKey, Limits>,
+    /// Escritorios 1-4 (hito 4).
+    desks: crate::desks::Desks,
+    /// Transacción de escritorios en curso.
+    sync: Option<world_desks::DeskSync>,
+    /// La próxima, si llegó otra mientras tanto (gana la última).
+    queued: Option<(crate::desks::Goal, u64)>,
 }
 
 /// Tamaños que una ventana no aceptó. Antes se marcaba la ventana entera y
@@ -746,9 +808,15 @@ impl World {
             }
             Event::Bindings(b) => self.bindings = b,
             Event::Windows { req, result } => {
+                if let Some(Pending::DeskScan) = self.pending.get(&req) {
+                    self.pending.remove(&req);
+                    self.sync_scanned(result, now_us, &mut out);
+                    return out;
+                }
                 if let Some(Pending::MapScan) = self.pending.get(&req) {
                     self.pending.remove(&req);
                     let windows = result.map(|(w, _)| w).unwrap_or_default();
+                    self.adopt_scan(&windows, &mut out);
                     self.show_map(&windows, &mut out);
                     return out;
                 }
@@ -756,11 +824,19 @@ impl World {
                     return out;
                 };
                 match result {
-                    Ok((windows, fg)) => self.go_to_app(letter, key_us, &windows, fg, &mut out),
+                    Ok((windows, fg)) => {
+                        self.adopt_scan(&windows, &mut out);
+                        self.go_to_app(letter, key_us, &windows, fg, now_us, &mut out)
+                    }
                     Err(e) => out.push(Effect::Log(format!("Caps + {}: {e}", letter as char))),
                 }
             }
             Event::Focused { req, result } => {
+                if let Some(Pending::DeskFocus) = self.pending.get(&req) {
+                    self.pending.remove(&req);
+                    self.sync_focused(result, now_us, &mut out);
+                    return out;
+                }
                 let Some(Pending::Focus { letter, app, title, key_us }) = self.pending.remove(&req)
                 else {
                     return out;
@@ -829,6 +905,24 @@ impl World {
             Event::FlyEnabled(on) => self.fly = on,
             Event::Command(c) => self.command(c, now_us, &mut out),
             Event::Tick => self.tick(now_us, &mut out),
+            Event::Boot { recover } => {
+                self.start_sync(crate::desks::Goal::Boot { recover }, now_us, &mut out)
+            }
+            Event::DesksSet { req, failed } => {
+                if self.pending.remove(&req).is_some() {
+                    self.desks_set(failed, &mut out);
+                }
+            }
+            Event::Shown { req, result } => {
+                if self.pending.remove(&req).is_some() {
+                    self.sync_shown(result, now_us, &mut out);
+                }
+            }
+            Event::Hidden { req, result } => {
+                if self.pending.remove(&req).is_some() {
+                    self.sync_hidden(result, now_us, &mut out);
+                }
+            }
             Event::Launched { req, result } => {
                 let Some(Pending::Launch { letter, app, path }) = self.pending.remove(&req) else {
                     return out;
@@ -905,10 +999,16 @@ impl World {
                 }
             }
             HyperAction::Digit { digit, thumb } => {
-                let what = if thumb { "llevar a" } else { "ir a" };
-                out.push(Effect::Log(format!(
-                    "Caps + {digit}: {what} escritorio {digit}, pendiente."
-                )));
+                self.keys = None;
+                let key_us = now_us.saturating_sub(u64::from(age_ms) * 1000);
+                if (1..=crate::desks::DESKS).contains(&digit) {
+                    use crate::desks::Goal;
+                    let goal = if thumb { Goal::Carry(digit) } else { Goal::Desk(digit) };
+                    self.start_sync(goal, key_us, out);
+                } else {
+                    let alt = if thumb { "Alt + " } else { "" };
+                    out.push(Effect::Log(format!("Caps + {alt}{digit}: hay 4 escritorios (1-4).")));
+                }
             }
             HyperAction::Escape if self.esc_quits => out.push(Effect::Quit),
             HyperAction::Escape => {}
@@ -970,7 +1070,8 @@ impl World {
             seen: bit,
             key_us,
         });
-        let before = Entry { win: obs.key, frame: here_rect, maximized: origin_max, tag: id };
+        let before =
+            Entry { win: obs.key, frame: here_rect, maximized: origin_max, tag: id, desk: None };
         match step(here.placement, dir) {
             // Desde una esquina, una tecla puede ser la primera de un acorde
             // a otra esquina (mismo tamaño: se anima): esperar la segunda.
@@ -1007,7 +1108,13 @@ impl World {
         now_us: u64,
         out: &mut Vec<Effect>,
     ) {
-        let before = Entry { win: g.win, frame: g.origin_rect, maximized: g.origin_max, tag: g.id };
+        let before = Entry {
+            win: g.win,
+            frame: g.origin_rect,
+            maximized: g.origin_max,
+            tag: g.id,
+            desk: None,
+        };
         // Más tarde que la espera: la primera tecla ya salió sola (se vio un
         // paso intermedio). Queda en el log para afinar la espera.
         let gap_us = key_us.saturating_sub(g.key_us);
@@ -1280,7 +1387,13 @@ impl World {
             return;
         }
         let tag = self.fresh_tag();
-        self.remember(Entry { win: obs.key, frame: obs.frame, maximized: obs.maximized, tag });
+        self.remember(Entry {
+            win: obs.key,
+            frame: obs.frame,
+            maximized: obs.maximized,
+            tag,
+            desk: None,
+        });
         self.ground(obs.key, out);
         self.sizing.remove(&obs.key);
         self.jobs.remove(&obs.key); // una colocación en curso ya no vale
@@ -1411,7 +1524,13 @@ impl World {
         };
         let verb = if grow { "más grande" } else { "más chica" };
         let tag = self.fresh_tag();
-        self.record = Some(Entry { win: obs.key, frame: obs.frame, maximized: obs.maximized, tag });
+        self.record = Some(Entry {
+            win: obs.key,
+            frame: obs.frame,
+            maximized: obs.maximized,
+            tag,
+            desk: None,
+        });
         let spot = Spot { monitor, placement: Placement::Full };
         let what = format!("{what} → {verb}, {label} ({})", obs.app);
         self.sizing_move = true;
@@ -1476,7 +1595,13 @@ impl World {
         self.centers.insert(obs.key, Centering { original, step, target });
         let spot = Spot { monitor: obs.monitors[m], placement: Placement::Full };
         let tag = self.fresh_tag();
-        self.record = Some(Entry { win: obs.key, frame: obs.frame, maximized: obs.maximized, tag });
+        self.record = Some(Entry {
+            win: obs.key,
+            frame: obs.frame,
+            maximized: obs.maximized,
+            tag,
+            desk: None,
+        });
         let what = format!("{what} → {label} ({})", obs.app);
         self.go(&obs, spot, target, what, key_us, now_us, out);
     }
@@ -1510,6 +1635,9 @@ impl World {
 
     fn undo_next(&mut self, key_us: u64, out: &mut Vec<Effect>) {
         match self.journal.pop_back() {
+            Some(Entry { win, desk: Some(to), .. }) => {
+                self.start_sync(crate::desks::Goal::UndoCarry { win, to }, key_us, out);
+            }
             Some(entry) => {
                 let req = self.req();
                 self.pending.insert(req, Pending::Undo { key_us, entry });
@@ -1736,11 +1864,17 @@ impl World {
         key_us: u64,
         windows: &[WinInfo],
         foreground: Option<WinKey>,
+        now_us: u64,
         out: &mut Vec<Effect>,
     ) {
         let list: Vec<(WinKey, &str)> = windows.iter().map(|w| (w.key, w.app.as_str())).collect();
         let key = letter as char;
         match resolve(letter, &self.bindings, &list, foreground) {
+            Target::Focus { window, .. } if self.elsewhere(window) => {
+                // En otro escritorio: ir allá y enfocarla, en una transacción.
+                let goal = crate::desks::Goal::Window(window);
+                self.start_sync_with(goal, key_us, windows, foreground, now_us, out);
+            }
             Target::Focus { window, app } => {
                 let title =
                     windows.iter().find(|w| w.key == window).map_or("", |w| w.title.as_str());
@@ -1765,6 +1899,9 @@ impl World {
         }
     }
 }
+
+#[path = "world_desks.rs"]
+mod world_desks;
 
 /// Índice actual de un monitor (los índices no valen entre observaciones: se
 /// identifica por su rectángulo).
@@ -1853,6 +1990,7 @@ mod tests {
             key: WinKey { hwnd, pid: hwnd as u32 + 1000 },
             app: app.into(),
             title: app.into(),
+            ..WinInfo::default()
         }
     }
 
@@ -1905,6 +2043,17 @@ mod tests {
                         }
                         Effect::Log(line) => self.logs.push(line),
                         Effect::Quit => self.quit = true,
+                        Effect::SetDesks { req, items } => {
+                            for (k, n) in items {
+                                if let Some(w) = self.windows.iter_mut().find(|w| w.key == k) {
+                                    w.desk = Some(n);
+                                }
+                            }
+                            queue.push(Event::DesksSet { req, failed: Vec::new() });
+                        }
+                        Effect::Show { .. } | Effect::Hide { .. } | Effect::FocusShell { .. } => {
+                            panic!("todo está en el escritorio 1")
+                        }
                         Effect::Inspect { .. }
                         | Effect::Place { .. }
                         | Effect::Fly { .. }
@@ -2025,7 +2174,12 @@ mod tests {
         let Effect::Scan { req } = effects[0] else { panic!("{effects:?}") };
         let win = win(1, "brave");
         let effects = w.step(Event::Windows { req, result: Ok((vec![win.clone()], None)) }, 11_000);
-        let Effect::Focus { req, .. } = effects[0] else { panic!("{effects:?}") };
+        // Antes, la adopción anota el escritorio en la ventana (hito 4).
+        let Some(Effect::Focus { req, .. }) =
+            effects.iter().find(|e| matches!(e, Effect::Focus { .. })).cloned()
+        else {
+            panic!("{effects:?}")
+        };
         let report = FocusReport { ok: true, neutral_key: false, elapsed_us: 500 };
         let effects = w.step(Event::Focused { req, result: Ok(report) }, 13_000);
         let Effect::Log(line) = &effects[0] else { panic!("{effects:?}") };
@@ -2073,8 +2227,13 @@ mod fullscreen_tests {
         );
         assert_eq!(out.len(), 2);
         // Z: la entrada no se pierde.
-        let entry =
-            Entry { win: full.key, frame: Rect::new(0, 0, 800, 600), maximized: false, tag: 1 };
+        let entry = Entry {
+            win: full.key,
+            frame: Rect::new(0, 0, 800, 600),
+            maximized: false,
+            tag: 1,
+            desk: None,
+        };
         let mut out = Vec::new();
         w.undo(entry, full, 0, 0, &mut out);
         assert_eq!(out.len(), 1);

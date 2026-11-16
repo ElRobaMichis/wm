@@ -105,6 +105,23 @@ enum Wait {
     Place(Req),
     RestoreAtStart,
     RestoreAtExit,
+    /// Hito 4.
+    SetDesks(Req),
+    Show(Req),
+    Hide(Req),
+    CloakProbe,
+}
+
+/// Las ventanas que fallaron en un pedido en lote.
+fn failed_of(out: Output) -> Vec<WinKey> {
+    match out {
+        Output::Batch(items) => items
+            .into_iter()
+            .filter(|(_, r)| r.is_err())
+            .map(|(id, _)| WinKey { hwnd: id.0, pid: windows_list::window_pid(id) })
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 pub struct Brain {
@@ -128,6 +145,11 @@ pub struct Brain {
     watch: Option<wm_platform::watch::Watch>,
     /// El modelo pidió terminar.
     pub quit: bool,
+    /// Cómo se esconden las ventanas de otros escritorios: cloak del shell
+    /// si está disponible (sonda al arrancar); si no, minimizar.
+    hide_method: wm_platform::hide::HideMethod,
+    /// Lo relanzó el guardián tras una caída (D4: confiar en `wm.desk`).
+    pub relaunched: bool,
 }
 
 impl Brain {
@@ -149,6 +171,8 @@ impl Brain {
             watch: wm_model::apps::bindings_path()
                 .and_then(|p| wm_platform::watch::Watch::start(input::current_thread_id(), p)),
             quit: false,
+            hide_method: wm_platform::hide::HideMethod::ShellCloak,
+            relaunched: false,
         }
     }
 
@@ -320,6 +344,25 @@ impl Brain {
                 }
                 Effect::Log(line) => self.log.line(line),
                 Effect::Quit => self.quit = true,
+                Effect::SetDesks { req, items } => {
+                    let items =
+                        items.into_iter().map(|(k, n)| (WindowId(k.hwnd), k.pid, n)).collect();
+                    let t = self.ops.submit(Op::SetDesks(items));
+                    self.waits.insert(t, Wait::SetDesks(req));
+                }
+                Effect::Show { req, wins } => {
+                    let t = self.ops.submit(Op::ShowMany(ids(&wins)));
+                    self.waits.insert(t, Wait::Show(req));
+                }
+                Effect::Hide { req, wins } => {
+                    let method = self.hide_method;
+                    let t = self.ops.submit(Op::HideMany { wins: ids(&wins), method });
+                    self.waits.insert(t, Wait::Hide(req));
+                }
+                Effect::FocusShell { req } => {
+                    let t = self.ops.submit(Op::FocusShell);
+                    self.waits.insert(t, Wait::Focus(req));
+                }
             }
         }
     }
@@ -327,13 +370,15 @@ impl Brain {
     /// Mostrar todo lo que tenga nuestra marca (arranque = recuperación,
     /// architecture.md §9.5).
     pub fn restore_at_start(&mut self) {
+        let t = self.ops.submit(Op::CloakProbe);
+        self.waits.insert(t, Wait::CloakProbe);
         let t = self.ops.submit(Op::RestoreAll);
         self.waits.insert(t, Wait::RestoreAtStart);
     }
 
     /// Salida (limpia o tras un pánico): mostrar todo, esperando como mucho
     /// `limit`.
-    pub fn restore_at_exit(&mut self, limit: Duration) {
+    pub fn restore_at_exit(&mut self, limit: Duration, forget_desks: bool) {
         if let Some(anim) = self.anim.as_mut() {
             anim.land_all();
         }
@@ -343,6 +388,11 @@ impl Brain {
         self.tray.stop();
         let t = self.ops.submit(Op::RestoreAll);
         self.waits.insert(t, Wait::RestoreAtExit);
+        // Salida limpia: los escritorios no sobreviven (el próximo arranque
+        // empieza con todo en el 1). Tras un pánico quedan para el relanzado.
+        if forget_desks {
+            self.ops.submit(Op::ForgetDesks);
+        }
         let until = Instant::now() + limit;
         while self.waits.values().any(|w| matches!(w, Wait::RestoreAtExit)) {
             let deadline = self.ops.next_deadline().map_or(until, |d| d.min(until));
@@ -507,14 +557,37 @@ impl Brain {
             }
             Wait::Place(req) => self.feed(Event::Placed { req, result: result.map(|_| ()) }),
             Wait::RestoreAtStart => {
-                if let Ok(Output::Restored(r)) = result
+                if let Ok(Output::Restored(r)) = &result
                     && !r.restored.is_empty()
                 {
                     let n = r.restored.len();
                     self.log.line(format!("Restauradas {n} ventanas de una sesión anterior."));
                 }
+                // Con todo visible, los escritorios arrancan (D4 si es un
+                // relanzamiento tras una caída).
+                self.feed(Event::Boot { recover: self.relaunched });
             }
             Wait::RestoreAtExit => {}
+            Wait::CloakProbe => {
+                if let Err(e) = result {
+                    self.hide_method = wm_platform::hide::HideMethod::Minimize;
+                    self.log.line(format!(
+                        "Escritorios: sin cloak del shell ({e}); escondo minimizando."
+                    ));
+                }
+            }
+            Wait::SetDesks(req) => {
+                let failed = match result {
+                    Ok(out) => failed_of(out),
+                    Err(e) => {
+                        self.log.line(format!("Escritorios: no se pudo anotar ({e})."));
+                        Vec::new()
+                    }
+                };
+                self.feed(Event::DesksSet { req, failed });
+            }
+            Wait::Show(req) => self.feed(Event::Shown { req, result: result.map(failed_of) }),
+            Wait::Hide(req) => self.feed(Event::Hidden { req, result: result.map(failed_of) }),
         }
     }
 }
@@ -539,10 +612,26 @@ fn obs(i: windows_list::Inspection) -> Obs {
 }
 
 fn win_info(w: windows_list::WindowInfo) -> WinInfo {
-    WinInfo { key: WinKey { hwnd: w.id.0, pid: w.pid }, app: w.app, title: w.title }
+    WinInfo {
+        key: WinKey { hwnd: w.id.0, pid: w.pid },
+        app: w.app,
+        title: w.title,
+        desk: w.desk,
+        marked: w.hidden,
+        concealed: w.cloaked || w.minimized,
+        minimized: w.minimized,
+    }
 }
 
-/// La ventana con el foco ahora (lectura que no bloquea).
+fn ids(wins: &[WinKey]) -> Vec<(WindowId, u32)> {
+    wins.iter().map(|k| (WindowId(k.hwnd), k.pid)).collect()
+}
+
+/// La ventana con el foco ahora (lectura que no bloquea), traducida al
+/// dueño raíz: con un diálogo al frente, cuenta su ventana principal.
 fn focus() -> Option<WinKey> {
-    windows_list::foreground().map(|id| WinKey { hwnd: id.0, pid: windows_list::window_pid(id) })
+    windows_list::foreground().map(|id| {
+        let id = windows_list::root_owner(id);
+        WinKey { hwnd: id.0, pid: windows_list::window_pid(id) }
+    })
 }

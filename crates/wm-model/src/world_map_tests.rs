@@ -351,8 +351,12 @@ fn the_map_always_ends_hidden_and_only_shows_with_hyper_down() {
 fn the_map_lists_the_open_apps_and_lights_the_key_just_used() {
     use crate::mapview::Tone;
     let mut r = Rig::new();
-    r.open =
-        vec![WinInfo { key: WinKey { hwnd: 1, pid: 10 }, app: "brave".into(), title: "x".into() }];
+    r.open = vec![WinInfo {
+        key: WinKey { hwnd: 1, pid: 10 },
+        app: "brave".into(),
+        title: "x".into(),
+        ..WinInfo::default()
+    }];
     r.key(VK_CAPITAL, true);
     r.wait(500);
     let apps = &r.views[0];
