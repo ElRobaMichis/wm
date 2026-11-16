@@ -899,8 +899,13 @@ impl World {
         // Cada C tiene que mover algo: se saltean los pasos que dan el mismo
         // rectángulo donde ya está (ya centrada con su tamaño, o un "original"
         // igual al 60 %).
-        for _ in 0..2 {
-            if !obs.maximized && edge_error(obs.frame, rect_of(step).0) <= TOLERANCE_PX {
+        // Si el "original" es el 60 % (empezó maximizada), ese paso sobra.
+        let original_is_60 =
+            edge_error(rect_of(CenterStep::Original).0, rect_of(CenterStep::P60).0) <= TOLERANCE_PX;
+        for _ in 0..3 {
+            let same_place =
+                !obs.maximized && edge_error(obs.frame, rect_of(step).0) <= TOLERANCE_PX;
+            if same_place || (step == CenterStep::Original && original_is_60) {
                 step = next(step);
             }
         }

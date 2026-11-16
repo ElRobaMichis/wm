@@ -171,6 +171,8 @@ Latencia esperada: dos saltos de carril, como `Caps + letra` hoy (1,9-4,4 ms de 
 > - **Esquina = dos teclas juntas** (W + A…), en cualquier orden; repetir el acorde sobre su esquina la lleva al monitor vecino conservando arriba/abajo. Con teclas sueltas no hay esquinas.
 > - Se mantiene todo lo demás de la versión 2: el gesto con origen (el acorde no depende del orden de los dedos), la espera de 50 ms solo al empujar con una tecla sola, el lugar efectivo, F, C y Z.
 >
+> **Probado por el usuario (15/11/2026):** ~300 acciones con Brave en dos monitores (mitades, empujar, acordes empujando en las dos direcciones, A + D que se anulan, F, C, Z), todas a 0 px; hook con máximo 70 µs. "Todo funciona bien." Detalle corregido: desde maximizada, C alternaba 60 % y 80 % pero el 60 % se anunciaba como "centrada".
+>
 > **La escalera queda como opción futura del menú de ajustes** (`place::Scheme::Ladder`, implementada y probada, todavía no se puede elegir): cada tecla mueve un paso en su eje (izquierda ↔ todo ↔ derecha, arriba ↔ todo ↔ abajo) conservando el otro, así las esquinas salen en secuencia (↙ + W = mitad izquierda, + W = ↖). Para quien la prefiera; ver `keyboard-design.md` §8.3.
 >
 > **Por qué la directa por defecto:** la misma tecla hace siempre lo mismo (memoria muscular; la escalera depende de dónde está la ventana); lo más frecuente (izquierda/derecha) queda a una tecla, mientras que en la escalera pasar de la mitad izquierda a la derecha cuesta dos (pasa por todo el ancho, como `Win + →`); y se explica en una línea del mapa, para la usuaria de prueba.

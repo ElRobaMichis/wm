@@ -660,6 +660,20 @@ fn c_on_an_already_centered_window_starts_at_60() {
 }
 
 #[test]
+fn starting_maximized_c_alternates_60_and_80_with_those_names() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.key(&mut w, b'F');
+    for _ in 0..4 {
+        sim.key(&mut w, b'C');
+    }
+    let names: Vec<&str> =
+        sim.logs.iter().filter(|l| l.contains("centrada")).map(String::as_str).collect();
+    assert_eq!(names.len(), 4, "{:?}", sim.logs);
+    assert!(names.iter().all(|l| l.contains("60 %") || l.contains("80 %")), "{names:?}");
+}
+
+#[test]
 fn every_c_moves_the_window_even_starting_maximized() {
     // Error que vio el usuario: desde maximizada, "original" y "60 %" eran el
     // mismo rectángulo y una de cada tres C no hacía nada.
