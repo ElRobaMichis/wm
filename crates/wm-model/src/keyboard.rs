@@ -14,6 +14,9 @@
 //! - Alt/Win apretados **antes** de Caps ya llegaron al sistema. Si se usó
 //!   Hyper mientras estaban abajo, al soltarlos se inyecta una tecla máscara
 //!   para que Windows no abra el menú de la app ni el menú Inicio.
+//! - **Capa** ([`Layer`]): ninguna, apps (Caps) o ventana (Caps + pulgar). La
+//!   decisión la informa solo cuando cambia, así el brain puede mostrar y
+//!   ocultar el mapa sin perder pares (plan-core.md §1.4, invariante 8).
 
 pub const VK_SHIFT: u8 = 0x10;
 pub const VK_CAPITAL: u8 = 0x14;
@@ -64,17 +67,42 @@ pub enum HyperAction {
     Other { vk: u8, thumb: bool },
 }
 
+/// Capa activa del teclado.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Layer {
+    /// Sin Hyper.
+    #[default]
+    Off,
+    /// Hyper (Caps mantenido): letras = apps, números = escritorios.
+    Apps,
+    /// Hyper + pulgar: acomodar la ventana.
+    Window,
+}
+
+/// Direcciones de la capa de ventana mantenidas, en bits ([`Decision::held`]).
+pub const HELD_W: u8 = 1;
+pub const HELD_A: u8 = 2;
+pub const HELD_S: u8 = 4;
+pub const HELD_D: u8 = 8;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Decision {
     /// `true`: el evento llega al sistema. `false`: se traga.
     pub pass: bool,
     pub inject: Inject,
     pub action: Option<HyperAction>,
+    /// La capa cambió a este valor con este evento.
+    pub layer: Option<Layer>,
+    /// Con una acción: qué direcciones (W/A/S/D, ver `HELD_*`) estaban
+    /// mantenidas, incluida la de la acción. Sirve para las esquinas.
+    pub held: u8,
 }
 
 impl Decision {
-    const PASS: Self = Self { pass: true, inject: Inject::None, action: None };
-    const SWALLOW: Self = Self { pass: false, inject: Inject::None, action: None };
+    const PASS: Self =
+        Self { pass: true, inject: Inject::None, action: None, layer: None, held: 0 };
+    const SWALLOW: Self =
+        Self { pass: false, inject: Inject::None, action: None, layer: None, held: 0 };
 }
 
 /// Conjunto de 256 teclas virtuales.
@@ -132,7 +160,39 @@ impl HyperKeyboard {
         self.caps_down
     }
 
+    /// Capa activa ahora.
+    pub fn layer(&self) -> Layer {
+        if !self.caps_down {
+            Layer::Off
+        } else if self.swallowed.get(THUMB) || self.passed.get(THUMB) {
+            Layer::Window
+        } else {
+            Layer::Apps
+        }
+    }
+
+    /// Direcciones tragadas (apretadas con Hyper) que siguen abajo.
+    fn held(&self) -> u8 {
+        [(b'W', HELD_W), (b'A', HELD_A), (b'S', HELD_S), (b'D', HELD_D)]
+            .into_iter()
+            .filter(|&(vk, _)| self.swallowed.get(vk))
+            .fold(0, |acc, (_, bit)| acc | bit)
+    }
+
     pub fn on_key(&mut self, e: KeyEvent) -> Decision {
+        let before = self.layer();
+        let mut d = self.decide(e);
+        let after = self.layer();
+        if after != before {
+            d.layer = Some(after);
+        }
+        if d.action.is_some() {
+            d.held = self.held();
+        }
+        d
+    }
+
+    fn decide(&mut self, e: KeyEvent) -> Decision {
         if e.vk == VK_CAPITAL {
             return self.on_caps(e);
         }
@@ -169,7 +229,7 @@ impl HyperKeyboard {
             VK_LMENU | VK_RMENU | VK_LWIN | VK_RWIN | VK_SHIFT | 0xA0..=0xA3 => None,
             vk => Some(HyperAction::Other { vk, thumb }),
         };
-        Decision { pass: false, inject: Inject::None, action }
+        Decision { pass: false, inject: Inject::None, action, layer: None, held: 0 }
     }
 
     fn on_caps(&mut self, e: KeyEvent) -> Decision {
@@ -186,7 +246,7 @@ impl HyperKeyboard {
         let quick = e.time_ms.wrapping_sub(self.caps_since) < MAP_DELAY_MS;
         let inject =
             if was_down && !self.chord && quick { Inject::ToggleCapsLock } else { Inject::None };
-        Decision { pass: false, inject, action: None }
+        Decision { pass: false, inject, action: None, layer: None, held: 0 }
     }
 
     fn release(&mut self, vk: u8) -> Decision {
@@ -197,7 +257,13 @@ impl HyperKeyboard {
         self.passed.clear(vk);
         if self.need_mask.get(vk) {
             self.need_mask.clear(vk);
-            return Decision { pass: false, inject: Inject::MaskThenRelease(vk), action: None };
+            return Decision {
+                pass: false,
+                inject: Inject::MaskThenRelease(vk),
+                action: None,
+                layer: None,
+                held: 0,
+            };
         }
         Decision::PASS
     }
@@ -306,6 +372,36 @@ mod tests {
     }
 
     #[test]
+    fn layer_changes_are_reported_once() {
+        let mut k = HyperKeyboard::new();
+        assert_eq!(k.on_key(ev(VK_CAPITAL, true, 0)).layer, Some(Layer::Apps));
+        assert_eq!(k.on_key(ev(VK_CAPITAL, true, 30)).layer, None, "repetición");
+        assert_eq!(k.on_key(ev(VK_LMENU, true, 40)).layer, Some(Layer::Window));
+        assert_eq!(k.on_key(ev(VK_LMENU, false, 50)).layer, Some(Layer::Apps));
+        assert_eq!(k.on_key(ev(VK_CAPITAL, false, 60)).layer, Some(Layer::Off));
+    }
+
+    #[test]
+    fn alt_held_before_caps_starts_in_window_layer() {
+        let mut k = HyperKeyboard::new();
+        assert_eq!(k.on_key(ev(VK_LMENU, true, 0)).layer, None);
+        assert_eq!(k.on_key(ev(VK_CAPITAL, true, 5)).layer, Some(Layer::Window));
+        assert_eq!(k.on_key(ev(VK_LMENU, false, 9)).layer, Some(Layer::Apps));
+    }
+
+    #[test]
+    fn actions_carry_the_held_directions() {
+        let mut k = HyperKeyboard::new();
+        k.on_key(ev(VK_CAPITAL, true, 0));
+        k.on_key(ev(VK_LMENU, true, 1));
+        assert_eq!(k.on_key(ev(b'W', true, 10)).held, HELD_W);
+        assert_eq!(k.on_key(ev(b'A', true, 20)).held, HELD_W | HELD_A, "esquina");
+        k.on_key(ev(b'W', false, 30));
+        assert_eq!(k.on_key(ev(b'D', true, 40)).held, HELD_A | HELD_D);
+        assert_eq!(k.on_key(ev(b'F', true, 50)).held, HELD_A | HELD_D);
+    }
+
+    #[test]
     fn letter_released_after_caps_still_swallowed() {
         let mut k = HyperKeyboard::new();
         k.on_key(ev(VK_CAPITAL, true, 0));
@@ -360,14 +456,17 @@ mod tests {
 
     #[test]
     fn random_sequences_never_leave_stuck_keys() {
-        const KEYS: [u8; 9] =
-            [VK_CAPITAL, b'A', b'C', b'1', VK_LMENU, VK_RMENU, VK_LWIN, VK_SHIFT, VK_ESCAPE];
+        const KEYS: [u8; 11] = [
+            VK_CAPITAL, b'A', b'C', b'1', b'W', b'D', VK_LMENU, VK_RMENU, VK_LWIN, VK_SHIFT,
+            VK_ESCAPE,
+        ];
         let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
         for _ in 0..10_000 {
             let mut k = HyperKeyboard::new();
             let mut sys = SystemView::default();
             let mut physical = KeySet::new();
             let mut t: u32 = rng.next() as u32; // incluye vueltas del reloj
+            let mut seen = Layer::Off;
             for _ in 0..rng.below(40) + 1 {
                 t = t.wrapping_add(rng.below(700) as u32);
                 let vk = KEYS[rng.below(KEYS.len() as u64) as usize];
@@ -381,6 +480,11 @@ mod tests {
                 let e = ev(vk, down, t);
                 let d = k.on_key(e);
                 sys.apply(e, d);
+                if let Some(l) = d.layer {
+                    assert_ne!(l, seen, "señal de capa repetida");
+                    seen = l;
+                }
+                assert_eq!(seen, k.layer(), "la capa vista por las señales se desfasó");
             }
             // Soltar todo lo que quedó apretado físicamente.
             for vk in KEYS {
@@ -389,8 +493,12 @@ mod tests {
                     let e = ev(vk, false, t);
                     let d = k.on_key(e);
                     sys.apply(e, d);
+                    if let Some(l) = d.layer {
+                        seen = l;
+                    }
                 }
             }
+            assert_eq!(seen, Layer::Off, "la capa no volvió a Off al soltar todo");
             assert!(sys.is_empty(), "quedaron teclas trabadas en el sistema");
             assert!(!k.is_hyper_down());
         }

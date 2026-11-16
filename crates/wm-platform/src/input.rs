@@ -51,7 +51,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::w;
 
 use wm_model::keyboard::{
-    HyperAction, HyperKeyboard, Inject, KeyEvent, VK_CAPITAL, VK_LWIN, VK_RMENU, VK_RWIN,
+    HyperAction, HyperKeyboard, Inject, KeyEvent, Layer, VK_CAPITAL, VK_LWIN, VK_RMENU, VK_RWIN,
 };
 
 /// Marca en `dwExtraInfo` de los eventos que inyectamos nosotros ("WMHY").
@@ -328,6 +328,7 @@ const KIND_ESCAPE: usize = 3;
 const KIND_OTHER: usize = 4;
 const KIND_REINSTALLED: usize = 5;
 const KIND_STALL: usize = 6;
+const KIND_LAYER: usize = 7;
 
 /// Por qué se reinstaló el hook.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -347,9 +348,15 @@ pub enum InputEvent {
     /// `qpc`, el instante en que el hook la vio (reloj de [`crate::clock`]).
     Action {
         action: HyperAction,
+        /// Direcciones mantenidas (`wm_model::keyboard::HELD_*`), para las esquinas.
+        held: u8,
         time_ms: u32,
         qpc: i64,
     },
+    /// La capa del teclado cambió (Caps o el pulgar). Llegan siempre en orden y
+    /// sin repetirse; al reiniciarse el teclado (callback lento, reinstalación)
+    /// no llega `Off`: el brain lo deduce de esos eventos.
+    Layer(Layer),
     HookReinstalled(ReinstallReason),
     /// Un callback tardó `ms` milisegundos; el estado del teclado se reinició.
     HookStalled {
@@ -374,26 +381,39 @@ fn kind_with_qpc(kind: usize, qpc: i64) -> usize {
 /// Solo para pruebas: manda al brain `thread` una acción como si viniera del
 /// hook, con la hora actual.
 pub fn simulate_action(thread: u32, action: HyperAction) {
-    let (kind, data) = encode_action(action, tick_ms());
+    let (kind, data) = encode_action(action, 0, tick_ms());
     post_raw_to(thread, kind_with_qpc(kind, crate::clock::now()), data);
 }
 
-fn encode_action(action: HyperAction, time_ms: u32) -> (usize, isize) {
+fn encode_action(action: HyperAction, held: u8, time_ms: u32) -> (usize, isize) {
     let (kind, value, thumb) = match action {
         HyperAction::Letter { letter, thumb } => (KIND_LETTER, letter, thumb),
         HyperAction::Digit { digit, thumb } => (KIND_DIGIT, digit, thumb),
         HyperAction::Escape => (KIND_ESCAPE, 0, false),
         HyperAction::Other { vk, thumb } => (KIND_OTHER, vk, thumb),
     };
-    // lParam (64 bits): valor en 0–7, pulgar en 8, hora de la tecla en 16–47.
-    (kind, isize::from(value) | (isize::from(thumb) << 8) | ((time_ms as isize) << 16))
+    // lParam (64 bits): valor en 0–7, pulgar en 8, direcciones mantenidas en
+    // 9–12, hora de la tecla en 16–47.
+    let held = isize::from(held & 0x0F) << 9;
+    (kind, isize::from(value) | (isize::from(thumb) << 8) | held | ((time_ms as isize) << 16))
 }
 
-fn post_action(action: HyperAction, time_ms: u32, qpc: i64) {
+fn post_action(action: HyperAction, held: u8, time_ms: u32, qpc: i64) {
     // Marca el pedido como pendiente (si no había otro más viejo).
     let _ = PENDING_SINCE.compare_exchange(0, time_ms.max(1), Ordering::AcqRel, Ordering::Relaxed);
-    let (kind, data) = encode_action(action, time_ms);
+    let (kind, data) = encode_action(action, held, time_ms);
     post_raw(kind_with_qpc(kind, qpc), data);
+}
+
+/// Avisa al brain que cambió la capa. No marca pendiente: no hace falta que
+/// el brain responda para que el teclado siga.
+fn post_layer(layer: Layer) {
+    let code = match layer {
+        Layer::Off => 0,
+        Layer::Apps => 1,
+        Layer::Window => 2,
+    };
+    post_raw(KIND_LAYER, code);
 }
 
 /// Mensaje al brain: hay resultados de ops para drenar (ver [`crate::ops`]).
@@ -508,6 +528,7 @@ fn decode(msg: &MSG) -> Option<InputEvent> {
     }
     let value = (msg.lParam.0 & 0xFF) as u8;
     let thumb = msg.lParam.0 & 0x100 != 0;
+    let held = ((msg.lParam.0 >> 9) & 0x0F) as u8;
     let time_ms = (msg.lParam.0 >> 16) as u32;
     let qpc = (msg.wParam.0 >> 8) as i64;
     let action = match msg.wParam.0 & 0xFF {
@@ -524,9 +545,17 @@ fn decode(msg: &MSG) -> Option<InputEvent> {
             return Some(InputEvent::HookReinstalled(reason));
         }
         KIND_STALL => return Some(InputEvent::HookStalled { ms: msg.lParam.0 as u32 }),
+        KIND_LAYER => {
+            let layer = match msg.lParam.0 {
+                1 => Layer::Apps,
+                2 => Layer::Window,
+                _ => Layer::Off,
+            };
+            return Some(InputEvent::Layer(layer));
+        }
         _ => return None,
     };
-    Some(InputEvent::Action { action, time_ms, qpc })
+    Some(InputEvent::Action { action, held, time_ms, qpc })
 }
 
 // ---------------------------------------------------------------------------
@@ -563,8 +592,11 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             injected = true;
             request_inject(decision.inject);
         }
+        if let Some(layer) = decision.layer {
+            post_layer(layer);
+        }
         if let Some(action) = decision.action {
-            post_action(action, info.time, start);
+            post_action(action, decision.held, info.time, start);
             if TEST_MODE.load(Ordering::Relaxed)
                 && matches!(action, HyperAction::Other { vk: TEST_STALL_VK, .. })
             {

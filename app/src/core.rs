@@ -212,7 +212,7 @@ impl Core {
 
     fn on_input(&mut self, event: InputEvent) {
         match event {
-            InputEvent::Action { action, time_ms, qpc } => {
+            InputEvent::Action { action, time_ms, qpc, .. } => {
                 // Una acción que llega tarde (el programa estuvo trabado) ya no
                 // es lo que el usuario quiere ahora: se descarta.
                 let age = input::tick_ms().wrapping_sub(time_ms);
@@ -236,6 +236,8 @@ impl Core {
             InputEvent::HookStalled { ms } => {
                 self.log.line(format!("El hook tardó {ms} ms: estado del teclado reiniciado."));
             }
+            // La capa la va a usar el mapa (plan-core.md, hito 2).
+            InputEvent::Layer(_) => {}
         }
     }
 
