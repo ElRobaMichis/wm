@@ -217,6 +217,46 @@ pub struct Inspection {
     pub maximized: bool,
     pub minimized: bool,
     pub monitors: Vec<crate::MonitorInfo>,
+    /// Por qué no se puede animar (`None`: se puede).
+    pub no_fly: Option<wm_model::world::NoFly>,
+}
+
+/// Por qué no animar esta ventana (hito 1e): lecturas que no envían
+/// mensajes a la app, así que no bloquean aunque esté colgada.
+fn no_fly(id: WindowId) -> Option<wm_model::world::NoFly> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowDisplayAffinity, IsHungAppWindow, SPI_GETCLIENTAREAANIMATION,
+        SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
+    };
+    use wm_model::world::NoFly;
+    // El vuelo sube la ventana al frente: solo se anima la que ya lo está.
+    if foreground() != Some(id) {
+        return Some(NoFly::NotFront);
+    }
+    // SAFETY: lectura sin efectos sobre un HWND.
+    if unsafe { IsHungAppWindow(id.hwnd()) }.as_bool() {
+        return Some(NoFly::Hung);
+    }
+    let mut affinity = 0u32;
+    // SAFETY: variable local válida.
+    if unsafe { GetWindowDisplayAffinity(id.hwnd(), &mut affinity) }.is_ok() && affinity != 0 {
+        return Some(NoFly::Protected);
+    }
+    // Se lee en cada observación: no depende de WM_SETTINGCHANGE.
+    let mut animate = BOOL(1);
+    // SAFETY: SPI_GETCLIENTAREAANIMATION escribe un BOOL en la variable local.
+    let ok = unsafe {
+        SystemParametersInfoW(
+            SPI_GETCLIENTAREAANIMATION,
+            0,
+            Some(&mut animate as *mut BOOL as *mut c_void),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    };
+    if ok.is_ok() && !animate.as_bool() {
+        return Some(NoFly::ReducedMotion);
+    }
+    None
 }
 
 /// Observa una ventana. `None` = la que tiene el foco, si es una ventana de
@@ -234,7 +274,10 @@ pub fn inspect(target: Option<(WindowId, u32)>) -> Result<Inspection, String> {
         None => {
             let id = foreground().ok_or("no hay ninguna ventana al frente")?;
             let pid = window_pid(id);
-            if pid == std::process::id() || !is_user_window(id.hwnd()) {
+            // Con nuestra marca (por ejemplo, en vuelo: con cloak) sigue
+            // siendo una ventana de usuario.
+            let ours = crate::hide::hidden_with(id).is_some();
+            if pid == std::process::id() || (!ours && !is_user_window(id.hwnd())) {
                 return Err("la ventana al frente no se acomoda".to_owned());
             }
             id
@@ -256,6 +299,7 @@ pub fn inspect(target: Option<(WindowId, u32)>) -> Result<Inspection, String> {
         maximized: crate::hide::is_maximized(id),
         minimized,
         monitors: crate::monitors(),
+        no_fly: no_fly(id),
     })
 }
 

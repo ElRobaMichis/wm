@@ -12,8 +12,12 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Sender};
 use std::time::{Duration, Instant};
 
+use wm_model::keyboard::Layer;
 use wm_model::place::MonitorObs;
-use wm_model::world::{Effect, Event, FlyFail, FocusReport, Obs, Req, WinInfo, WinKey, World};
+use wm_model::world::{
+    Effect, Event, FlyFail, FlyReport, FocusReport, Obs, Req, WinInfo, WinKey, World,
+};
+use wm_platform::anim::{Anim, AnimEvent};
 use wm_platform::input::{self, InputEvent, ReinstallReason};
 use wm_platform::ops::{Op, Ops, OpsEvent, Output, Ticket};
 use wm_platform::windows_list::{self, WindowId};
@@ -94,6 +98,12 @@ pub struct Brain {
     test_mode: bool,
     started: Instant,
     waits: HashMap<Ticket, Wait>,
+    /// Carril `anim` (hito 1e): se crea con la primera capa de ventana;
+    /// `None` también con `WM_ANIM=0`.
+    anim: Option<Anim>,
+    anim_allowed: bool,
+    /// Vuelos en curso: ticket del carril → pedido del modelo.
+    flights: HashMap<wm_platform::anim::Ticket, Req>,
     /// El modelo pidió terminar.
     pub quit: bool,
 }
@@ -107,7 +117,19 @@ impl Brain {
             test_mode,
             started: Instant::now(),
             waits: HashMap::new(),
+            anim: None,
+            anim_allowed: std::env::var_os("WM_ANIM").is_none_or(|v| v != "0"),
+            flights: HashMap::new(),
             quit: false,
+        }
+    }
+
+    /// Crea el carril `anim` la primera vez que se usa la capa de ventana:
+    /// así el COM, el cloak y el anfitrión están listos antes de la tecla, y
+    /// quien no usa la capa no lo paga.
+    fn warm_anim(&mut self) {
+        if self.anim.is_none() && self.anim_allowed {
+            self.anim = Some(Anim::start(input::current_thread_id()));
         }
     }
 
@@ -119,10 +141,8 @@ impl Brain {
     /// de `ops` y los chequeos del modelo. `None`: nada pendiente.
     pub fn next_deadline(&self) -> Option<Instant> {
         let world = self.world.deadline().map(|us| self.started + Duration::from_micros(us));
-        match (self.ops.next_deadline(), world) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        let anim = self.anim.as_ref().and_then(Anim::next_deadline);
+        [self.ops.next_deadline(), world, anim].into_iter().flatten().min()
     }
 
     /// Si venció el plazo del modelo, lo despierta.
@@ -158,13 +178,21 @@ impl Brain {
                     let t = self.ops.submit(Op::Place { id: WindowId(win.hwnd), rect });
                     self.waits.insert(t, Wait::Place(req));
                 }
-                Effect::Fly { req, .. } => {
-                    // Todavía sin carril `anim` (el modelo no lo pide mientras
-                    // no se habilite): sin animación.
-                    let why = "sin carril de animación".to_owned();
-                    self.feed(Event::Flown { req, result: Err(FlyFail { fatal: false, why }) });
+                Effect::Fly { req, win, rect, to, ms, .. } => match self.anim.as_mut() {
+                    Some(anim) => {
+                        let t = anim.fly(WindowId(win.hwnd), rect, to, ms);
+                        self.flights.insert(t, req);
+                    }
+                    None => {
+                        let why = "sin carril de animación".to_owned();
+                        self.feed(Event::Flown { req, result: Err(FlyFail { fatal: false, why }) });
+                    }
+                },
+                Effect::Land { win } => {
+                    if let Some(anim) = self.anim.as_mut() {
+                        anim.land(WindowId(win.hwnd));
+                    }
                 }
-                Effect::Land { .. } => {}
                 Effect::Normalize { win } => {
                     self.ops.submit(Op::Normalize(WindowId(win.hwnd)));
                 }
@@ -187,6 +215,9 @@ impl Brain {
     /// Salida (limpia o tras un pánico): mostrar todo, esperando como mucho
     /// `limit`.
     pub fn restore_at_exit(&mut self, limit: Duration) {
+        if let Some(anim) = self.anim.as_mut() {
+            anim.land_all();
+        }
         let t = self.ops.submit(Op::RestoreAll);
         self.waits.insert(t, Wait::RestoreAtExit);
         let until = Instant::now() + limit;
@@ -209,7 +240,12 @@ impl Brain {
                 let age_ms = input::tick_ms().wrapping_sub(time_ms);
                 self.feed(Event::Action { action, held, age_ms });
             }
-            InputEvent::Layer(layer) => self.feed(Event::Layer(layer)),
+            InputEvent::Layer(layer) => {
+                if layer == Layer::Window {
+                    self.warm_anim();
+                }
+                self.feed(Event::Layer(layer));
+            }
             InputEvent::HookReinstalled(reason) => {
                 let why = match reason {
                     ReinstallReason::Watchdog => "el vigía detectó que Windows lo había quitado",
@@ -217,10 +253,12 @@ impl Brain {
                     ReinstallReason::Unlock => "se desbloqueó la sesión",
                 };
                 self.log.line(format!("Hook reinstalado: {why}."));
+                self.land_all();
                 self.feed(Event::KeyboardReset);
             }
             InputEvent::HookStalled { ms } => {
                 self.log.line(format!("El hook tardó {ms} ms: estado del teclado reiniciado."));
+                self.land_all();
                 self.feed(Event::KeyboardReset);
             }
         }
@@ -248,8 +286,45 @@ impl Brain {
         }
     }
 
+    fn land_all(&mut self) {
+        if let Some(anim) = self.anim.as_mut() {
+            anim.land_all();
+        }
+    }
+
+    /// Respuestas del carril `anim` (y su vigilante).
+    fn collect_anim(&mut self) {
+        let Some(anim) = self.anim.as_mut() else { return };
+        let mut events = anim.expire(Instant::now());
+        events.extend(anim.drain());
+        for event in events {
+            match event {
+                AnimEvent::Ready(Ok(())) => self.feed(Event::FlyEnabled(true)),
+                AnimEvent::Ready(Err(e)) => {
+                    self.log.line(format!("Animación no disponible: {e}."));
+                }
+                AnimEvent::Flown { ticket, win, result } => {
+                    let Some(req) = self.flights.remove(&ticket) else { continue };
+                    let result = match result {
+                        Ok(d) => Ok(FlyReport { arrived: d.arrived, flight_ms: d.flight_ms }),
+                        Err(e) => {
+                            // La ventana puede haber quedado con cloak: que
+                            // la muestre el carril `shell` (usa la marca).
+                            if e.fatal && wm_platform::hide::hidden_with(win).is_some() {
+                                self.ops.submit(Op::Unhide(win));
+                            }
+                            Err(FlyFail { fatal: e.fatal, why: e.why })
+                        }
+                    };
+                    self.feed(Event::Flown { req, result });
+                }
+            }
+        }
+    }
+
     /// Resultados de los carriles (y plazos vencidos).
     pub fn collect(&mut self) {
+        self.collect_anim();
         let mut events = self.ops.expire(Instant::now());
         events.extend(self.ops.drain());
         for event in events {
@@ -328,7 +403,7 @@ fn obs(i: windows_list::Inspection) -> Obs {
             .iter()
             .map(|m| MonitorObs { bounds: m.bounds, work: m.work_area, dpi: m.dpi })
             .collect(),
-        no_fly: None,
+        no_fly: i.no_fly,
     }
 }
 

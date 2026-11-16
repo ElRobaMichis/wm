@@ -22,7 +22,15 @@
 //!    pegadas al borde), lenta, que se reacomoda sola (no se pelea), sin borde
 //!    y sin DPI awareness;
 //! 10. **colgada**: con una app congelada, `wm` sigue respondiendo y la ventana
-//!     llega a su lugar cuando la app despierta.
+//!     llega a su lugar cuando la app despierta;
+//! 11. **vuelo** (hito 1e): mitad izquierda → derecha se anima (la real se ve
+//!     con cloak durante el vuelo) y aterriza visible, a tiempo;
+//! 12. **vuelo + caída**: matar el core en pleno vuelo deja la ventana con
+//!     cloak, y `restore_all` (lo que hace el guardián al relanzar) la
+//!     devuelve.
+//!
+//! "Llegó" exige además que la ventana no esté escondida: durante un vuelo,
+//! el marco real ya está en el destino pero con cloak.
 //!
 //! Imprime una línea por chequeo y, con `--summary`, agrega una tabla en
 //! Markdown a ese archivo (en la CI, `$GITHUB_STEP_SUMMARY`). Sale con 0 si
@@ -164,6 +172,7 @@ pub fn run(args: &[String]) -> ExitCode {
     if puppets.len() >= PUPPETS {
         focus(&mut r, &puppets);
         core(&mut r, &puppets);
+        fly_crash_check(&mut r, puppets[1]);
         hook(&mut r, puppets[0]);
         hiding(&mut r, puppets[1]);
         frame(&mut r, puppets[2]);
@@ -176,6 +185,8 @@ pub fn run(args: &[String]) -> ExitCode {
             "empujar",
             "ventanas difíciles",
             "colgada",
+            "vuelo",
+            "vuelo + caída",
             "hook + SendInput",
             "esconder",
             "marco DWM",
@@ -312,28 +323,20 @@ fn focus(r: &mut Report, puppets: &[WindowId]) {
 }
 
 /// El core real (`wm core`) en otro proceso, manejado con teclas inyectadas.
-fn core(r: &mut Report, puppets: &[WindowId]) {
+/// Lanza `wm core` y espera su banner (plazo 5 s). Las líneas del core
+/// siguen llegando por el canal.
+fn spawn_core() -> Result<(std::process::Child, std::sync::mpsc::Receiver<String>), String> {
     use std::io::BufRead;
-    let name = "wm core";
-    let Ok(exe) = std::env::current_exe() else {
-        r.check(name, Status::Fail, "no se encontró el ejecutable".into());
-        return;
-    };
-    let child = Command::new(exe)
+    let exe = std::env::current_exe().map_err(|_| "no se encontró el ejecutable".to_owned())?;
+    let mut child = Command::new(exe)
         .arg("core")
         .env_remove("WM_TEST")
+        .env_remove("WM_ANIM")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .spawn();
-    let mut child = match child {
-        Ok(c) => c,
-        Err(e) => {
-            r.check(name, Status::Fail, format!("no se pudo lanzar: {e}"));
-            return;
-        }
-    };
-    // Las líneas del core llegan por un canal: esperar el banner con plazo.
+        .spawn()
+        .map_err(|e| format!("no se pudo lanzar: {e}"))?;
     let (tx, rx) = std::sync::mpsc::channel::<String>();
     if let Some(out) = child.stdout.take() {
         std::thread::spawn(move || {
@@ -345,19 +348,38 @@ fn core(r: &mut Report, puppets: &[WindowId]) {
         });
     }
     let started = Instant::now();
-    let ready = loop {
+    loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(line) if line.starts_with("wm core activo") => break true,
+            Ok(line) if line.starts_with("wm core activo") => return Ok((child, rx)),
             Ok(_) => {}
-            Err(_) if started.elapsed() > Duration::from_secs(5) => break false,
+            Err(_) if started.elapsed() > Duration::from_secs(5) => {
+                let _ = child.kill();
+                return Err("no arrancó en 5 s".into());
+            }
             Err(_) => {}
         }
-    };
-    if !ready {
-        let _ = child.kill();
-        r.check(name, Status::Fail, "no arrancó en 5 s".into());
-        return;
     }
+}
+
+/// Llegó a `target` y se ve: durante un vuelo el marco real ya está en el
+/// destino, pero con cloak.
+fn landed(id: WindowId, target: wm_model::Rect) -> bool {
+    !wm_platform::ghost::is_cloaked(id)
+        && hide::hidden_with(id).is_none()
+        && wm_platform::ghost::frame_bounds(id)
+            .is_some_and(|f| wm_model::place::edge_error(f, target) <= 1)
+}
+
+fn core(r: &mut Report, puppets: &[WindowId]) {
+    let name = "wm core";
+    let started = Instant::now();
+    let (mut child, _lines) = match spawn_core() {
+        Ok(x) => x,
+        Err(e) => {
+            r.check(name, Status::Fail, e);
+            return;
+        }
+    };
     let boot = started.elapsed();
 
     let from = puppets[0];
@@ -411,7 +433,7 @@ fn core(r: &mut Report, puppets: &[WindowId]) {
 /// `Caps` + Alt + teclas con el core real corriendo; mide cuándo el marco
 /// visible llega a cada ubicación.
 fn arrange_checks(r: &mut Report, id: WindowId) {
-    use wm_model::place::{MonitorObs, edge_error, monitor_of};
+    use wm_model::place::{MonitorObs, monitor_of};
     use wm_model::{Placement, place};
     const CAPS: u8 = 0x14;
     const ALT: u8 = 0xA4;
@@ -446,9 +468,7 @@ fn arrange_checks(r: &mut Report, id: WindowId) {
         let start = Instant::now();
         session::send_keys(&seq);
         let reached = loop {
-            let err =
-                wm_platform::ghost::frame_bounds(id).map_or(i32::MAX, |f| edge_error(f, target));
-            if err <= 1 {
+            if landed(id, target) {
                 break Some(start.elapsed());
             }
             if start.elapsed() > Duration::from_secs(1) {
@@ -467,24 +487,120 @@ fn arrange_checks(r: &mut Report, id: WindowId) {
     r.check("capa de ventana", status, parts.join("; "));
     fcz_checks(r, id, monitors[m].work);
     push_checks(r, id, &monitors, m);
+    fly_check(r, id, monitors[m].work);
+}
+
+/// Hito 1e: mitad izquierda → derecha es del mismo tamaño, así que vuela.
+/// Durante el vuelo la real está con cloak (debajo del fantasma); al final,
+/// en el destino y visible, a tiempo.
+fn fly_check(r: &mut Report, id: WindowId, work: wm_model::Rect) {
+    let name = "vuelo";
+    let left = place(work, Placement::LeftHalf);
+    let right = place(work, Placement::RightHalf);
+    std::thread::sleep(Duration::from_millis(200));
+    window_chord(b'A');
+    if wait_for(Duration::from_secs(2), || landed(id, left)).is_none() {
+        r.check(name, Status::Fail, "no llegó a la mitad izquierda".into());
+        return;
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    let expected = wm_model::world::fly_ms(left, right);
+    let start = Instant::now();
+    window_chord(b'D');
+    let mut cloak_at = None;
+    let got = wait_for(Duration::from_secs(2), || {
+        if cloak_at.is_none() && wm_platform::ghost::is_cloaked(id) {
+            cloak_at = Some(start.elapsed());
+        }
+        landed(id, right)
+    });
+    // Despegue (unos 4 cuadros) + vuelo + llegada y uncloak (unos 3 cuadros).
+    let limit = Duration::from_millis(u64::from(expected) + 250);
+    // Redirigir: A a mitad de un vuelo hacia la izquierda... D de nuevo.
+    std::thread::sleep(Duration::from_millis(300));
+    window_chord(b'A');
+    std::thread::sleep(Duration::from_millis(70));
+    window_chord(b'D');
+    let redirected = wait_for(Duration::from_secs(2), || landed(id, right));
+    let ok = cloak_at.is_some() && got.is_some_and(|d| d <= limit) && redirected.is_some();
+    let detail = format!(
+        "A → D: cloak {}; aterrizó visible {} (vuelo de {expected} ms, tope {}); D a mitad de un vuelo a la izquierda: de vuelta a la derecha y visible {}",
+        cloak_at.map_or_else(|| "NUNCA (¿sin animación?)".into(), |d| format!("a los {}", ms(d))),
+        got.map_or_else(|| "NUNCA".into(), |d| format!("a los {}", ms(d))),
+        ms(limit),
+        redirected.map_or_else(|| "NUNCA".into(), |d| format!("a los {}", ms(d))),
+    );
+    r.check(name, if ok { Status::Ok } else { Status::Fail }, detail);
+}
+
+/// Matar el core en pleno vuelo: la ventana queda con cloak (con nuestra
+/// marca) y `restore_all`, lo que hace el guardián al relanzar, la devuelve.
+fn fly_crash_check(r: &mut Report, id: WindowId) {
+    let name = "vuelo + caída";
+    let (mut child, _lines) = match spawn_core() {
+        Ok(x) => x,
+        Err(e) => {
+            r.check(name, Status::Fail, e);
+            return;
+        }
+    };
+    let _ = windows_list::activate(id);
+    std::thread::sleep(Duration::from_millis(150));
+    let Some(frame) = wm_platform::ghost::frame_bounds(id) else {
+        let _ = child.kill();
+        r.check(name, Status::Fail, "no se pudo leer el marco".into());
+        return;
+    };
+    let monitors = wm_platform::monitors();
+    let Some(mon) = monitors.iter().find(|m| {
+        let (cx, cy) = ((frame.left + frame.right) / 2, (frame.top + frame.bottom) / 2);
+        cx >= m.bounds.left && cx < m.bounds.right && cy >= m.bounds.top && cy < m.bounds.bottom
+    }) else {
+        let _ = child.kill();
+        r.check(name, Status::Fail, "no hay monitores".into());
+        return;
+    };
+    let left = place(mon.work_area, Placement::LeftHalf);
+    window_chord(b'A');
+    if wait_for(Duration::from_secs(2), || landed(id, left)).is_none() {
+        let _ = child.kill();
+        r.check(name, Status::Fail, "no llegó a la mitad izquierda".into());
+        return;
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    window_chord(b'D');
+    let cloaked =
+        wait_for(Duration::from_millis(500), || wm_platform::ghost::is_cloaked(id)).is_some();
+    let _ = child.kill();
+    let _ = child.wait();
+    let marked = hide::hidden_with(id).is_some();
+    let report = hide::restore_all();
+    let back = wait_for(Duration::from_secs(1), || {
+        !wm_platform::ghost::is_cloaked(id) && hide::fully_visible(hide::visibility(id))
+    });
+    let ok = cloaked && back.is_some();
+    let detail = format!(
+        "core matado en pleno vuelo (cloak: {}; con marca: {}); restore_all mostró {} y la ventana {}",
+        if cloaked { "sí" } else { "NO, ¿sin animación?" },
+        if marked { "sí" } else { "no" },
+        report.restored.len(),
+        back.map_or_else(|| "SIGUE ESCONDIDA".into(), |d| format!("se ve a los {}", ms(d))),
+    );
+    r.check(name, if ok { Status::Ok } else { Status::Fail }, detail);
 }
 
 /// F (maximizar y volver), C (centrar) y Z (deshacer) con el core real. Parte
 /// de la esquina de abajo a la derecha y termina ahí.
 fn fcz_checks(r: &mut Report, id: WindowId, work: wm_model::Rect) {
-    use wm_model::place::{centered, edge_error};
+    use wm_model::place::centered;
     use wm_model::{Placement, place};
     const CAPS: u8 = 0x14;
     const ALT: u8 = 0xA4;
     let corner = place(work, Placement::BottomRight);
     let center = centered(work, corner.width(), corner.height());
     let maximized = move || wm_platform::hide::is_maximized(id);
-    let at = |target: wm_model::Rect| {
-        move || {
-            !wm_platform::hide::is_maximized(id)
-                && wm_platform::ghost::frame_bounds(id).is_some_and(|f| edge_error(f, target) <= 1)
-        }
-    };
+    let at =
+        |target: wm_model::Rect| move || !wm_platform::hide::is_maximized(id) && landed(id, target);
     type Done = Box<dyn Fn() -> bool>;
     let steps: [(u8, &str, Done); 6] = [
         (b'F', "F → maximizada", Box::new(maximized)),
@@ -693,7 +809,7 @@ fn hung_check(r: &mut Report) {
 /// Con dos monitores o más: llevar la ventana a la mitad del lado que tiene
 /// vecino, repetir para empujarla y volver.
 fn push_checks(r: &mut Report, id: WindowId, monitors: &[wm_model::place::MonitorObs], m: usize) {
-    use wm_model::place::{Dir, edge_error, neighbor};
+    use wm_model::place::{Dir, neighbor};
     use wm_model::{Placement, place};
     const CAPS: u8 = 0x14;
     const ALT: u8 = 0xA4;
@@ -733,9 +849,7 @@ fn push_checks(r: &mut Report, id: WindowId, monitors: &[wm_model::place::Monito
             (CAPS, false),
         ]);
         let reached = loop {
-            let err =
-                wm_platform::ghost::frame_bounds(id).map_or(i32::MAX, |f| edge_error(f, target));
-            if err <= 1 {
+            if landed(id, target) {
                 break Some(start.elapsed());
             }
             if start.elapsed() > Duration::from_secs(1) {
