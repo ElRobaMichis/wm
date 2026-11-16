@@ -11,7 +11,9 @@
 //! - `--lang es|en`: idioma (por defecto, español);
 //! - `--bench x,y`: ventana en esa posición, con una marca magenta arriba a
 //!   la izquierda, y `SHOWN` por stdout (lo usa `wm-bench settings`);
-//! - `--at x,y`: solo la posición; `--light` / `--dark`: forzar el tema.
+//! - `--at x,y`: solo la posición; `--light` / `--dark`: forzar el tema;
+//! - `--show-unfinished`: muestra el perfil y las opciones escondidas en la
+//!   primera versión (`funciones-ocultas.md`).
 
 #![windows_subsystem = "windows"]
 
@@ -250,6 +252,12 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
+    // `--show-unfinished`: muestra lo escondido en la primera versión (el
+    // perfil y las tres opciones; funciones-ocultas.md), para seguir
+    // trabajando en eso.
+    if std::env::args().any(|a| a == "--show-unfinished") {
+        ui.set_show_unfinished(true);
+    }
     if let Some((x, y)) = bench {
         ui.set_bench_mark(true);
         ui.window().set_position(slint::PhysicalPosition::new(x, y));

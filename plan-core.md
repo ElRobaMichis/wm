@@ -459,7 +459,7 @@ Lo que ya da Windows y no hace falta construir: arrastrar al borde o a la esquin
 
 **Antes de la sesión U:**
 - sembrar `apps.txt` con sus apps reales (la lista de los ajustes es fija: 40 apps más las del archivo);
-- ocultar en los ajustes lo que todavía no hace nada: las tres opciones que no se guardan (§13.10) **y el selector "Apps primero / Ventanas primero"** (`settings/ui/settings.slint:138`; el perfil va después de v1);
+- ~~ocultar en los ajustes lo que todavía no hace nada~~ hecho el 16/11/2026: el perfil y las tres opciones quedan detrás de `show-unfinished` (`wm-settings --show-unfinished` las muestra); el porqué y lo que falta para cada una están en **[funciones-ocultas.md](funciones-ocultas.md)**;
 - fijar el ícono de wm en la barra de tareas de su PC (en Windows 11 nace escondido en el desborde y el número del escritorio no se vería);
 - confirmar qué PC tiene ella: Windows 10 u 11, x64 o ARM64 (architecture.md §14.2, §13.11);
 - probar el `wm.exe` sin firmar con Defender en su máquina (el hook de teclado se parece a un keylogger) y decidir cómo se le actualiza (§10);
@@ -505,6 +505,8 @@ Lo que ya da Windows y no hace falta construir: arrastrar al borde o a la esquin
 ## 10. Lo que prometen los documentos y no entra en v1
 
 Auditoría del 16/11/2026 (`keyboard-design.md`, `design.md`, `architecture.md`, `findings.md`, `README.md` contra este plan), después de notar que las equivalencias con el mouse no estaban ni dentro ni fuera. Todo lo documentado tiene ahora un lugar: un hito (arriba), "fuera de v1" (línea de alcance) o esta lista.
+
+**Escondido en los ajustes de v1 (no descartado):** el perfil y las opciones de borde de foco, puntero que sigue al foco y animar ventanas: ver [funciones-ocultas.md](funciones-ocultas.md).
 
 **Ubicado en un hito:** arranque automático (3a), Pausar y Deshacer en la bandeja y aviso de "atajos no disponibles" con una ventana de administrador (3b), mouse (5), ocultar el selector de perfil y actualizar el README (antes de la sesión U).
 

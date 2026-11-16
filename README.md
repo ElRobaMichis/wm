@@ -47,6 +47,8 @@ n = notion | C:\Users\yo\AppData\Local\Programs\Notion\Notion.exe
 - [keyboard-design.md](keyboard-design.md): modelo de interacción y mapa de atajos ("Apps primero").
 - [architecture.md](architecture.md): arquitectura técnica y plan de spikes.
 - [design.md](design.md): lenguaje de diseño (principios, tokens y componentes).
+- [plan-core.md](plan-core.md): plan de la primera versión (hitos 0–5), con [plan-hito4.md](plan-hito4.md) y [plan-hito5.md](plan-hito5.md).
+- [funciones-ocultas.md](funciones-ocultas.md): lo que se escondió de los ajustes en la primera versión, por qué y qué falta para mostrarlo.
 
 ## Compilar
 
