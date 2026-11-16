@@ -1155,7 +1155,7 @@ fn flight_time_grows_with_distance() {
 // (otro tamaño) y el acorde ya no se animaba.
 
 /// Las teclas de un acorde con `gap_ms` entre una y otra (menos que la
-/// espera de 50 ms), y Windows respondiendo en el medio.
+/// espera de 80 ms), y Windows respondiendo en el medio.
 fn chord_spaced(sim: &mut Sim, w: &mut World, letters: &[u8], gap_ms: u64) {
     let mut held = 0;
     for &l in letters {
@@ -1220,4 +1220,27 @@ fn a_single_key_from_a_corner_waits_for_a_second_one_then_goes() {
     let Effect::Inspect { req, .. } = effects[0] else { panic!("{effects:?}") };
     let effects = w.step(Event::Inspected { req, result: Ok(sim.obs()) }, sim.now);
     assert!(matches!(effects.first(), Some(Effect::Fly { .. })), "{effects:?}");
+}
+
+#[test]
+fn a_corner_chord_with_the_keys_60_ms_apart_still_flies_directly() {
+    // Con la espera de 50 ms, ~1 de cada 10 acordes del usuario pasaba por
+    // la mitad: ahora se espera 80 ms.
+    let mut w = flying_world();
+    let mut sim = Sim::new();
+    sim.at(0, P::BottomLeft);
+    chord_spaced(&mut sim, &mut w, b"SD", 60);
+    assert!(sim.is_at(0, P::BottomRight), "{:?}", sim.logs);
+    assert_eq!((sim.flights, sim.places, sim.lands), (1, 0, 0), "{:?}", sim.logs);
+}
+
+#[test]
+fn a_second_key_later_than_the_wait_is_logged() {
+    let mut w = flying_world();
+    let mut sim = Sim::new();
+    sim.at(0, P::BottomLeft);
+    chord_spaced(&mut sim, &mut w, b"SD", 120);
+    assert!(sim.is_at(0, P::BottomRight), "{:?}", sim.logs);
+    let last = sim.logs.last().unwrap();
+    assert!(last.contains("la segunda tecla llegó 120 ms después"), "{last}");
 }

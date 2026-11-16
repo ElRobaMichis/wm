@@ -15,7 +15,7 @@
 //! anterior ni el tiempo. Dos o más teclas juntas forman un **gesto**: el
 //! destino se calcula desde donde estaba antes de la primera
 //! ([`crate::place::chord`]), así que el orden en que caen los dedos da
-//! igual. Empujar al monitor vecino con una tecla sola espera 50 ms por si
+//! igual. Empujar al monitor vecino con una tecla sola espera 80 ms por si
 //! llega una segunda tecla (sin eso, la ventana iría y volvería).
 //!
 //! **Colocar una ventana** (plan-core.md §2.5): leer la ventana al frente
@@ -112,10 +112,11 @@ pub fn fly_ms(from: Rect, to: Rect) -> u32 {
 /// Chequeos después de pedir una ubicación, en ms desde el pedido.
 const CHECKS_MS: [u64; 5] = [16, 50, 120, 250, 600];
 
-/// Espera antes de empujar al monitor vecino con una tecla sola, por si es
-/// la primera de un acorde. No cambia ningún resultado: solo evita ver un
-/// paso intermedio.
-const CHORD_WAIT_US: u64 = 50_000;
+/// Espera de una tecla sola que empuja al monitor vecino o sale de una
+/// esquina, por si es la primera de un acorde. No cambia ningún resultado:
+/// solo evita ver un paso intermedio. Con 50 ms, en la prueba del usuario
+/// (16/11/2026) ~1 acorde de cada 10 llegaba tarde y pasaba por la mitad.
+const CHORD_WAIT_US: u64 = 80_000;
 
 /// Error aceptado por borde.
 const TOLERANCE_PX: i32 = 1;
@@ -215,6 +216,8 @@ struct Gesture {
     origin_rect: Rect,
     /// Teclas del gesto (`HELD_*`).
     seen: u8,
+    /// Cuándo se apretó la primera tecla (para ver si la segunda llegó tarde).
+    key_us: u64,
 }
 
 /// Una tecla sola demorada por si llega una segunda tecla: un empuje al
@@ -750,6 +753,7 @@ impl World {
             origin: here,
             origin_rect: here_rect,
             seen: bit,
+            key_us,
         });
         let before = Entry { win: obs.key, frame: here_rect, maximized: origin_max, tag: id };
         match step(here.placement, dir) {
@@ -789,6 +793,14 @@ impl World {
         out: &mut Vec<Effect>,
     ) {
         let before = Entry { win: g.win, frame: g.origin_rect, maximized: g.origin_max, tag: g.id };
+        // Más tarde que la espera: la primera tecla ya salió sola (se vio un
+        // paso intermedio). Queda en el log para afinar la espera.
+        let gap_us = key_us.saturating_sub(g.key_us);
+        let what = if gap_us > CHORD_WAIT_US {
+            format!("{what} (la segunda tecla llegó {} ms después)", gap_us / 1000)
+        } else {
+            what
+        };
         let Some(target) = chord(g.seen) else {
             // Teclas opuestas: no nombran nada; vuelve a donde estaba (y el
             // gesto no deja nada para deshacer).
