@@ -14,7 +14,7 @@
 //! 6. **`wm core`**: el core real, manejado con teclas inyectadas: `Caps` + W
 //!    lleva a otro títere (son `wm.exe`) y `Caps` + Esc lo cierra con código 0;
 //! 7. **capa de ventana** (con el mismo core): `Caps` + Alt + A = mitad
-//!    izquierda, W enseguida = esquina, D + S juntas = la otra esquina, con
+//!    izquierda, W = mitad de arriba, D + S juntas = esquina, con
 //!    el marco visible a ≤ 1 px;
 //! 8. **empujar** (solo con dos monitores o más): repetir la dirección lleva
 //!    la ventana al monitor vecino, entrando por la mitad opuesta, y vuelve.
@@ -422,7 +422,7 @@ fn arrange_checks(r: &mut Report, id: WindowId) {
     // (teclas después de Caps + Alt, ubicación esperada, nombre)
     let steps: [(&[u8], Placement, &str); 3] = [
         (b"A", Placement::LeftHalf, "A → mitad izquierda"),
-        (b"W", Placement::TopLeft, "W enseguida → esquina"),
+        (b"W", Placement::TopHalf, "W → mitad de arriba"),
         (b"DS", Placement::BottomRight, "D + S juntas → esquina"),
     ];
     let mut parts = Vec::new();

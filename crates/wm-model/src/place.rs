@@ -142,9 +142,12 @@ pub fn placement_for(dir: Dir, perp: Option<Dir>) -> Placement {
 // la tecla anterior ni el tiempo:
 //
 // - **R1, una tecla sola** ([`step`]): A/D van a ese costado conservando la
-//   altura; W/S suben o bajan un escalón (abajo → toda → arriba; entre la
-//   mitad de abajo y la de arriba, directo). Contra el borde, pasa al monitor
-//   vecino entrando por el borde opuesto y conservando el otro eje.
+//   altura (una esquina sigue siendo esquina). W/S llevan a la mitad de
+//   arriba/abajo **de todo el ancho**, también desde una mitad lateral (lo
+//   pidió el usuario: una tecla, no F y después W); una esquina, en cambio,
+//   baja o sube a la mitad de su costado (↖ + S = mitad izquierda). Contra el
+//   borde, pasa al monitor vecino entrando por el borde opuesto y conservando
+//   el otro eje.
 // - **R2, teclas juntas** ([`chord`]): nombran los bordes que toca la
 //   ventana, calculado desde donde estaba antes de la primera tecla, así que
 //   el orden en que caen los dedos da igual. Dos opuestas se anulan.
@@ -196,12 +199,12 @@ pub fn step(slot: Placement, key: Dir) -> Move {
     if key.vertical() {
         if v == Some(key) {
             Move::Push { dir: key, enter: join(h, Some(key.opposite())) }
-        } else if v == Some(key.opposite()) {
-            // Un escalón: de la esquina a la mitad del costado; entre la mitad
-            // de arriba y la de abajo, directo (sin pasar por "toda").
-            Move::Stay(if h.is_some() { join(h, None) } else { join(None, Some(key)) })
+        } else if v == Some(key.opposite()) && h.is_some() {
+            // Una esquina que se aleja de su borde: la mitad de su costado.
+            Move::Stay(join(h, None))
         } else {
-            Move::Stay(join(h, Some(key)))
+            // Libre, mitad lateral o la mitad opuesta: la mitad de todo el ancho.
+            Move::Stay(join(None, Some(key)))
         }
     } else if h == Some(key) {
         Move::Push { dir: key, enter: join(Some(key.opposite()), v) }
@@ -564,11 +567,11 @@ mod tests {
             ),
             (
                 P::LeftHalf,
-                [push(A, P::RightHalf), Stay(P::RightHalf), Stay(P::TopLeft), Stay(P::BottomLeft)],
+                [push(A, P::RightHalf), Stay(P::RightHalf), Stay(P::TopHalf), Stay(P::BottomHalf)],
             ),
             (
                 P::RightHalf,
-                [Stay(P::LeftHalf), push(D, P::LeftHalf), Stay(P::TopRight), Stay(P::BottomRight)],
+                [Stay(P::LeftHalf), push(D, P::LeftHalf), Stay(P::TopHalf), Stay(P::BottomHalf)],
             ),
             (
                 P::TopHalf,
@@ -663,6 +666,25 @@ mod tests {
             }
         }
         assert_eq!(seen.len(), 9, "desde una ventana libre se llega a las 8 ubicaciones");
+    }
+
+    #[test]
+    fn from_any_slot_single_keys_reach_every_other_slot() {
+        // Sin pasar por F: todas las mitades y esquinas, desde cualquiera.
+        for start in ALL.into_iter().filter(|&p| p != P::Full) {
+            let mut seen = std::collections::HashSet::from([start]);
+            let mut frontier = vec![start];
+            while let Some(p) = frontier.pop() {
+                for key in Dir::ALL {
+                    if let Move::Stay(q) = step(p, key)
+                        && seen.insert(q)
+                    {
+                        frontier.push(q);
+                    }
+                }
+            }
+            assert_eq!(seen.len(), 8, "desde {start:?} se llega a las 8 ubicaciones");
+        }
     }
 
     #[test]

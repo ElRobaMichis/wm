@@ -350,8 +350,8 @@ fn a_window_that_could_not_shrink_still_counts_as_where_we_left_it() {
     sim.win.min_width = 1200;
     sim.key(&mut w, b'A'); // "mitad izquierda", aunque quedó más ancha
     sim.win.min_width = 0;
-    sim.key(&mut w, b'W'); // desde la mitad izquierda: esquina, no "libre + W"
-    assert!(sim.is_at(0, P::TopLeft), "{:?}", sim.logs);
+    sim.key(&mut w, b'D'); // desde la mitad izquierda: mitad derecha, no "libre + D"
+    assert!(sim.is_at(0, P::RightHalf), "{:?}", sim.logs);
 }
 
 #[test]
@@ -374,9 +374,9 @@ fn the_last_key_wins_and_counts_from_where_the_first_was_going() {
     let Effect::Inspect { req, .. } = effects[0] else { panic!("{effects:?}") };
     let effects = w.step(Event::Inspected { req, result: Ok(sim.obs()) }, sim.now);
     assert!(matches!(effects[0], Effect::Place { .. }));
-    sim.run(&mut w, arrange(b'W', HELD_W));
+    sim.run(&mut w, arrange(b'D', HELD_D));
     assert_eq!(w.placing(), 0);
-    assert!(sim.is_at(0, P::TopLeft), "A va a la izquierda; W desde ahí = esquina");
+    assert!(sim.is_at(0, P::RightHalf), "A va a la izquierda; D desde ahí = mitad derecha");
     assert_eq!(sim.logs.len(), 1, "solo se informa la última: {:?}", sim.logs);
 }
 
@@ -473,7 +473,9 @@ fn user_case_2_a_chord_does_not_depend_on_which_finger_lands_first() {
 }
 
 #[test]
-fn user_case_3_a_pushed_half_plus_w_is_the_top_corner_of_that_side() {
+fn user_case_3_a_pushed_half_plus_w_is_the_top_half_of_that_monitor() {
+    // Primero se definió como "esquina de ese lado"; el usuario prefirió la
+    // mitad de arriba de todo el ancho, en una sola tecla.
     for gap_ms in [100, 5_000] {
         let mut w = World::new(Vec::new());
         let mut sim = Sim::new();
@@ -481,7 +483,7 @@ fn user_case_3_a_pushed_half_plus_w_is_the_top_corner_of_that_side() {
         sim.key(&mut w, b'D'); // mitad izquierda del monitor 1
         sim.now += gap_ms * MS;
         sim.key(&mut w, b'W');
-        assert!(sim.is_at(1, P::TopLeft), "a los {gap_ms} ms: {:?}", sim.logs);
+        assert!(sim.is_at(1, P::TopHalf), "a los {gap_ms} ms: {:?}", sim.logs);
         assert!(!sim.logs.iter().any(|l| l.contains("no hay otro monitor")), "{:?}", sim.logs);
     }
 }
@@ -681,7 +683,7 @@ fn z_undoes_every_kind_of_move_in_order() {
     let mut sim = Sim::new();
     let start = sim.win.frame;
     sim.key(&mut w, b'A'); // mitad izquierda
-    sim.key(&mut w, b'W'); // esquina
+    sim.key(&mut w, b'W'); // mitad de arriba
     sim.chord(&mut w, b"SD", true); // un acorde: una sola entrada
     sim.key(&mut w, b'D'); // empuja al monitor 1
     sim.key(&mut w, b'C'); // centrada
@@ -692,8 +694,8 @@ fn z_undoes_every_kind_of_move_in_order() {
     assert!(sim.is_at(1, P::BottomLeft), "{:?}", sim.logs);
     sim.key(&mut w, b'Z'); // deshace el empuje: ↘ del monitor 0
     assert!(sim.is_at(0, P::BottomRight), "{:?}", sim.logs);
-    sim.key(&mut w, b'Z'); // deshace el acorde S + D (una sola Z): ↖
-    assert!(sim.is_at(0, P::TopLeft), "{:?}", sim.logs);
+    sim.key(&mut w, b'Z'); // deshace el acorde S + D (una sola Z): mitad de arriba
+    assert!(sim.is_at(0, P::TopHalf), "{:?}", sim.logs);
     sim.key(&mut w, b'Z');
     assert!(sim.is_at(0, P::LeftHalf));
     sim.key(&mut w, b'Z');

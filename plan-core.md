@@ -170,7 +170,7 @@ Latencia esperada: dos saltos de carril, como `Caps + letra` hoy (1,9-4,4 ms de 
 > **Por qué:** el usuario encontró que (1) una esquina se convertía en mitad al moverla de lado; (2) apretar W + A "a la vez" daba resultados distintos según qué dedo llegaba primero; (3) una mitad recién empujada + W iba a la esquina del otro lado. Las tres causas: la esquina por secuencia dependía de la tecla anterior y de un plazo de 1 s, recordaba la *tecla* y no el *lado* donde quedó la ventana, y un acorde eran dos acciones independientes.
 >
 > **La regla** (`place::step`, `place::chord`; `World::arrange`):
-> - **R1, una tecla sola**, desde donde está la ventana, solo en su eje. **A / D** van a ese costado y **conservan la altura** (una esquina se mueve como esquina). **W / S** suben o bajan un escalón: abajo → altura completa → arriba (como `Win + ↑/↓`); entre la mitad de abajo y la de arriba, directo. **Contra el borde**, al monitor vecino entrando por el borde opuesto y conservando el otro eje; sin vecino, nada.
+> - **R1, una tecla sola**, desde donde está la ventana, solo en su eje. **A / D** van a ese costado y **conservan la altura** (una esquina se mueve como esquina). **W / S** llevan a la mitad de arriba / abajo **de todo el ancho**, también desde una mitad lateral; una **esquina** que se aleja de su borde pasa a la mitad de su costado (↖ + S = mitad izquierda). *Cambio pedido por el usuario (15/11/2026): la primera versión, como `Win + ↑`, llevaba de una mitad lateral a la esquina, y la mitad de arriba quedaba para F y después W ("un comando extra").* **Contra el borde**, al monitor vecino entrando por el borde opuesto y conservando el otro eje; sin vecino, nada.
 > - **R2, teclas juntas** (la segunda baja mientras la primera sigue apretada): nombran los bordes que toca la ventana, **desde donde estaba antes de la primera tecla**, así que el orden de los dedos no importa. Dos opuestas se anulan. Si la ventana ya estaba ahí, empuja (primero de costado, después en vertical).
 > - **Sin plazo de 1 s.** "D y, cuando sea, W" da la esquina por estado.
 > - **Empujar con una tecla sola espera 50 ms**, por si es la primera de un acorde: no cambia el resultado, evita ver la ventana ir al otro monitor y volver.
@@ -179,8 +179,8 @@ Latencia esperada: dos saltos de carril, como `Caps + letra` hoy (1,9-4,4 ms de 
 > | Desde | A | D | W | S |
 > |---|---|---|---|---|
 > | Libre o maximizada | Izq | Der | Arr | Aba |
-> | Izq | ⇐ Der | Der | ↖ | ↙ |
-> | Der | Izq | ⇒ Izq | ↗ | ↘ |
+> | Izq | ⇐ Der | Der | Arr | Aba |
+> | Der | Izq | ⇒ Izq | Arr | Aba |
 > | Arr | ↖ | ↗ | ⇑ Aba | Aba |
 > | Aba | ↙ | ↘ | Arr | ⇓ Arr |
 > | ↖ | ⇐ ↗ | ↗ | ⇑ ↙ | Izq |
@@ -190,7 +190,7 @@ Latencia esperada: dos saltos de carril, como `Caps + letra` hoy (1,9-4,4 ms de 
 >
 > (⇐ X = al monitor de ese lado, a X; sin vecino, nada.)
 >
-> **Decisiones del usuario (15/11/2026, por recomendación):** el acorde sobre su propia esquina empuja; las teclas opuestas juntas se anulan (para no sumar comandos); W/S en escalera, como Windows; espera de 50 ms solo al empujar con una tecla sola. **Costo aceptado:** desde un costado, la mitad de arriba o de abajo ya no se alcanza con una tecla sola (queda para F y después W).
+> **Decisiones del usuario (15/11/2026, por recomendación):** el acorde sobre su propia esquina empuja; las teclas opuestas juntas se anulan (para no sumar comandos); W/S en escalera, como Windows; espera de 50 ms solo al empujar con una tecla sola. **Con el cambio de W/S:** desde cualquier mitad o esquina se llega a todas las demás con teclas solas (prueba `from_any_slot_single_keys_reach_every_other_slot`); de una mitad lateral a una esquina son dos teclas (W y A) o un acorde (W + A).
 >
 > **Carrera encontrada por la CI (corregida):** soltar Alt (aviso inmediato del hook) podía procesarse entre la respuesta de la primera tecla de un acorde y la de la segunda, y la segunda se tomaba como sola. Ahora si una tecla continúa el gesto se decide al llegar la tecla, en el mismo orden que los cambios de capa; prueba que reproduce ese orden.
 >
