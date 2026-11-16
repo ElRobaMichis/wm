@@ -21,8 +21,9 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DispatchMessageW, EnumWindows,
     GWLP_USERDATA, GetClassNameW, GetClientRect, GetMessageW, GetWindowLongPtrW, MSG, PostMessageW,
-    PostQuitMessage, RegisterClassW, SetWindowLongPtrW, TranslateMessage, WINDOW_EX_STYLE, WM_APP,
-    WM_DESTROY, WM_PAINT, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    PostQuitMessage, RegisterClassW, SW_SHOWNORMAL, SetWindowLongPtrW, ShowWindow,
+    TranslateMessage, WINDOW_EX_STYLE, WM_APP, WM_DESTROY, WM_PAINT, WNDCLASSW,
+    WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
 use windows::core::{BOOL, PCWSTR, w};
 
@@ -150,11 +151,14 @@ pub fn run_puppets(count: usize) -> windows::core::Result<()> {
         for i in 0..count {
             let (col, row) = ((i as i32) % cols, (i as i32) / cols);
             let title: Vec<u16> = format!("Títere {}\0", i + 1).encode_utf16().collect();
+            // Se crea invisible y se muestra después de guardar su número:
+            // si no, quien la busca puede verla antes y leer el número 0
+            // (el Títere 2 se confundía con el 1).
             let hwnd = CreateWindowExW(
                 WINDOW_EX_STYLE(0),
                 CLASS,
                 PCWSTR(title.as_ptr()),
-                WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                WS_OVERLAPPEDWINDOW,
                 work.left + col * width,
                 work.top + row * height,
                 width,
@@ -165,6 +169,7 @@ pub fn run_puppets(count: usize) -> windows::core::Result<()> {
                 None,
             )?;
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, i as isize);
+            let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
         }
 
         let mut msg = MSG::default();

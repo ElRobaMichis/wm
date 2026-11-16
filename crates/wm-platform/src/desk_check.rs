@@ -225,10 +225,13 @@ impl Drop for Children {
 }
 
 fn puppets_of(pid: u32) -> Vec<WindowId> {
-    crate::puppet::find_puppets()
+    // Por título ("Títere 1", "Títere 2"): no depende del orden de creación.
+    let mut ws: Vec<WindowId> = crate::puppet::find_puppets()
         .into_iter()
         .filter(|&id| windows_list::window_pid(id) == pid)
-        .collect()
+        .collect();
+    ws.sort_by_key(|&id| windows_list::window_title(id));
+    ws
 }
 
 // ---------------------------------------------------------------------------
