@@ -1291,7 +1291,7 @@ impl World {
             out.push(Effect::Log(format!("{what}: {} está en pantalla completa.", obs.app)));
             return;
         }
-        let (here, here_rect) = self.locate(&obs, m);
+        let (_, here_rect) = self.locate(&obs, m);
         let here_rect = if obs.maximized { work } else { here_rect };
         // Seguir con la misma ancla si la ventana está donde la dejó la
         // tecla anterior; si no, el lugar donde está ahora.
@@ -1309,16 +1309,25 @@ impl World {
             .copied();
         let (anchor_rect, x, y) = match previous {
             Some(s) => (s.anchor, s.x, s.y),
-            None => match here.placement {
-                Placement::LeftHalf | Placement::RightHalf => {
-                    (place(work, here.placement), true, false)
-                }
-                Placement::TopHalf | Placement::BottomHalf => {
-                    (place(work, here.placement), false, true)
-                }
-                Placement::Full => (here_rect, true, true),
-                corner => (place(work, corner), true, true),
-            },
+            None => {
+                // Según los bordes del área que toca (no solo mitades y
+                // esquinas exactas: una franja del 40 % que volvió con Z
+                // también cambia solo el ancho, prueba del usuario).
+                let near = |a: i32, b: i32| (a - b).abs() <= TOLERANCE_PX;
+                let (l, r) = (near(here_rect.left, work.left), near(here_rect.right, work.right));
+                let (t, b) = (near(here_rect.top, work.top), near(here_rect.bottom, work.bottom));
+                let (side_x, side_y) = (l != r, t != b);
+                let (full_x, full_y) = (l && r, t && b);
+                let (x, y) = if full_y && side_x {
+                    (true, false)
+                } else if full_x && side_y {
+                    (false, true)
+                } else {
+                    (true, true)
+                };
+                // `anchor` pega al borde que toca este rectángulo (o centra).
+                (here_rect, x, y)
+            }
         };
         let size = |current: i32, total: i32, on: bool| {
             if !on {

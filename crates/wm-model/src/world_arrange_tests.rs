@@ -1448,3 +1448,44 @@ fn v_on_a_half_the_app_cannot_fill_changes_only_the_width() {
     assert_eq!(sim.win.frame.height(), work().height(), "solo el ancho: {:?}", sim.logs);
     assert_eq!(sim.places, places, "ya está en su mínimo de ancho: {:?}", sim.logs);
 }
+
+#[test]
+fn v_on_a_strip_restored_by_z_changes_only_the_width() {
+    // Prueba del usuario con Terminal: franja del 40 % pegada a la derecha →
+    // C → Z (vuelve a la franja) → V achicaba los dos ejes ("30 % × 90 %").
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.at(0, P::RightHalf);
+    sim.key(&mut w, b'V'); // 40 % de ancho
+    sim.key(&mut w, b'C');
+    sim.key(&mut w, b'Z');
+    assert_eq!(sim.win.frame.width(), 1920 * 40 / 100, "{:?}", sim.logs);
+    sim.key(&mut w, b'V');
+    let last = sim.logs.last().unwrap();
+    assert!(last.contains("30 % de ancho"), "{last}");
+    assert_eq!(sim.win.frame.right, work().right);
+    assert_eq!(sim.win.frame.height(), work().height());
+}
+
+#[test]
+fn g_and_v_follow_the_edges_the_window_touches() {
+    let work = work();
+    // Franja de arriba de 30 % de alto, a todo el ancho: solo el alto.
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.win.frame = Rect::new(work.left, work.top, work.right, work.top + 310);
+    sim.key(&mut w, b'G');
+    assert!(sim.logs.last().unwrap().contains("% de alto"), "{:?}", sim.logs);
+    assert_eq!(sim.win.frame.top, work.top);
+    // Pegada abajo a la izquierda sin ser una esquina exacta: contra esa esquina.
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.win.frame = Rect::new(work.left, work.bottom - 400, work.left + 700, work.bottom);
+    sim.key(&mut w, b'V');
+    assert_eq!(
+        (sim.win.frame.left, sim.win.frame.bottom),
+        (work.left, work.bottom),
+        "{:?}",
+        sim.logs
+    );
+}
