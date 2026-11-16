@@ -2,7 +2,7 @@
 
 Plan armado con Fable 5.2 el 15/11/2026, después de los spikes 1–9. Objetivo: la versión con la que la usuaria de prueba hace la sesión 1 de `keyboard-design.md` §12. **[V]** = verificado en el código o en las mediciones de `architecture.md`; **[S]** = supuesto, a comprobar. Las decisiones del usuario están en §8.2.
 
-**Alcance, en orden:** capa de ventana → mapa al mantener `Caps` → arranque normal (guardián, bandeja, recarga de `apps.txt`) → escritorios 1–4. **Fuera:** tiling y zonas, buscador de comandos, bienvenida, "Hyper + letra libre pregunta", UIAccess, macOS.
+**Alcance, en orden:** capa de ventana → mapa al mantener `Caps` → arranque normal (guardián, bandeja, recarga de `apps.txt`) → escritorios 1–4 → mouse (hito 5). **Fuera de v1:** tiling y zonas (incluidos T, R, Q/E de la pila, el modo zonas y arrastrar a una zona), buscador de comandos, bienvenida (y con ella la sugerencia de letras, el perfil y la importación de atajos), "Hyper + letra libre pregunta", UIAccess, macOS, íconos en el mapa (D7), persistencia por topología (`state.json`), escritorios por monitor (D2), el esquema escalera, el IPC por named pipe y los WinEvents de creación y destrucción. El resto de lo que prometen los documentos y no entra en v1 está en **§10** (auditoría del 16/11/2026: nada documentado queda sin lugar).
 
 ---
 
@@ -335,6 +335,7 @@ Latencia esperada: dos saltos de carril, como `Caps + letra` hoy (1,9-4,4 ms de 
 | `wm` sin argumentos | `guardian::run(&[])`, que ya lanza `core` por defecto [V] `guardian.rs:32-33`. Cambio en `main.rs:86`; `doctor` queda como subcomando |
 | Sin consola | D5: segundo target con el mismo código y `windows_subsystem = "windows"`, que es el que se lanza al inicio. `wm.exe` de consola queda igual para CLI y CI |
 | Instancia única | Mutex con nombre en el guardián. La segunda instancia pide "abrir ajustes" a la primera y sale [S] |
+| Inicio automático | Clave `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (sin admin, architecture.md §12.4) con el target sin consola; se activa desde los ajustes o el menú de la bandeja. Sin esto, en las 1–2 semanas de uso real deja de funcionar después de cada reinicio (auditoría §10) |
 | Log | `wm-log` también escribe en `%LOCALAPPDATA%\wm\wm.log`, con rotación por tamaño |
 | Ícono | Creado en ejecución desde bytes embebidos (`CreateIconFromResourceEx`, user32). Monocromo (`design.md`) |
 | Bandeja | La ventana `wm-ui` recibe los clics. `Shell_NotifyIconW` va por el carril `shell`. Menú nativo: Abrir ajustes · Mostrar todas las ventanas (hito 4) · Salir. Clic izquierdo = ajustes |
@@ -423,7 +424,7 @@ Para C: mover el bucle a `app/src/brain.rs`, reutilizable por `core` y `ci_probe
 | **2c. Pulido y medición** | Fundido, reducir animaciones, escala por DPI, recrear al cambiar monitores | ≤ 30 MB con el mapa; 0 % de CPU tras ocultarlo | `wm-bench` |
 | | **Usable: se aprende sin documentación** | | |
 | **3a. Arranque** | `wm` = guardián + core; sin consola (D5); instancia única; aviso al rendirse | Doble clic no abre terminal; la segunda instancia no duplica | C: lanzar `wm` → dos procesos y ventana `wm-ui`. M |
-| **3b. Bandeja** | Ícono, menú, `TaskbarCreated`, lanzar ajustes con entorno del usuario | "Salir" → código 0 sin relanzar; matar el core → ícono de vuelta en ≤ 1 s | C: comando "salir" a `wm-ui`. M: reiniciar Explorer |
+| **3b. Bandeja** | Ícono, menú (Ajustes, **Pausar**, **Deshacer**, Salir), `TaskbarCreated`, lanzar ajustes con entorno del usuario, **aviso de la bandeja** cuando los atajos no llegan (ventana de administrador al frente) | "Salir" → código 0 sin relanzar; matar el core → ícono de vuelta en ≤ 1 s; "Pausar" deja pasar todas las teclas | C: comando "salir" a `wm-ui`. M: reiniciar Explorer |
 | **3c. Recarga** | Handle de cambios, antirrebote, `LoadBindings` | Guardar en ajustes rige en < 300 ms sin reiniciar | C: `APPDATA` temporal; escribir `q = wm` → Caps + Q enfoca un títere. M: 10 min en reposo con WPR, 0 cambios de contexto |
 | | **Usable: se instala y se usa sin terminal** | | |
 | **4.0 Verificaciones** (medio día) | (i) diálogo con dueño al esconder al dueño; (ii) Alt+Tab y clic en la barra sobre una ventana con cloak; (iii) `SetProp` y cloak sobre una elevada; (iv) foco al shell; (v) minimizada + cloak; (vi) una UWP; (vii) video a pantalla completa | Cada [S] de §4 pasa a [V] o cambia el diseño | M, anotado en `architecture.md` |
@@ -432,8 +433,16 @@ Para C: mover el bucle a `app/src/brain.rs`, reutilizable por `core` y `ci_probe
 | **4c. Recuperación** | Pánico → restaurar; relanzamiento (D4); `TaskbarCreated` → reconciliar; "Mostrar todas las ventanas"; salida limpia | `crash-test` contra el **core real** (hoy usa `hide-hold`): 50 muertes, 0 perdidas, < 500 ms | P: caída en cualquier punto. C: `crash-test core 50`. M: matar Explorer |
 | **4d. Monitores** | Avisos por `wm-ui`, `StormTracker` con plazos, rescate (incluye escondidas), recrear overlays y fantasma | Guion de cables y bloqueo de §13.9 con el core corriendo: 0 ventanas fuera de pantalla | P: las 33 pruebas de `screens`. M |
 | | **Usable: sesión 1 con la usuaria (U)** | | |
+| **5. Mouse** | Equivalencias de `keyboard-design.md` §7 que no da Windows: **`Caps` + arrastrar** mueve desde cualquier parte de la ventana y **`Caps` + clic derecho + arrastrar** la redimensiona (hook de mouse **solo** con Hyper apretado, architecture.md §4.2); indicador de escritorios en la bandeja para ir y llevar (con el hito 4); arrastrar una ventana al indicador del escritorio | Mover y redimensionar sin apuntar al título; 0 % de CPU sin Hyper (sin hook de mouse permanente) | P: la máquina del arrastre. C: arrastre inyectado con el core real. M |
 
-**Antes de la sesión U:** sembrar `apps.txt` con sus apps reales (la lista de los ajustes es fija: 40 apps más las del archivo) y ocultar las tres opciones de los ajustes que todavía no se guardan (§13.10).
+Lo que ya da Windows y no hace falta construir: arrastrar al borde o a la esquina (Snap), doble clic en el título para maximizar (coherente con D1), ir a una app desde la barra de tareas, pasar una ventana al otro monitor arrastrándola. Quedan para después de v1: arrastrar íconos sobre el mapa para asignar letras (pide íconos, D7) y el gesto del mouse para centrar ("a definir" en `keyboard-design.md` §7).
+
+**Antes de la sesión U:**
+- sembrar `apps.txt` con sus apps reales (la lista de los ajustes es fija: 40 apps más las del archivo);
+- ocultar en los ajustes lo que todavía no hace nada: las tres opciones que no se guardan (§13.10) **y el selector "Apps primero / Ventanas primero"** (`settings/ui/settings.slint:138`; el perfil va después de v1);
+- confirmar qué PC tiene ella: Windows 10 u 11, x64 o ARM64 (architecture.md §14.2, §13.11);
+- probar el `wm.exe` sin firmar con Defender en su máquina (el hook de teclado se parece a un keylogger) y decidir cómo se le actualiza (§10);
+- ~~actualizar `README.md`~~ hecho el 16/11/2026.
 
 ---
 
@@ -469,3 +478,29 @@ Para C: mover el bucle a `app/src/brain.rs`, reutilizable por `core` y `ci_probe
 | D8 | Sesión 1 | La tarea "más ancho" no tiene atajo y la bienvenida no existe | **Agregar G/V como hito 1f** (~1 día [S]). Empezar la sesión por el mapa en lugar de la bienvenida |
 
 **Menor:** agregar `proptest` como dependencia de desarrollo solo en `wm-model`, para las máquinas de estado de `World`.
+
+---
+
+## 10. Lo que prometen los documentos y no entra en v1
+
+Auditoría del 16/11/2026 (`keyboard-design.md`, `design.md`, `architecture.md`, `findings.md`, `README.md` contra este plan), después de notar que las equivalencias con el mouse no estaban ni dentro ni fuera. Todo lo documentado tiene ahora un lugar: un hito (arriba), "fuera de v1" (línea de alcance) o esta lista.
+
+**Ubicado en un hito:** arranque automático (3a), Pausar y Deshacer en la bandeja y aviso de "atajos no disponibles" con una ventana de administrador (3b), mouse (5), ocultar el selector de perfil y actualizar el README (antes de la sesión U).
+
+**A decidir antes de las 1–2 semanas de uso real** (no bloquean la sesión 1):
+- **Avisos en pantalla** cuando una tecla no hace nada (no hay otro monitor, la app no responde, pantalla completa): hoy quedan solo en el log. Para una persona no técnica, que no pase nada parece una falla (`architecture.md` §5.5, `design.md` §5). Recomendación: un aviso discreto en el mapa o la bandeja; decidir con la sesión 1.
+- **Registro local de uso** con su permiso (`keyboard-design.md` §12.3): `wm.log` cubre una parte, pero rota por tamaño.
+- **Instalación:** cómo se le actualiza y se desinstala; la firma del ejecutable va después de v1 (`architecture.md` §12.3–12.4, §9.7).
+
+**Después de v1:**
+- Enseñar en el momento ("esto también es `Caps` + …", `keyboard-design.md` §10.2).
+- Borde de foco prendido por defecto (`keyboard-design.md` §14.7, `design.md` §5; con `DWMWA_BORDER_COLOR` cuesta poco).
+- Atajos del nivel 2: foco con Hyper + flechas, X para cerrar (apagado por defecto), "llevar y seguir" con Shift (`keyboard-design.md` §6.3, §14.7).
+- Teclado y configuración: elegir qué hace un toque de `Caps`, otra tecla Hyper desde la interfaz, detectar choques con PowerToys o AutoHotkey, perfiles de flechas y Vim, "letra = categoría", exportar e importar, el puntero que sigue al foco, WASD por posición física con las etiquetas reales de la distribución en el mapa (hoy QWERTY fijo, `mapview.rs`) (`keyboard-design.md` §4.3, §5, §6.4, §8.2, §10.1, §11.3, §14.7; `architecture.md` §5.7).
+- Pausarse sola con apps a pantalla completa (`architecture.md` §5.7): hoy el mapa y C/F/Z/WASD/G/V la respetan, pero el hook sigue activo.
+- Volcado de fallos local (`architecture.md` §9.10).
+- Arrastrar íconos sobre el mapa y el gesto de centrar con el mouse (hito 5, nota).
+
+**Descartado:** colores por grupo en el mapa (`keyboard-design.md` §10.1): choca con la regla de un solo acento de `design.md` §3.2.
+
+**Ya hecho aunque el plan no lo nombraba:** la tecla máscara para "Alt antes de `Caps`" (`keyboard.rs`), Raw Input como vigía del hook y el hook que deja pasar todo si el brain no responde (`input.rs`).

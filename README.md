@@ -2,7 +2,7 @@
 
 Gestor de ventanas para Windows, escrito en Rust. Pensado para que cualquiera lo use sin leer documentación: pocos atajos lógicos, mouse como opción de primera clase, consumo mínimo y animaciones fluidas a la frecuencia real del monitor.
 
-> **Estado:** spikes 1 a 9 hechos, con CI que prueba ventanas reales en cada commit: `Caps` como tecla Hyper e ir a una app por su inicial, esconder y mostrar ventanas sin parpadeo, un guardián que nunca deja ventanas perdidas, un modelo de hilos que no se traba con apps colgadas ni con la CPU al 100 %, overlays animados por DWM a la frecuencia del monitor, y animación de ventanas con un "fantasma" sin destellos. Todavía no mueve ventanas ni tiene escritorios propios (ver [architecture.md](architecture.md) §13).
+> **Estado:** en desarrollo, hitos 0 a 2 de la primera versión hechos ([plan-core.md](plan-core.md)): `Caps` + letra va a una app; `Caps` + Alt acomoda la ventana al frente (mitades, esquinas, otro monitor, maximizar, centrar, agrandar y achicar, deshacer) con animación; mantener `Caps` muestra el mapa de teclado. Faltan el arranque normal con ícono en la bandeja (hito 3), los escritorios 1–4 (hito 4) y el mouse (hito 5). Hoy se abre con `wm core` y se cierra con `Caps` + Esc.
 
 ## Probar el prototipo
 
