@@ -461,6 +461,7 @@ Lo que ya da Windows y no hace falta construir: arrastrar al borde o a la esquin
 - sembrar `apps.txt` con sus apps reales (la lista de los ajustes es fija: 40 apps más las del archivo);
 - ~~ocultar en los ajustes lo que todavía no hace nada~~ hecho el 16/11/2026: el perfil y las tres opciones quedan detrás de `show-unfinished` (`wm-settings --show-unfinished` las muestra); el porqué y lo que falta para cada una están en **[funciones-ocultas.md](funciones-ocultas.md)**;
 - fijar el ícono de wm en la barra de tareas de su PC (en Windows 11 nace escondido en el desborde y el número del escritorio no se vería);
+- ~~instalar y actualizar sin terminal~~ hecho el 16/11/2026 ([plan-update.md](plan-update.md)); falta publicar el primer release (`v0.1.0`);
 - confirmar qué PC tiene ella: Windows 10 u 11, x64 o ARM64 (architecture.md §14.2, §13.11);
 - probar el `wm.exe` sin firmar con Defender en su máquina (el hook de teclado se parece a un keylogger) y decidir cómo se le actualiza (§10);
 - ~~actualizar `README.md`~~ hecho el 16/11/2026.

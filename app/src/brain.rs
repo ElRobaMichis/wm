@@ -148,6 +148,8 @@ pub struct Brain {
     watch: Option<wm_platform::watch::Watch>,
     /// El modelo pidió terminar.
     pub quit: bool,
+    /// Terminar para que el guardián coloque la actualización (código 10).
+    pub apply_update: bool,
     /// Cómo se esconden las ventanas de otros escritorios: cloak del shell
     /// si está disponible (sonda al arrancar); si no, minimizar.
     hide_method: wm_platform::hide::HideMethod,
@@ -178,6 +180,7 @@ impl Brain {
             watch: wm_model::apps::bindings_path()
                 .and_then(|p| wm_platform::watch::Watch::start(input::current_thread_id(), p)),
             quit: false,
+            apply_update: false,
             hide_method: wm_platform::hide::HideMethod::ShellCloak,
             relaunched: false,
             winevents: wm_platform::winevents::WinEvents::start(input::current_thread_id()),
@@ -240,7 +243,10 @@ impl Brain {
         for e in self.tray.drain() {
             match e {
                 TrayEvent::Ready(Ok(())) => {
-                    self.log.line("Ícono en la bandeja: un clic abre el menú (escritorios, ajustes, salir).")
+                    self.log.line(
+                        "Ícono en la bandeja: un clic abre el menú (escritorios, ajustes, salir).",
+                    );
+                    self.update_start();
                 }
                 TrayEvent::Ready(Err(e)) => {
                     // Sin ícono no hay "Salir": `Caps` + Esc sigue saliendo.
@@ -249,6 +255,118 @@ impl Brain {
                 }
                 TrayEvent::Command(c) => self.feed(Event::Command(c)),
                 TrayEvent::Log(line) => self.log.line(line),
+                TrayEvent::UpdateReady => self.update_ready(),
+                TrayEvent::UpdateNow => {
+                    if crate::update::install_dir()
+                        .and_then(|d| crate::update::staged(&d))
+                        .is_some()
+                    {
+                        self.log.line("Actualizar ahora: cierro para que el guardián coloque la versión nueva.");
+                        self.apply_update = true;
+                        self.quit = true;
+                    } else {
+                        self.check_updates(true);
+                    }
+                }
+                TrayEvent::CheckUpdates { forced } => self.check_updates(forced),
+            }
+        }
+    }
+
+    /// Hito U: hay una versión lista. Menú y, una vez por versión, el globo.
+    fn update_ready(&mut self) {
+        let Some((v, _)) = crate::update::install_dir().and_then(|d| crate::update::staged(&d))
+        else {
+            return;
+        };
+        self.tray.set_update_ready(Some(v.to_string()));
+        let mut st = crate::update::load_state();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        // Una vez por versión, y de nuevo a los 3 días si sigue sin colocar.
+        let again = st.notified.is_none_or(|(n, t)| n != v || now.saturating_sub(t) > 3 * 86_400);
+        if again {
+            st.notified = Some((v, now));
+            crate::update::save_state(&st);
+            self.tray.balloon(
+                "Hay una versión nueva de wm",
+                "Tocá acá para actualizar. Tarda 2 segundos y tus ventanas quedan como están.",
+            );
+        }
+    }
+
+    /// Hito U: buscar (y preparar) en un proceso aparte: la red nunca entra
+    /// al core. `forced` (desde el menú): sin el mínimo de 20 h y con aviso
+    /// del resultado.
+    fn check_updates(&mut self, forced: bool) {
+        if std::env::var_os("WM_UPDATE").is_some_and(|v| v == "0") {
+            return;
+        }
+        if !crate::update::installed_here() {
+            if forced {
+                self.tray.balloon(
+                    "wm no está instalado",
+                    "Esta copia no busca actualizaciones. Instalalo con wm-setup.",
+                );
+            }
+            return;
+        }
+        let Ok(exe) = std::env::current_exe() else { return };
+        let mut cmd = std::process::Command::new(exe);
+        cmd.args(["update", "run"]);
+        if forced {
+            cmd.arg("--force");
+        }
+        let Ok(mut child) = cmd
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        else {
+            return;
+        };
+        // Esperarlo en un hilo aparte (el brain nunca bloquea).
+        std::thread::spawn(move || {
+            let ok = child.wait().ok().and_then(|s| s.code()) == Some(0);
+            if !forced {
+                return;
+            }
+            let ready =
+                crate::update::install_dir().and_then(|d| crate::update::staged(&d)).is_some();
+            if !ok {
+                wm_platform::tray::balloon(
+                    "No se pudo buscar",
+                    "Fijate si tenés internet y probá de nuevo más tarde.",
+                );
+            } else if !ready {
+                wm_platform::tray::balloon("wm está al día", "Ya tenés la última versión.");
+            }
+        });
+    }
+
+    /// Al arrancar: avisos de la actualización recién colocada (o fallida) y
+    /// el temporizador de búsqueda.
+    fn update_start(&mut self) {
+        if let Some(from) = std::env::var_os("WM_UPDATED_FROM") {
+            let _ = from;
+            self.tray.balloon(
+                "wm se actualizó",
+                &format!("Ya tenés la versión {}.", env!("CARGO_PKG_VERSION")),
+            );
+        } else if std::env::var_os("WM_UPDATE_FAILED").is_some() {
+            self.tray.balloon(
+                "No se pudo actualizar wm",
+                "Seguís con la versión de antes. No hace falta que hagas nada.",
+            );
+        }
+        if crate::update::installed_here() && std::env::var_os("WM_UPDATE").is_none_or(|v| v != "0")
+        {
+            self.tray.schedule_update_checks();
+            // Una versión que se bajó y todavía no se colocó: el menú la ofrece.
+            if crate::update::install_dir().and_then(|d| crate::update::staged(&d)).is_some() {
+                self.update_ready();
             }
         }
     }

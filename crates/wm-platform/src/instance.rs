@@ -46,3 +46,19 @@ pub fn acquire(role: &str) -> Option<Instance> {
     }
     Some(Instance(handle))
 }
+
+/// ¿Hay una instancia `role` corriendo? Sin crear el mutex (crearlo, aunque
+/// sea un instante, haría creer a un guardián que arranca que ya hay otro).
+pub fn running(role: &str) -> bool {
+    use windows::Win32::System::Threading::{OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE};
+    let name = HSTRING::from(mutex_name(role));
+    // SAFETY: nombre válido; solo se abre para saber si existe.
+    match unsafe { OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, false, &name) } {
+        Ok(h) => {
+            // SAFETY: handle propio.
+            let _ = unsafe { CloseHandle(h) };
+            true
+        }
+        Err(_) => false,
+    }
+}

@@ -34,6 +34,16 @@ const FIRST_BACKOFF: Duration = Duration::from_millis(250);
 const CONTROL_C_EXIT: u32 = 0xC000_013A;
 /// Código con que `wm` sale ante un error de uso: relanzar no lo arregla.
 const USAGE_ERROR: u32 = 2;
+/// Hito U: cuánto tiene que andar una versión recién colocada para darla
+/// por buena.
+const TRIAL: Duration = Duration::from_secs(60);
+
+/// Una versión recién colocada, a prueba.
+struct Trial {
+    dir: std::path::PathBuf,
+    from: wm_model::update::Version,
+    to: wm_model::update::Version,
+}
 
 pub fn run(args: &[String]) -> ExitCode {
     let child_args: Vec<String> =
@@ -75,11 +85,30 @@ pub fn run(args: &[String]) -> ExitCode {
     // Arranque = recuperación (§9.5): restos de una sesión anterior.
     report("al arrancar", &hide::restore_all());
 
+    // Hito U: con el core cerrado, terminar o deshacer un cambio a medias y
+    // colocar una versión que quedó lista.
+    let watching_core = child_args.first().is_some_and(|c| c == "core");
+    let mut trial: Option<Trial> = None;
+    if watching_core && crate::update::installed_here() {
+        trial = start_trial_if_any();
+    }
+    let mut update_failed = false;
+    // Relanzar ya, con los escritorios (código 10 de "Actualizar ahora").
+    let mut relaunch_now = false;
+
     let mut restarts: VecDeque<Instant> = VecDeque::new();
     let code = loop {
         let started = Instant::now();
         let mut cmd = Command::new(&exe);
-        cmd.args(&child_args).env("WM_RELAUNCH", restarts.len().to_string());
+        let relaunch = if relaunch_now { 1 } else { restarts.len() };
+        relaunch_now = false;
+        cmd.args(&child_args).env("WM_RELAUNCH", relaunch.to_string());
+        if let Some(t) = &trial {
+            cmd.env("WM_UPDATED_FROM", t.from.to_string());
+        }
+        if std::mem::take(&mut update_failed) {
+            cmd.env("WM_UPDATE_FAILED", "1");
+        }
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
@@ -88,6 +117,23 @@ pub fn run(args: &[String]) -> ExitCode {
             }
         };
         log(&format!("hijo {} lanzado", child.id()));
+        // En prueba: si pasa 60 s andando, la versión nueva queda.
+        if let Some(t) = &trial {
+            let alive = loop {
+                match child.try_wait() {
+                    Ok(None) if started.elapsed() < TRIAL => {
+                        std::thread::sleep(Duration::from_millis(500));
+                    }
+                    Ok(None) => break true,
+                    _ => break false,
+                }
+            };
+            if alive {
+                crate::update::commit(&t.dir, t.to);
+                log(&format!("la versión {} anduvo {} s: queda", t.to, TRIAL.as_secs()));
+                trial = None;
+            }
+        }
         let status = child.wait();
         let lived = started.elapsed();
 
@@ -111,6 +157,25 @@ pub fn run(args: &[String]) -> ExitCode {
         if ctrl_c {
             log("parada pedida por el usuario: no se relanza");
             break ExitCode::SUCCESS;
+        }
+        // Hito U: "Actualizar ahora": colocar y relanzar ya, sin contarlo
+        // como caída (los escritorios se recuperan como tras una caída).
+        if raw == Some(crate::update::EXIT_APPLY_UPDATE) && trial.is_none() {
+            log("el core pidió actualizar");
+            trial = start_trial_if_any();
+            relaunch_now = true;
+            continue;
+        }
+        // La versión en prueba se cayó antes de 60 s: volver a la anterior.
+        if let Some(t) = trial.take()
+            && !clean
+        {
+            log(&format!("la versión {} se cayó a prueba: vuelvo a la {}", t.to, t.from));
+            crate::update::rollback(&t.dir, Some(t.to));
+            update_failed = true;
+            restarts.clear();
+            relaunch_now = true;
+            continue;
         }
         if clean {
             log("salida limpia: no se relanza");
@@ -149,6 +214,27 @@ pub fn run(args: &[String]) -> ExitCode {
     };
     console::mark_finished();
     code
+}
+
+/// Coloca una versión lista (si hay) o retoma una prueba en curso.
+fn start_trial_if_any() -> Option<Trial> {
+    let dir = crate::update::install_dir()?;
+    if let Some((from, to)) = crate::update::recover_at_start(&dir) {
+        log(&format!("la versión {to} sigue a prueba"));
+        return Some(Trial { dir, from, to });
+    }
+    match crate::update::apply_staged(&dir) {
+        Ok(Some(to)) => {
+            let from = crate::update::current();
+            log(&format!("versión {to} colocada (antes {from}); a prueba {} s", TRIAL.as_secs()));
+            Some(Trial { dir, from, to })
+        }
+        Ok(None) => None,
+        Err(e) => {
+            log(&format!("no se pudo colocar la actualización: {e}"));
+            None
+        }
+    }
 }
 
 fn report(when: &str, r: &RestoreReport) {

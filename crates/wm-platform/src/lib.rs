@@ -33,11 +33,15 @@ pub mod hide;
 #[cfg(windows)]
 pub mod input;
 #[cfg(windows)]
+pub mod install;
+#[cfg(windows)]
 pub mod instance;
 #[cfg(windows)]
 pub mod launch;
 #[cfg(windows)]
 pub mod native_settings;
+#[cfg(windows)]
+pub mod net;
 #[cfg(windows)]
 pub mod ops;
 #[cfg(windows)]
@@ -52,6 +56,8 @@ pub mod probe;
 pub mod puppet;
 #[cfg(windows)]
 pub mod session;
+#[cfg(windows)]
+pub mod sign;
 #[cfg(windows)]
 pub mod tray;
 #[cfg(windows)]

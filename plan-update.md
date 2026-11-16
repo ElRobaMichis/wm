@@ -1,5 +1,14 @@
 # Instalar y actualizar sin terminal (hito U)
 
+> **Estado (16/11/2026): U1–U7 implementados; U8 como `tools/update-e2e.sh` (en la CI, job `ventanas`); falta publicar el primer release.** Probado en esta PC con un feed local firmado con la clave de prueba: instalar → firma mala (no prepara nada) → preparar 99.0.0 → "Actualizar ahora" (el guardián coloca y relanza con los escritorios) → desinstalar, 14/14. Contra GitHub real, la descarga por WinHTTP responde (404 hasta que haya release).
+>
+> **Desvíos del diseño:**
+> - El instalador usa dos `MessageBox` en vez de `TaskDialog` (recorte previsto), sin barra de progreso y sin casilla: dice en el texto que se abre solo al prender la compu y que se puede cambiar desde su ícono.
+> - Sin el ítem "Actualizar sola" en el menú (siempre activo; `WM_UPDATE=0` lo apaga).
+> - La prueba de "versión rota → volver atrás" queda en las pruebas del modelo (`rollback_plan`) y a mano: una versión que no pasa `self-check` ni se prepara.
+>
+> **Para publicar (U0, lo hace el usuario):** la clave privada se generó en `%USERPROFILE%\.wm-release\wm-update-key.pem` (fuera del repo; **hacer una copia**: sin ella, una versión nueva no llega y hay que reinstalar a mano) y la pública está en `update-pubkey.txt`. Falta crear el environment `release` en GitHub con el secret `WM_UPDATE_KEY` (el contenido del `.pem`) y empujar el tag `v0.1.0`.
+
 Diseño de Fable 5.2 (16/11/2026), pedido por el usuario: que la usuaria de prueba tenga `wm` instalado y que, cuando él publique una versión en GitHub, le llegue sola, sin descargar de nuevo ni tocar la terminal. **[V]** = verificado en el código; **[S]** = supuesto a comprobar.
 
 ## Decisiones

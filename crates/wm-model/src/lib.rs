@@ -16,6 +16,7 @@ pub mod mouse;
 pub mod place;
 pub mod screens;
 pub mod settings_demo;
+pub mod update;
 pub mod world;
 #[cfg(test)]
 mod world_arrange_tests;

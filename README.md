@@ -4,6 +4,18 @@ Gestor de ventanas para Windows, escrito en Rust. Pensado para que cualquiera lo
 
 > **Estado:** en desarrollo, hitos 0 a 5 de la primera versión hechos ([plan-core.md](plan-core.md)): `Caps` + letra va a una app; `Caps` + Alt acomoda la ventana al frente (mitades, esquinas, otro monitor, maximizar, centrar, agrandar y achicar, deshacer) con animación; mantener `Caps` muestra el mapa de teclado; `Caps` + 1–4 cambia de escritorio; `Caps` + arrastrar mueve una ventana desde cualquier parte. Arranca con `wmw` (sin consola, con ícono en la bandeja) y se puede iniciar con Windows.
 
+## Instalar (sin terminal)
+
+1. Bajar `wm-setup-x64.exe` (o `wm-setup-arm64.exe`) del [último release](https://github.com/ElRobaMichis/wm/releases/latest) y abrirlo.
+2. Windows avisa una sola vez, porque el ejecutable no está firmado: en Edge, ⋯ → Conservar → Conservar de todos modos; después, "Windows protegió su PC" → Más información → Ejecutar de todas formas.
+3. "Instalar": se instala solo para el usuario (sin administrador) en `%LOCALAPPDATA%\Programs\wm`, con acceso directo en el menú Inicio, entrada en "Aplicaciones instaladas" y arranque con Windows.
+
+**Actualizaciones:** la copia instalada se fija una vez por día en GitHub (sin mandar datos); si hay una versión nueva, la baja en segundo plano, verifica su firma y avisa con un globo. Se aplica al tocar el globo o "Actualizar ahora" en el menú, o sola en el próximo arranque; si la versión nueva no arranca, vuelve sola a la anterior. Detalle en [plan-update.md](plan-update.md).
+
+**Desinstalar:** Configuración → Aplicaciones → wm, o `wm uninstall`. Las letras elegidas (`%APPDATA%\wm`) quedan por si se vuelve a instalar.
+
+**Publicar una versión** (desarrollador): subir `version` en el `Cargo.toml`, `git tag -a vX.Y.Z -m "notas"` y `git push origin vX.Y.Z`. La CI crea el release como pre-release; a los instalados les llega al desmarcar "pre-release" en GitHub.
+
 ## Probar
 
 ```bash
@@ -48,6 +60,7 @@ n = notion | C:\Users\yo\AppData\Local\Programs\Notion\Notion.exe
 - [architecture.md](architecture.md): arquitectura técnica y plan de spikes.
 - [design.md](design.md): lenguaje de diseño (principios, tokens y componentes).
 - [plan-core.md](plan-core.md): plan de la primera versión (hitos 0–5), con [plan-hito4.md](plan-hito4.md) y [plan-hito5.md](plan-hito5.md).
+- [plan-update.md](plan-update.md): instalar y actualizar sin terminal.
 - [funciones-ocultas.md](funciones-ocultas.md): lo que se escondió de los ajustes en la primera versión, por qué y qué falta para mostrarlo.
 
 ## Compilar

@@ -64,6 +64,12 @@ jobs:
             if ($deps -match '(?i)d3d11|dxgi|d2d1|dwrite|dcomp|coremessaging|psapi|shell32|userenv') {
               throw "$name importa una DLL de gráficos o del shell en forma estática; usar dynlib."
             }
+            # La red y la criptografía del actualizador (hito U) tampoco: el
+            # guardián y el core nunca las cargan. `bcrypt.dll` con el punto:
+            # la std importa `bcryptprimitives.dll`, que está bien.
+            if ($deps -match '(?i)winhttp|\bbcrypt\.dll|urlmon|wininet') {
+              throw "$name importa la red o CNG en forma estática; usar dynlib (plan-update.md U2)."
+            }
           }
           $sub = & $dumpbin.FullName /headers "target\${{ matrix.target }}\release\wmw.exe" | Out-String
           if ($sub -notmatch '(?i)Windows GUI') { throw "wmw.exe no es de subsistema Windows GUI." }
@@ -91,6 +97,9 @@ jobs:
     timeout-minutes: 30
     env:
       BIN: target\${{ matrix.target }}\release
+      # Clave pública de prueba (tests/update/README.md): solo estos binarios
+      # aceptan los feeds de prueba; los de los releases no.
+      WM_UPDATE_PUBKEY: 8fd2ee4ccdfb48453096d041b0409c3bca887d6ba846201a5786e5788d840f76b2918dda214f18e7077fd283a00b7545015eb0436d10a558c2357c835fdd4408
     steps:
       - uses: actions/checkout@v4
 
@@ -159,6 +168,11 @@ jobs:
       - name: Sonda (wm ci-probe)
         shell: pwsh
         run: '& "$env:BIN\wm.exe" ci-probe --summary $env:GITHUB_STEP_SUMMARY'
+
+      - name: Instalar, actualizar y desinstalar (tools/update-e2e.sh)
+        if: success() || failure()
+        shell: bash
+        run: bash tools/update-e2e.sh "target/${{ matrix.target }}/release"
 
       - name: Guardián - 50 muertes del core (wm crash-test)
         if: success() || failure()

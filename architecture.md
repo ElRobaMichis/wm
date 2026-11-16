@@ -497,7 +497,7 @@ window-managment/
 - scoop (solo hash, ideal para portable) y winget (tipo `portable`, **[A VERIFICAR]** contra el esquema vigente).
 - Instalador por máquina **solo** para la variante UIAccess.
 - Inicio automático por `HKCU\...\Run` (sin admin).
-- Autoactualización opcional y **sin tráfico de red por defecto**.
+- Autoactualización opcional y **sin tráfico de red por defecto**. *Cambio (16/11/2026, pedido del usuario, [plan-update.md](plan-update.md)):* la copia **instalada** con `wm-setup` (`%LOCALAPPDATA%\Programs\wm`, sin admin) busca una vez por día en GitHub, sin mandar datos, y lo dice en el instalador; la portable (o la de `cargo build`) no hace tráfico. Las actualizaciones van firmadas (ECDSA P-256, clave embebida) y se colocan con vuelta atrás automática.
 
 ---
 

@@ -1,0 +1,109 @@
+# Publicar una versión (hito U, plan-update.md U7). Se dispara al empujar un
+# tag `vX.Y.Z` que coincida con la versión del Cargo.toml:
+#   git tag -a v0.1.0 -m "Primera versión"   (la primera línea = notas)
+#   git push origin v0.1.0
+# Compila x64 y ARM64, arma los assets y los manifiestos (`wm release-pack`),
+# firma los manifiestos con el secret WM_UPDATE_KEY (environment `release`) y
+# crea el release como **pre-release**: a la usuaria le llega recién cuando se
+# desmarca "pre-release" en GitHub (los que tienen wm instalado bajan
+# `releases/latest`, que ignora las pre-releases).
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            arch: x64
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: El tag coincide con la versión
+        shell: bash
+        run: |
+          v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          if [ "v$v" != "$GITHUB_REF_NAME" ]; then
+            echo "El tag $GITHUB_REF_NAME no coincide con la versión $v del Cargo.toml."; exit 1
+          fi
+          if [ ! -s update-pubkey.txt ]; then
+            echo "Falta la clave pública en update-pubkey.txt (plan-update.md U0)."; exit 1
+          fi
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }} -p wm -p wm-settings
+
+      - name: Empaquetar
+        shell: bash
+        run: |
+          git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          notes=$(git tag -l --format='%(contents:subject)' "$GITHUB_REF_NAME")
+          "target/${{ matrix.target }}/release/wm.exe" release-pack \
+            "target/${{ matrix.target }}/release" --arch ${{ matrix.arch }} \
+            --notes "$notes" --out dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.arch }}
+          path: dist
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: Firmar los manifiestos
+        env:
+          WM_UPDATE_KEY: ${{ secrets.WM_UPDATE_KEY }}
+        run: |
+          umask 077
+          printf '%s\n' "$WM_UPDATE_KEY" > key.pem
+          # La clave del secret tiene que ser la de update-pubkey.txt: si no,
+          # los wm instalados rechazarían la actualización.
+          pub=$(openssl ec -in key.pem -pubout -outform DER 2>/dev/null | tail -c 64 | xxd -p | tr -d '\n')
+          if [ "$pub" != "$(tr -d ' \r\n' < update-pubkey.txt)" ]; then
+            rm -f key.pem; echo "WM_UPDATE_KEY no coincide con update-pubkey.txt."; exit 1
+          fi
+          for f in dist/latest-*.txt; do
+            openssl dgst -sha256 -sign key.pem -out "$f.sig" "$f"
+            openssl ec -in key.pem -pubout 2>/dev/null | openssl dgst -sha256 -verify /dev/stdin -signature "$f.sig" "$f"
+          done
+          rm -f key.pem
+          ls -la dist
+
+      - name: Crear el release (pre-release)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
+            --prerelease --title "wm $GITHUB_REF_NAME" \
+            --notes "Para instalar: bajá wm-setup-x64.exe (o wm-setup-arm64.exe) y abrilo. Los que ya tienen wm lo reciben solo cuando este release deja de ser pre-release."

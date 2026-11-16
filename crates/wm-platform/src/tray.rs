@@ -59,6 +59,12 @@ pub enum Order {
     ToggleAutostart = 6,
     /// Hito 4c: todas las ventanas al escritorio activo (el botón de pánico).
     ShowAll = 7,
+    /// Hito U: `wm update run` dejó una versión lista para colocar.
+    UpdateReady = 8,
+    /// Hito U: colocar la versión lista ahora (`wm actualizar`).
+    UpdateNow = 9,
+    /// Hito U: buscar actualizaciones ya.
+    UpdateCheck = 10,
 }
 
 impl Order {
@@ -71,6 +77,9 @@ impl Order {
             5 => Self::Settings,
             6 => Self::ToggleAutostart,
             7 => Self::ShowAll,
+            8 => Self::UpdateReady,
+            9 => Self::UpdateNow,
+            10 => Self::UpdateCheck,
             _ => return None,
         })
     }
@@ -83,6 +92,7 @@ impl Order {
             "undo" | "deshacer" => Self::Undo,
             "settings" | "ajustes" => Self::Settings,
             "showall" | "mostrar" => Self::ShowAll,
+            "actualizar" => Self::UpdateNow,
             _ => return None,
         })
     }
@@ -93,7 +103,27 @@ pub enum TrayEvent {
     Ready(Result<(), String>),
     Command(Command),
     Log(String),
+    /// Hito U: hay una versión lista (`wm update run` la avisó).
+    UpdateReady,
+    /// Hito U: colocarla ya (menú, globo o `wm actualizar`).
+    UpdateNow,
+    /// Hito U: buscar actualizaciones (temporizador o el menú; `forced`: el
+    /// menú, sin el mínimo de 20 h).
+    CheckUpdates {
+        forced: bool,
+    },
 }
+
+/// Hito U: la versión lista para colocar (texto para el menú) y un globo
+/// pendiente.
+static UPDATE_READY: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static BALLOON: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::new(None);
+/// Mostrar un globo (título y texto en `BALLOON`).
+const WM_TRAY_BALLOON: u32 = WM_APP + 0x43;
+/// Temporizador de búsqueda de actualizaciones (3 min y después cada 24 h).
+const TIMER_UPDATE: usize = 7;
+const NIN_BALLOONUSERCLICK: u32 = 0x0405;
+use windows::Win32::UI::WindowsAndMessaging::{SetTimer, WM_TIMER};
 
 /// Estado que muestra la bandeja (lo actualiza el brain).
 static PAUSED: AtomicBool = AtomicBool::new(false);
@@ -177,10 +207,36 @@ impl Tray {
         }
     }
 
+    /// Hito U: la versión lista para colocar (o ninguna), para el menú.
+    pub fn set_update_ready(&self, version: Option<String>) {
+        if let Ok(mut g) = UPDATE_READY.lock() {
+            *g = version;
+        }
+    }
+
+    /// Un globo de la bandeja (avisos de actualización).
+    pub fn balloon(&self, title: &str, text: &str) {
+        balloon(title, text);
+    }
+
+    /// Hito U: buscar actualizaciones 3 min después de arrancar y después una
+    /// vez por día (un solo temporizador largo; 0 % de CPU en el medio).
+    pub fn schedule_update_checks(&self) {
+        post(WM_TRAY_BALLOON, 1);
+    }
+
     /// Quita el ícono y cierra la ventana (salida).
     pub fn stop(&self) {
         post(WM_CLOSE, 0);
     }
+}
+
+/// Un globo de la bandeja desde cualquier hilo.
+pub fn balloon(title: &str, text: &str) {
+    if let Ok(mut g) = BALLOON.lock() {
+        *g = Some((title.to_owned(), text.to_owned()));
+    }
+    post(WM_TRAY_BALLOON, 0);
 }
 
 fn post(msg: u32, wparam: usize) {
@@ -313,7 +369,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
     let handled = LANE.with(|l| {
         let Ok(mut guard) = l.try_borrow_mut() else {
             // Anidado: solo se guardan los mensajes propios.
-            let ours = msg >= WM_APP || msg == WM_ENDSESSION;
+            let ours = msg >= WM_APP || msg == WM_ENDSESSION || msg == WM_TIMER;
             if ours {
                 DEFERRED.with(|d| d.borrow_mut().push((msg, wparam, lparam)));
             }
@@ -354,12 +410,34 @@ impl Lane {
                     // izquierdo abre el mismo menú, con los escritorios.
                     WM_LBUTTONUP => self.menu(),
                     WM_RBUTTONUP => self.menu(),
+                    // Clic en el globo "Hay una versión nueva".
+                    NIN_BALLOONUSERCLICK if UPDATE_READY.lock().is_ok_and(|g| g.is_some()) => {
+                        self.send(TrayEvent::UpdateNow)
+                    }
                     _ => {}
                 }
                 true
             }
             WM_TRAY_SYNC => {
                 self.modify_icon();
+                true
+            }
+            WM_TRAY_BALLOON if wparam.0 == 1 => {
+                // SAFETY: temporizador de esta ventana.
+                unsafe { SetTimer(Some(self.hwnd), TIMER_UPDATE, 3 * 60 * 1000, None) };
+                true
+            }
+            WM_TRAY_BALLOON => {
+                if let Some((title, text)) = BALLOON.lock().ok().and_then(|mut g| g.take()) {
+                    self.show_balloon(&title, &text);
+                }
+                true
+            }
+            WM_TIMER if wparam.0 == TIMER_UPDATE => {
+                // Después del primero, una vez por día.
+                // SAFETY: temporizador de esta ventana.
+                unsafe { SetTimer(Some(self.hwnd), TIMER_UPDATE, 24 * 3600 * 1000, None) };
+                self.send(TrayEvent::CheckUpdates { forced: false });
                 true
             }
             WM_TRAY_FOREGROUND => {
@@ -406,6 +484,7 @@ impl Lane {
             Order::Resume => self.send(TrayEvent::Command(Command::SetPaused(false))),
             Order::Undo => self.send(TrayEvent::Command(Command::Undo)),
             Order::ShowAll => self.send(TrayEvent::Command(Command::ShowAll)),
+            Order::UpdateReady | Order::UpdateNow | Order::UpdateCheck => self.update_order(o),
             Order::Settings => self.open_settings(),
             Order::ToggleAutostart => {
                 let on = crate::autostart::status() != Some(true);
@@ -453,6 +532,8 @@ impl Lane {
         const AUTOSTART: usize = 4;
         const QUIT: usize = 5;
         const SHOW_ALL: usize = 6;
+        const UPDATE_NOW: usize = 7;
+        const UPDATE_CHECK: usize = 8;
         /// Escritorios: 11 a 14.
         const DESK_BASE: usize = 10;
         let paused = PAUSED.load(Ordering::Relaxed);
@@ -461,6 +542,13 @@ impl Lane {
         // SAFETY: menú propio, se destruye al terminar.
         unsafe {
             let Ok(menu) = CreatePopupMenu() else { return };
+            let ready = UPDATE_READY.lock().ok().and_then(|g| g.clone());
+            if let Some(v) = &ready {
+                let text: Vec<u16> =
+                    format!("Actualizar ahora (versión {v})\0").encode_utf16().collect();
+                let _ = AppendMenuW(menu, MF_STRING, UPDATE_NOW, PCWSTR(text.as_ptr()));
+                let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+            }
             let (active, counts) = unpack_desks(DESKS.load(Ordering::Relaxed));
             for n in 1..=4u8 {
                 let c = counts[usize::from(n - 1)];
@@ -488,6 +576,11 @@ impl Lane {
             };
             let _ = AppendMenuW(menu, auto_flags, AUTOSTART, w!("Iniciar con Windows"));
             let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+            let version: Vec<u16> =
+                format!("Versión {} · buscar actualizaciones\0", env!("CARGO_PKG_VERSION"))
+                    .encode_utf16()
+                    .collect();
+            let _ = AppendMenuW(menu, MF_STRING, UPDATE_CHECK, PCWSTR(version.as_ptr()));
             let _ = AppendMenuW(menu, MF_STRING, QUIT, w!("Salir"));
             let mut p = POINT::default();
             let _ = GetCursorPos(&mut p);
@@ -508,6 +601,8 @@ impl Lane {
                 PAUSE => self.order(if paused { Order::Resume } else { Order::Pause }),
                 UNDO => self.order(Order::Undo),
                 SHOW_ALL => self.order(Order::ShowAll),
+                UPDATE_NOW => self.order(Order::UpdateNow),
+                UPDATE_CHECK => self.order(Order::UpdateCheck),
                 id @ 11..=14 => {
                     self.send(TrayEvent::Command(Command::Desk((id - DESK_BASE) as u8)))
                 }
@@ -566,6 +661,25 @@ impl Lane {
             self.icon_key = key;
         }
         self.icon.unwrap_or_default()
+    }
+
+    fn update_order(&mut self, o: Order) {
+        match o {
+            Order::UpdateReady => self.send(TrayEvent::UpdateReady),
+            Order::UpdateNow => self.send(TrayEvent::UpdateNow),
+            _ => self.send(TrayEvent::CheckUpdates { forced: true }),
+        }
+    }
+
+    fn show_balloon(&mut self, title: &str, text: &str) {
+        if !self.added {
+            return;
+        }
+        let mut d = self.data(NIF_INFO);
+        put(&mut d.szInfoTitle, title);
+        put(&mut d.szInfo, text);
+        d.dwInfoFlags = NIIF_INFO | NIIF_NOSOUND;
+        notify(NIM_MODIFY, &d);
     }
 
     fn data(&mut self, flags: NOTIFY_ICON_DATA_FLAGS) -> NOTIFYICONDATAW {

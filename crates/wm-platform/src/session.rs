@@ -200,6 +200,16 @@ pub fn set_cursor(x: i32, y: i32) -> bool {
     unsafe { SetCursorPos(x, y) }.is_ok()
 }
 
+/// Prioridad de fondo para este proceso (CPU, disco y memoria): lo usa el
+/// rol efímero que baja actualizaciones.
+pub fn background_mode() {
+    use windows::Win32::System::Threading::{
+        GetCurrentProcess, PROCESS_MODE_BACKGROUND_BEGIN, SetPriorityClass,
+    };
+    // SAFETY: proceso actual.
+    let _ = unsafe { SetPriorityClass(GetCurrentProcess(), PROCESS_MODE_BACKGROUND_BEGIN) };
+}
+
 /// ¿La tecla figura apretada en el estado asíncrono del sistema?
 pub fn key_down(vk: u8) -> bool {
     // SAFETY: sin precondiciones.
@@ -234,6 +244,42 @@ pub fn warning_box(title: &str, text: &str) {
     // SAFETY: cadenas válidas; sin ventana dueña.
     let _ = unsafe {
         MessageBoxW(None, &HSTRING::from(text), &HSTRING::from(title), MB_OK | MB_ICONWARNING)
+    };
+}
+
+/// Una pregunta Sí / No (el instalador y el desinstalador). `yes` y `no` son
+/// solo para el texto: los botones son los de Windows ("Sí" / "No").
+pub fn ask_box(title: &str, text: &str) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        IDYES, MB_ICONQUESTION, MB_SETFOREGROUND, MB_YESNO, MessageBoxW,
+    };
+    use windows::core::HSTRING;
+    // SAFETY: cadenas válidas; sin ventana dueña.
+    let r = unsafe {
+        MessageBoxW(
+            None,
+            &HSTRING::from(text),
+            &HSTRING::from(title),
+            MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND,
+        )
+    };
+    r == IDYES
+}
+
+/// Un aviso informativo (bloquea hasta que se cierra).
+pub fn info_box(title: &str, text: &str) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        MB_ICONINFORMATION, MB_OK, MB_SETFOREGROUND, MessageBoxW,
+    };
+    use windows::core::HSTRING;
+    // SAFETY: cadenas válidas; sin ventana dueña.
+    let _ = unsafe {
+        MessageBoxW(
+            None,
+            &HSTRING::from(text),
+            &HSTRING::from(title),
+            MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND,
+        )
     };
 }
 

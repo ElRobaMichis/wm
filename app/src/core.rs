@@ -98,7 +98,15 @@ pub fn run() -> ExitCode {
     };
 
     // Salida (§9.7), limpia o tras un pánico: siempre mostrar todo, con plazo.
-    let clean = code == ExitCode::SUCCESS;
+    // "Actualizar ahora": código 10, para que el guardián coloque la versión
+    // nueva y relance. Los escritorios se conservan (el core nuevo los
+    // recupera como tras una caída, D4).
+    let (code, clean) = if brain.apply_update && code == ExitCode::SUCCESS {
+        (ExitCode::from(crate::update::EXIT_APPLY_UPDATE as u8), false)
+    } else {
+        let clean = code == ExitCode::SUCCESS;
+        (code, clean)
+    };
     brain.restore_at_exit(EXIT_RESTORE_WAIT, clean);
     print_summary(&brain);
     drop(brain);

@@ -31,6 +31,10 @@ mod ops_test;
 mod overlay_test;
 #[cfg(windows)]
 mod place_test;
+#[cfg(windows)]
+mod setup;
+#[cfg(windows)]
+pub mod update;
 
 /// Lo que hacen los dos ejecutables (`wm.exe` de consola y `wmw.exe` sin
 /// consola, plan-core.md D5): elegir el rol por el primer argumento.
@@ -56,6 +60,12 @@ pub fn run() -> ExitCode {
         Some("crash-test") => hide_test::crash_test(&args),
         #[cfg(windows)]
         Some("max-test") => hide_test::max_test(),
+        #[cfg(windows)]
+        Some("update") => update::cli(&args),
+        #[cfg(windows)]
+        Some("self-check") => update::self_check(),
+        #[cfg(windows)]
+        Some("release-pack") => update::release_pack(&args),
         #[cfg(windows)]
         Some("desk-check") => desk_check(args.first().map(String::as_str)),
         #[cfg(windows)]
@@ -111,14 +121,28 @@ pub fn run() -> ExitCode {
                 Err(_) => ExitCode::FAILURE,
             }
         }
-        // Sin argumentos: el uso normal, el guardián con el core (hito 3a).
+        // Sin argumentos: el uso normal, el guardián con el core (hito 3a); con
+        // el nombre `wm-setup…`, el instalador (hito U).
+        #[cfg(windows)]
+        None if setup::is_setup_name() => setup::run_setup(false, None),
         #[cfg(windows)]
         None => guardian::run(&[]),
+        #[cfg(windows)]
+        Some("setup") => {
+            let tag = args.iter().position(|a| a == "--tag").and_then(|i| args.get(i + 1)).cloned();
+            setup::run_setup(args.iter().any(|a| a == "--quiet"), tag)
+        }
+        #[cfg(windows)]
+        Some("install-finish") => setup::install_finish(&args),
+        #[cfg(windows)]
+        Some("uninstall") => setup::uninstall(&args),
         #[cfg(not(windows))]
         None => doctor(),
         Some("doctor") => doctor(),
         #[cfg(windows)]
-        Some(name @ ("quit" | "pause" | "resume" | "undo" | "ajustes" | "mostrar")) => order(name),
+        Some(
+            name @ ("quit" | "pause" | "resume" | "undo" | "ajustes" | "mostrar" | "actualizar"),
+        ) => order(name),
         #[cfg(windows)]
         Some("autostart") => autostart(args.first().map(String::as_str)),
         Some("version" | "--version" | "-V") => {
