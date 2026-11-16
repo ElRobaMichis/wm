@@ -20,6 +20,7 @@ use wm_model::world::{
 use wm_platform::anim::{Anim, AnimEvent};
 use wm_platform::input::{self, InputEvent, ReinstallReason};
 use wm_platform::ops::{Op, Ops, OpsEvent, Output, Ticket};
+use wm_platform::tray::{Tray, TrayEvent};
 use wm_platform::ui::{Ui, UiEvent};
 use wm_platform::windows_list::{self, WindowId};
 
@@ -121,6 +122,8 @@ pub struct Brain {
     flights: HashMap<wm_platform::anim::Ticket, Req>,
     /// Hilo `ui` (mapa de teclado, hito 2a); `None` con `WM_MAP=0`.
     ui: Option<Ui>,
+    /// Ícono y ventana `wm-ui` (hito 3b).
+    tray: Tray,
     /// El modelo pidió terminar.
     pub quit: bool,
 }
@@ -140,7 +143,26 @@ impl Brain {
             ui: std::env::var_os("WM_MAP")
                 .is_none_or(|v| v != "0")
                 .then(|| Ui::start(input::current_thread_id())),
+            tray: Tray::start(input::current_thread_id()),
             quit: false,
+        }
+    }
+
+    /// Órdenes de la bandeja.
+    fn collect_tray(&mut self) {
+        for e in self.tray.drain() {
+            match e {
+                TrayEvent::Ready(Ok(())) => {
+                    self.log.line("Ícono en la bandeja: menú con clic derecho.")
+                }
+                TrayEvent::Ready(Err(e)) => {
+                    // Sin ícono no hay "Salir": `Caps` + Esc sigue saliendo.
+                    self.world.set_esc_quits(true);
+                    self.log.line(format!("Sin ícono en la bandeja ({e}): Caps + Esc sale."));
+                }
+                TrayEvent::Command(c) => self.feed(Event::Command(c)),
+                TrayEvent::Log(line) => self.log.line(line),
+            }
         }
     }
 
@@ -206,6 +228,7 @@ impl Brain {
     /// Le pasa un evento al modelo y ejecuta lo que pida.
     pub fn feed(&mut self, event: Event) {
         let effects = self.world.step(event, self.now_us());
+        self.tray.sync(self.world.paused(), self.world.can_undo());
         for effect in effects {
             match effect {
                 Effect::Scan { req } => {
@@ -302,6 +325,7 @@ impl Brain {
         if let Some(ui) = self.ui.as_mut() {
             ui.hide();
         }
+        self.tray.stop();
         let t = self.ops.submit(Op::RestoreAll);
         self.waits.insert(t, Wait::RestoreAtExit);
         let until = Instant::now() + limit;
@@ -413,6 +437,7 @@ impl Brain {
     /// Resultados de los carriles (y plazos vencidos).
     pub fn collect(&mut self) {
         wm_platform::ops::rearm_wake();
+        self.collect_tray();
         self.collect_anim();
         self.collect_ui();
         let mut events = self.ops.expire(Instant::now());

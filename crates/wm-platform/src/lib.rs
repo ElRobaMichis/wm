@@ -31,6 +31,8 @@ pub mod input;
 #[cfg(windows)]
 pub mod instance;
 #[cfg(windows)]
+pub mod launch;
+#[cfg(windows)]
 pub mod native_settings;
 #[cfg(windows)]
 pub mod ops;
@@ -46,6 +48,8 @@ pub mod probe;
 pub mod puppet;
 #[cfg(windows)]
 pub mod session;
+#[cfg(windows)]
+pub mod tray;
 #[cfg(windows)]
 pub mod ui;
 #[cfg(windows)]

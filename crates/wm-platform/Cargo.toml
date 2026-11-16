@@ -48,6 +48,8 @@ windows = { version = "=0.62.2", features = [
     "Win32_UI_HiDpi",
     "Win32_UI_Input",
     "Win32_UI_Input_KeyboardAndMouse",
+    # Solo tipos de la bandeja: Shell_NotifyIconW se resuelve con dynlib.
+    "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
 # Necesario para declarar interfaces COM no documentadas con `#[interface]`.

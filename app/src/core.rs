@@ -64,8 +64,10 @@ pub fn run() -> ExitCode {
         }
     };
     let mut world = World::new(bindings);
-    // `Caps` + Esc sale hasta que exista "Salir" en la bandeja (hito 3b).
-    world.set_esc_quits(true);
+    // Se sale con "Salir" en la bandeja (hito 3b): `Caps` + Esc solo en modo
+    // prueba (un toque accidental cerraba todo en silencio). Si el ícono no
+    // se puede crear, el brain lo vuelve a activar.
+    world.set_esc_quits(test_mode);
     let mut brain = Brain::new(world, ops, log.clone(), test_mode);
     brain.restore_at_start();
 
@@ -131,7 +133,10 @@ fn banner(log: &Log, bindings: &[AppBinding], config: Option<&PathBuf>, test_mod
     log.line("  Caps + Alt + dos juntas  esquina (W + A, S + D...)");
     log.line("  Caps + Alt + F / C / Z maximizar (y volver) / centrar (60 %, 80 %) / deshacer");
     log.line("  Caps + Alt + G / V     agrandar / achicar (10 %, pegada a su borde)");
-    log.line("  Caps + Esc      salir (también Ctrl+C)");
+    log.line("  Bandeja         clic derecho en el ícono: ajustes, pausar, deshacer, salir");
+    if test_mode {
+        log.line("  Caps + Esc      salir (modo prueba; también Ctrl+C)");
+    }
     if test_mode {
         log.line("  MODO PRUEBA     Caps + F10 = pánico a propósito (muestra todo y sale con 3)");
         log.line("                  Caps + F11 = trabar el programa 6 s");

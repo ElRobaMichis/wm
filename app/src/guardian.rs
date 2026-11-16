@@ -54,7 +54,14 @@ pub fn run(args: &[String]) -> ExitCode {
         match wm_platform::instance::acquire("guardian") {
             Some(i) => Some(i),
             None => {
-                log("ya hay un wm corriendo en esta sesión: no arranco otro");
+                // Doble clic otra vez en el acceso directo: abrir los ajustes
+                // del que ya está corriendo.
+                let opened = wm_platform::tray::send_order(wm_platform::tray::Order::Settings);
+                log(if opened {
+                    "ya hay un wm corriendo: le pido que abra los ajustes"
+                } else {
+                    "ya hay un wm corriendo en esta sesión: no arranco otro"
+                });
                 return ExitCode::SUCCESS;
             }
         }

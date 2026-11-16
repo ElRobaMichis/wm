@@ -206,3 +206,23 @@ pub fn warning_box(title: &str, text: &str) {
         MessageBoxW(None, &HSTRING::from(text), &HSTRING::from(title), MB_OK | MB_ICONWARNING)
     };
 }
+
+/// ¿La barra de tareas es clara? (para dibujar el ícono oscuro o claro)
+pub fn light_taskbar() -> bool {
+    use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
+    let mut v = 0u32;
+    let mut size = 4u32;
+    // SAFETY: variable local con su tamaño.
+    let r = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            windows::core::w!(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"),
+            windows::core::w!("SystemUsesLightTheme"),
+            RRF_RT_REG_DWORD,
+            None,
+            Some((&mut v as *mut u32).cast()),
+            Some(&mut size),
+        )
+    };
+    r.is_ok() && v == 1
+}

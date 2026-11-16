@@ -191,6 +191,7 @@ pub fn run(args: &[String]) -> ExitCode {
             "ventanas difíciles",
             "colgada",
             "mapa",
+            "bandeja",
             "vuelo",
             "vuelo + caída",
             "hook + SendInput",
@@ -335,6 +336,49 @@ fn focus(r: &mut Report, puppets: &[WindowId]) {
 /// muestra (a los ~400 ms) y soltar lo oculta, sin tocar Bloq Mayús; un
 /// toque no lo muestra (y sí cambia Bloq Mayús); un atajo rápido lo suprime
 /// toda la pulsación; con el mapa visible, una acción no lo cierra.
+/// Hito 3b: órdenes de la bandeja con el core real (por `wm.command`, como
+/// el menú). En pausa, `Caps` + W no cambia de ventana y un toque de `Caps`
+/// cambia Bloq Mayús; al reanudar, `Caps` + W vuelve a funcionar.
+fn tray_checks(r: &mut Report, puppets: &[WindowId]) {
+    use wm_platform::tray::{Order, send_order_in};
+    let name = "bandeja";
+    let order = |o| send_order_in("ci-probe", o);
+    let focus_moves = |from: WindowId| {
+        let _ = windows_list::activate(from);
+        std::thread::sleep(Duration::from_millis(150));
+        session::send_hyper_chord(b'W');
+        wait_for(Duration::from_millis(600), || {
+            windows_list::foreground().is_some_and(|fg| fg != from && puppets.contains(&fg))
+        })
+        .is_some()
+    };
+    if !order(Order::Pause) {
+        r.check(name, Status::Fail, "no se encontró la ventana wm-ui".into());
+        return;
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    let moved_paused = focus_moves(puppets[0]);
+    let before = session::caps_lock_on();
+    session::send_keys(&[(CAPS, true), (CAPS, false)]);
+    std::thread::sleep(Duration::from_millis(100));
+    let toggled = session::caps_lock_on() != before;
+    if toggled {
+        session::send_keys(&[(CAPS, true), (CAPS, false)]); // dejarlo como estaba
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let resumed = order(Order::Resume);
+    std::thread::sleep(Duration::from_millis(200));
+    let moved_after = focus_moves(puppets[0]);
+    let ok = !moved_paused && toggled && resumed && moved_after;
+    let detail = format!(
+        "en pausa: Caps + W {}, toque de Caps {}; reanudado: Caps + W {}",
+        if moved_paused { "CAMBIÓ de ventana" } else { "no hace nada" },
+        if toggled { "cambia Bloq Mayús" } else { "NO cambia Bloq Mayús" },
+        if moved_after { "cambia de ventana" } else { "NO funciona" },
+    );
+    r.check(name, if ok { Status::Ok } else { Status::Fail }, detail);
+}
+
 fn map_checks(r: &mut Report, core_pid: u32) {
     use wm_platform::ui::map_visible_in;
     let name = "mapa";
@@ -552,10 +596,13 @@ fn core(r: &mut Report, puppets: &[WindowId]) {
     }
 
     map_checks(r, child.id());
+    tray_checks(r, puppets);
     hard_checks(r);
     hung_check(r);
 
-    session::send_hyper_chord(0x1B); // Caps + Esc: salir
+    // "Salir" como en el menú de la bandeja (`Caps` + Esc ya no sale fuera
+    // del modo prueba).
+    let quit_sent = wm_platform::tray::send_order_in("ci-probe", wm_platform::tray::Order::Quit);
     let exit = Instant::now();
     let code = loop {
         match child.try_wait() {
@@ -569,10 +616,14 @@ fn core(r: &mut Report, puppets: &[WindowId]) {
     };
     let ok = moved.is_some() && code == Some(0);
     let detail = format!(
-        "arrancó en {}; Caps + W → otro títere: {}; Caps + Esc → {}",
+        "arrancó en {}; Caps + W → otro títere: {}; Salir → {}",
         ms(boot),
         moved.map_or_else(|| "no".into(), |d| format!("sí, en {}", ms(d))),
-        code.map_or_else(|| "no salió en 3 s".into(), |c| format!("código {c}")),
+        if quit_sent {
+            code.map_or_else(|| "no salió en 3 s".into(), |c| format!("código {c}"))
+        } else {
+            "no se encontró la ventana wm-ui".into()
+        },
     );
     r.check(name, if ok { Status::Ok } else { Status::Fail }, detail);
 }

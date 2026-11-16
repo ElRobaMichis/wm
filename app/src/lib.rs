@@ -116,6 +116,8 @@ pub fn run() -> ExitCode {
         None => doctor(),
         Some("doctor") => doctor(),
         #[cfg(windows)]
+        Some(name @ ("quit" | "pause" | "resume" | "undo" | "ajustes")) => order(name),
+        #[cfg(windows)]
         Some("autostart") => autostart(args.first().map(String::as_str)),
         Some("version" | "--version" | "-V") => {
             println!("wm {}", env!("CARGO_PKG_VERSION"));
@@ -312,4 +314,18 @@ fn autostart(arg: Option<&str>) -> ExitCode {
         None => println!("No se puede: falta wmw.exe al lado de wm.exe."),
     }
     ExitCode::SUCCESS
+}
+
+/// `wm quit | pause | resume | undo | ajustes`: una orden al `wm` que ya
+/// está corriendo (por su ventana `wm-ui`).
+#[cfg(windows)]
+fn order(name: &str) -> ExitCode {
+    use wm_platform::tray::{Order, send_order};
+    let Some(o) = Order::from_name(name) else { return ExitCode::from(2) };
+    if send_order(o) {
+        ExitCode::SUCCESS
+    } else {
+        eprintln!("No hay un wm corriendo en esta sesión.");
+        ExitCode::FAILURE
+    }
 }
