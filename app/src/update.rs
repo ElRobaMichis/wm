@@ -23,6 +23,9 @@ const RELEASES: &str = "https://github.com/ElRobaMichis/wm/releases";
 /// `WM_UPDATE_KEY` de GitHub). Vacía: el actualizador no acepta nada.
 const RELEASE_KEY: &str = include_str!("../../update-pubkey.txt");
 
+/// Error de "no hay versión publicada" (404 en GitHub).
+const NO_RELEASE: &str = "todavía no hay una versión publicada";
+
 /// Mínimo entre búsquedas automáticas.
 const MIN_INTERVAL: Duration = Duration::from_secs(20 * 3600);
 
@@ -172,8 +175,10 @@ fn fetch(
                 (Some(t), _) | (None, Some(t)) => format!("{RELEASES}/download/{t}/{name}"),
                 (None, None) => format!("{RELEASES}/latest/download/{name}"),
             };
-            wm_platform::net::get(&url, max, Duration::from_secs(30), out)
-                .map_err(|e| e.to_string())
+            wm_platform::net::get(&url, max, Duration::from_secs(30), out).map_err(|e| match e {
+                wm_platform::net::NetError::Status(404) => NO_RELEASE.to_owned(),
+                e => e.to_string(),
+            })
         }
     }
 }
@@ -273,7 +278,13 @@ pub fn prepare_with(
         return Ok(Prepared::Skipped("se buscó hace menos de 20 h".into()));
     }
     let src = source(tag);
-    let (text, sig, m) = fetch_manifest(&src)?;
+    let (text, sig, m) = match fetch_manifest(&src) {
+        Ok(x) => x,
+        // Todavía no hay una versión oficial (solo pre-releases): nada que
+        // bajar, no es un error.
+        Err(e) if e.contains(NO_RELEASE) => return Ok(Prepared::UpToDate),
+        Err(e) => return Err(e),
+    };
     state.last_check = now;
     save_state(&state);
     let v = match decide(current(), arch(), &m, &state) {
