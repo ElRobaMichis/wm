@@ -1175,13 +1175,23 @@ impl World {
         let previous = self
             .sizing
             .get(&obs.key)
-            // También si quedó pegada al borde con otro tamaño (la app no se
-            // achicó del todo): sin esto, el V siguiente cambiaba de eje.
+            // También si quedó pegada al borde con otro tamaño **porque la app
+            // no aceptó ese tamaño** (sin esto, el V siguiente cambiaba de
+            // eje). Solo en ese caso: cualquier otra ventana pegada al mismo
+            // borde (una mitad recién puesta con D) también coincide.
             .filter(|s| {
                 let (w, h) = (here_rect.width(), here_rect.height());
+                let lim = self.limits.get(&obs.key).copied().unwrap_or_default();
+                let near =
+                    |v: i32, l: Option<i32>| l.is_some_and(|l| (v - l).abs() <= TOLERANCE_PX);
+                let at_app_limit = near(w, lim.min_w)
+                    || near(w, lim.max_w)
+                    || near(h, lim.min_h)
+                    || near(h, lim.max_h);
                 !obs.maximized
                     && (edge_error(here_rect, s.target) <= TOLERANCE_PX
-                        || edge_error(here_rect, anchor(s.target, work, w, h)) <= TOLERANCE_PX)
+                        || (at_app_limit
+                            && edge_error(here_rect, anchor(s.target, work, w, h)) <= TOLERANCE_PX))
             })
             .copied();
         let (anchor_rect, x, y) = match previous {
@@ -1229,7 +1239,8 @@ impl World {
                 (true, true) => "la app no se agranda más",
                 (false, true) => "la app no se achica más",
             };
-            out.push(Effect::Log(format!("{what}: {limit} ({}).", obs.app)));
+            let (cw, ch) = (here_rect.width(), here_rect.height());
+            out.push(Effect::Log(format!("{what}: {limit} ({}, {cw}×{ch}).", obs.app)));
             return;
         }
         let target = fit_inside(anchor(anchor_rect, work, w, h), work);

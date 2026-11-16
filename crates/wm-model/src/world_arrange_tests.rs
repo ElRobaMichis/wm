@@ -1408,3 +1408,21 @@ fn v_at_the_app_minimum_does_not_ask_again() {
     sim.key(&mut w, b'G'); // agrandar sí
     assert!(sim.win.frame.width() > 502);
 }
+
+#[test]
+fn v_on_a_right_half_after_growing_a_corner_changes_only_the_width() {
+    // Prueba del usuario: esquina → G hasta ~90 % → D (mitad derecha) → V
+    // achicaba los dos ejes ("40 % × 90 %") en vez de solo el ancho.
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.at(0, P::TopRight);
+    for _ in 0..4 {
+        sim.key(&mut w, b'G');
+    }
+    sim.key(&mut w, b'D');
+    assert!(sim.is_at(0, P::RightHalf), "{:?}", sim.logs);
+    sim.key(&mut w, b'V');
+    assert!(sim.logs.last().unwrap().contains("40 % de ancho"), "{:?}", sim.logs);
+    assert_eq!(sim.win.frame.height(), work().height());
+    assert_eq!(sim.win.frame.right, work().right);
+}
