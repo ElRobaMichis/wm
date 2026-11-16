@@ -484,6 +484,35 @@ fn a_single_w_against_the_top_says_so_but_not_inside_a_chord() {
 }
 
 #[test]
+fn releasing_alt_before_the_second_key_is_resolved_does_not_break_the_chord() {
+    // La carrera que encontró la CI: en una máquina lenta, soltar Alt llega
+    // entre la respuesta de la primera tecla y la de la segunda.
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.at(0, P::TopLeft);
+    let mut inspects = Vec::new();
+    for (letter, held) in [(b'D', HELD_D), (b'S', HELD_D | HELD_S)] {
+        let effects = w.step(arrange(letter, held), sim.now);
+        let Effect::Inspect { req, .. } = effects[0] else { panic!("{effects:?}") };
+        inspects.push((req, sim.obs()));
+    }
+    let (first, second) = (inspects[0].clone(), inspects[1].clone());
+    let mut queue = w.step(Event::Inspected { req: first.0, result: Ok(first.1) }, sim.now);
+    queue.extend(w.step(Event::Layer(Layer::Apps), sim.now)); // se soltó Alt
+    queue.extend(w.step(Event::Inspected { req: second.0, result: Ok(second.1) }, sim.now));
+    // Ejecutar lo pedido, como lo haría la plataforma, y dejar terminar.
+    let mut events = Vec::new();
+    for effect in queue {
+        if let Effect::Place { req, rect, .. } = effect {
+            sim.queued.push((sim.now, rect));
+            events.push(Event::Placed { req, result: Ok(()) });
+        }
+    }
+    sim.run_many(&mut w, events);
+    assert!(sim.is_at(0, P::BottomRight), "D + S = esquina de abajo a la derecha: {:?}", sim.logs);
+}
+
+#[test]
 fn opposite_keys_together_cancel() {
     let mut w = World::new(Vec::new());
     let mut sim = Sim::new();

@@ -96,9 +96,22 @@ struct Spot {
     placement: Placement,
 }
 
+/// Las teclas de un gesto, decididas **al llegar cada tecla**, en el mismo
+/// orden que los cambios de capa (soltar el pulgar o Caps termina el gesto).
+/// Decidirlo recién al volver el `Inspect` de la tecla tenía una carrera: en
+/// una máquina lenta, soltar Alt se procesaba entre la respuesta de la
+/// primera tecla y la de la segunda, y la segunda se tomaba como sola.
+#[derive(Debug, Clone, Copy)]
+struct Keys {
+    id: u64,
+    seen: u8,
+}
+
 /// Dos o más teclas de dirección juntas sobre la misma ventana.
 #[derive(Debug, Clone, Copy)]
 struct Gesture {
+    /// El [`Keys::id`] del gesto.
+    id: u64,
     win: WinKey,
     /// Dónde estaba antes de la primera tecla.
     origin: Spot,
@@ -258,9 +271,13 @@ enum Pending {
     /// Capa de ventana: esperando la ventana al frente.
     Arrange {
         dir: Dir,
-        held: u8,
         key_us: u64,
         what: String,
+        /// Gesto al que pertenece la tecla y sus teclas hasta ella.
+        gesture: u64,
+        seen: u8,
+        /// `true`: continúa un gesto (es la segunda tecla o más).
+        continues: bool,
     },
     /// Verificar una colocación.
     Verify {
@@ -284,6 +301,8 @@ pub struct World {
     activations: Activations,
     jobs: HashMap<WinKey, Job>,
     next_job: u64,
+    keys: Option<Keys>,
+    next_gesture: u64,
     gesture: Option<Gesture>,
     deferred: Option<Deferred>,
     /// Dónde dejamos cada ventana y qué marco logró: mientras siga igual, la
@@ -349,12 +368,12 @@ impl World {
             Event::Layer(layer) => {
                 self.layer = layer;
                 if layer != Layer::Window {
-                    self.end_gesture(now_us, &mut out);
+                    self.keys = None; // las teclas siguientes empiezan otro gesto
                 }
             }
             Event::KeyboardReset => {
                 self.layer = Layer::Off;
-                self.end_gesture(now_us, &mut out);
+                self.keys = None;
             }
             Event::Bindings(b) => self.bindings = b,
             Event::Windows { req, result } => {
@@ -391,10 +410,15 @@ impl World {
                 }
             }
             Event::Inspected { req, result } => match self.pending.remove(&req) {
-                Some(Pending::Arrange { dir, held, key_us, what }) => match result {
-                    Ok(obs) => self.arrange(dir, held, key_us, what, obs, now_us, &mut out),
-                    Err(e) => out.push(Effect::Log(format!("{what}: {e}"))),
-                },
+                Some(Pending::Arrange { dir, key_us, what, gesture, seen, continues }) => {
+                    match result {
+                        Ok(obs) => {
+                            let g = (gesture, seen, continues);
+                            self.arrange(dir, g, key_us, what, obs, now_us, &mut out);
+                        }
+                        Err(e) => out.push(Effect::Log(format!("{what}: {e}"))),
+                    }
+                }
                 Some(Pending::Verify { win, job }) => {
                     self.verify(win, job, result, now_us, &mut out)
                 }
@@ -442,9 +466,23 @@ impl World {
             HyperAction::Letter { letter, thumb: true } => {
                 let what = format!("Caps + Alt + {}", letter as char);
                 if let Some(dir) = Dir::from_letter(letter) {
+                    // ¿Continúa un gesto? Una tecla nueva con todas las del
+                    // gesto todavía apretadas (sin ninguna suelta en el medio).
+                    let bit = dir.bit();
+                    let (gesture, seen, continues) = match self.keys {
+                        Some(k) if k.seen & bit == 0 && held == k.seen | bit => {
+                            (k.id, k.seen | bit, true)
+                        }
+                        _ => {
+                            self.next_gesture += 1;
+                            (self.next_gesture, bit, false)
+                        }
+                    };
+                    self.keys = Some(Keys { id: gesture, seen });
                     let req = self.req();
                     let key_us = now_us.saturating_sub(u64::from(age_ms) * 1000);
-                    self.pending.insert(req, Pending::Arrange { dir, held, key_us, what });
+                    let pending = Pending::Arrange { dir, key_us, what, gesture, seen, continues };
+                    self.pending.insert(req, pending);
                     out.push(Effect::Inspect { req, win: None });
                 } else {
                     out.push(Effect::Log(format!("{what}: todavía no hace nada.")));
@@ -466,7 +504,7 @@ impl World {
     fn arrange(
         &mut self,
         dir: Dir,
-        held: u8,
+        (id, seen, continues): (u64, u8, bool),
         key_us: u64,
         what: String,
         obs: Obs,
@@ -486,12 +524,11 @@ impl World {
             return;
         }
         let bit = dir.bit();
-        // ¿Sigue un gesto? La misma ventana, una tecla nueva y todas las del
-        // gesto todavía apretadas (sin ninguna suelta en el medio).
-        let continues =
-            self.gesture.filter(|g| g.win == obs.key && g.seen & bit == 0 && held == g.seen | bit);
-        if let Some(mut g) = continues {
-            g.seen |= bit;
+        // Continúa el gesto si así se decidió al llegar la tecla y la primera
+        // tecla del gesto ya fijó el origen sobre esta misma ventana.
+        let ongoing = self.gesture.filter(|g| continues && g.id == id && g.win == obs.key);
+        if let Some(mut g) = ongoing {
+            g.seen = seen;
             self.gesture = Some(g);
             if self.deferred.as_ref().is_some_and(|d| d.obs.key == obs.key) {
                 self.deferred = None; // el empuje de la primera tecla queda sin efecto
@@ -507,7 +544,7 @@ impl World {
         }
         let (here, here_rect) = self.locate(&obs, m);
         self.gesture =
-            Some(Gesture { win: obs.key, origin: here, origin_rect: here_rect, seen: bit });
+            Some(Gesture { id, win: obs.key, origin: here, origin_rect: here_rect, seen: bit });
         match step(here.placement, dir) {
             Move::Stay(p) => {
                 let to = Spot { monitor: here.monitor, placement: p };
@@ -572,14 +609,6 @@ impl World {
         let what = format!("{what} → {} ({})", placement_name(target), obs.app);
         out.push(Effect::Log(format!("{what}: no hay otro monitor de ese lado.")));
         self.go(obs, g.origin, g.origin_rect, what, key_us, now_us, out);
-    }
-
-    /// Termina el gesto (se soltó el pulgar o Caps) y ejecuta lo pendiente.
-    fn end_gesture(&mut self, now_us: u64, out: &mut Vec<Effect>) {
-        self.gesture = None;
-        if let Some(d) = self.deferred.take() {
-            self.run_deferred(d, now_us, out);
-        }
     }
 
     fn run_deferred(&mut self, d: Deferred, now_us: u64, out: &mut Vec<Effect>) {
