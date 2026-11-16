@@ -504,3 +504,38 @@ Auditoría del 16/11/2026 (`keyboard-design.md`, `design.md`, `architecture.md`,
 **Descartado:** colores por grupo en el mapa (`keyboard-design.md` §10.1): choca con la regla de un solo acento de `design.md` §3.2.
 
 **Ya hecho aunque el plan no lo nombraba:** la tecla máscara para "Alt antes de `Caps`" (`keyboard.rs`), Raw Input como vigía del hook y el hook que deja pasar todo si el brain no responde (`input.rs`).
+
+---
+
+## 11. La investigación (`findings.md` §5–§7, §14) contra lo que hay
+
+Revisión del 16/11/2026, a pedido del usuario: qué de lo que la gente **ama**, **odia** y **pide** cubre v1, y qué no.
+
+**Lo que odia (§6), cubierto en v1:** latencia (hook de ~10 µs, ir a una app en ~2 ms); configurar con archivos (ajustes con interfaz; `apps.txt` solo como respaldo); comportamiento errático (verificación por pasadas, no se pelea con la app, nunca pierde ventanas: guardián y marcas); apps que se resisten (tamaño mínimo y fijo, colgadas, lentas: 1d); varios monitores (empujar, cruce de DPI; tormentas en 4d); que todo cambie de tamaño al abrir (no hay tiling automático); perder libertad (las ventanas siguen libres; `wm` solo actúa con una tecla); unir varias apps (Hyper incluido, una sola app); requisitos que dan miedo (sin admin, sin APIs privadas en el núcleo); funciones que nadie pidió.
+
+**Lo que ama (§5), cubierto en v1:** velocidad y cambio instantáneo de app por inicial (`Caps` + letra); ciclos al repetir (C: 60 % → 80 %); animaciones que ayudan a seguir la ventana (1e, opcionales); estética cuidada (Geist, tokens); instalar y que funcione sin admin (hito 3). Con el hito 5: mover y redimensionar desde cualquier parte (Swift Shift).
+
+**Lo que pide y nadie hace (§7, ⭐ = mayor oportunidad), y dónde está:**
+
+| Pedido | Estado |
+|---|---|
+| ⭐ 1–2. Zonas fijas con pilas de ventanas, híbrido con tiling (la propuesta de valor de §14.1) | **Fuera de v1** (línea de alcance) |
+| ⭐ 21. Configurar el layout visualmente, con mouse | **Fuera de v1** (va con las zonas) |
+| ⭐ 4. Reglas por app (lado preferido, tamaño, flotar, posición al abrir) | **Sin lugar hasta ahora** → propuesta abajo |
+| ⭐ 10. Reaplicar el layout solo (al abrir una app, al cambiar monitores, al volver del reposo) | Parcial: 4d rescata ventanas fuera de pantalla; la persistencia por topología (spike 7) está fuera de v1 |
+| ⭐ 14. Selector por ventana y por monitor con posiciones estables | **Sin lugar hasta ahora** → propuesta abajo |
+| 13. Ventanas nuevas en el monitor del puntero y sin tapar a otras | **Sin lugar hasta ahora** → propuesta abajo |
+| 11. Grupos de apps que se abren juntos | **Sin lugar hasta ahora** → propuesta abajo |
+| 16–17. Escritorios con nombre; llevar una ventana con el teclado | Llevar: hito 4. Nombres: después de v1 |
+| 25. Tecla Hyper configurable | Después de v1 (§10) |
+| 26. Espacios entre ventanas (accesibilidad) | Sin lugar → propuesta abajo |
+| 28. Cuartos arrastrando a las esquinas | Ya lo da Windows (Snap) |
+| 30. Animaciones en cero | Hecho (`WM_ANIM=0`, "reducir animaciones"); falta el interruptor en los ajustes |
+
+**Conclusión:** v1 es la **base de teclado** para la sesión con la usuaria (lo que pidió `keyboard-design.md` §12): resuelve casi todo lo que la gente odia, pero **todavía no tiene el diferencial** que la investigación encontró (zonas con pilas, reglas por app, layouts que se reaplican solos).
+
+**Propuesta de hoja de ruta después de v1 (a confirmar con el usuario):**
+1. **v1.1, reglas simples:** posición al abrir por app (lado o zona preferida), ventanas nuevas en el monitor del puntero y sin tapar a otras, espacios entre ventanas opcionales. Barato sobre lo que ya existe (`place`, `anchor`).
+2. **v2, zonas:** áreas de trabajo por monitor con pila, definidas visualmente con el overlay (el editor de zonas de architecture.md §3), arrastrar a una zona con `Caps` o clic derecho, atajos por zona, redimensionado vinculado. Es la ⭐ principal.
+3. **v2.x, recordar todo:** persistencia por topología (spike 7, ya diseñado y probado), reaplicar al conectar o desconectar monitores y al volver del reposo; grupos de apps.
+4. **Después:** selector por ventana y por monitor; tiling automático por área; los diferenciales de §14.2.
