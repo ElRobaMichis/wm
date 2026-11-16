@@ -1185,6 +1185,41 @@ fn drag_check(id: WindowId) -> impl FnOnce(&mut Report, Option<(u32, u32)>) {
         ));
         undo();
         let _ = wait_for(Duration::from_secs(1), || frame_now().is_some_and(|f| near(f, f0)));
+
+        // Con dos monitores: maximizada en el principal, arrastrada al otro,
+        // Z la vuelve a maximizar en el principal (prueba del usuario).
+        if let Some(other) = monitors.iter().find(|m| !m.primary) {
+            std::thread::sleep(Duration::from_millis(300));
+            hide::set_maximized_for_test(id, true);
+            let _ = wait_for(Duration::from_secs(1), || hide::is_maximized(id));
+            std::thread::sleep(Duration::from_millis(200));
+            let fm = frame_now().unwrap_or(f0);
+            let from = ((fm.left + fm.right) / 2, fm.top + 200);
+            let to =
+                ((other.work_area.left + other.work_area.right) / 2, other.work_area.top + 200);
+            drag(false, from, (to.0 - from.0, to.1 - from.1));
+            let center_in = |f: wm_model::Rect, r: wm_model::Rect| {
+                let (cx, cy) = ((f.left + f.right) / 2, (f.top + f.bottom) / 2);
+                cx >= r.left && cx < r.right && cy >= r.top && cy < r.bottom
+            };
+            let crossed = wait_for(Duration::from_secs(1), || {
+                !hide::is_maximized(id) && frame_now().is_some_and(|f| center_in(f, other.bounds))
+            })
+            .is_some();
+            std::thread::sleep(Duration::from_millis(100));
+            undo();
+            let primary = work;
+            let back = wait_for(Duration::from_secs(1), || {
+                hide::is_maximized(id) && frame_now().is_some_and(|f| center_in(f, primary))
+            })
+            .is_some();
+            ok &= crossed && back;
+            parts.push(format!(
+                "maximizada → al otro monitor: {crossed}; Z la maximiza en el principal: {back}"
+            ));
+            hide::set_maximized_for_test(id, false);
+            let _ = wait_for(Duration::from_secs(1), || !hide::is_maximized(id));
+        }
     } else {
         ran = false;
         parts.push("sin monitor o sin títere".into());

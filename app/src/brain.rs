@@ -240,7 +240,7 @@ impl Brain {
         for e in self.tray.drain() {
             match e {
                 TrayEvent::Ready(Ok(())) => {
-                    self.log.line("Ícono en la bandeja: menú con clic derecho.")
+                    self.log.line("Ícono en la bandeja: un clic abre el menú (escritorios, ajustes, salir).")
                 }
                 TrayEvent::Ready(Err(e)) => {
                     // Sin ícono no hay "Salir": `Caps` + Esc sigue saliendo.

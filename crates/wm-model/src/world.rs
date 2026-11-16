@@ -1786,7 +1786,34 @@ impl World {
             self.sizing.remove(&obs.key);
             self.jobs.remove(&obs.key);
             self.placed.remove(&obs.key);
-            if !obs.maximized {
+            // Maximizada en otro monitor (la arrastraron o la empujaron
+            // después): primero llevarla a aquel, y maximizarla ahí. Windows
+            // maximiza en el monitor donde está la ventana.
+            let here = monitor_of(&obs.monitors, obs.frame);
+            let there = monitor_of(&obs.monitors, entry.frame);
+            let moved = match (here, there) {
+                (Some(h), Some(t)) if h != t => {
+                    if obs.maximized {
+                        out.push(Effect::Normalize { win: obs.key });
+                    }
+                    let work = obs.monitors[t].work;
+                    let (w, h) = (
+                        obs.frame.width().min(work.width()),
+                        obs.frame.height().min(work.height()),
+                    );
+                    let left = work.left + (work.width() - w) / 2;
+                    let top = work.top + (work.height() - h) / 2;
+                    let target = Rect::new(left, top, left + w, top + h);
+                    let rect = outer_for(obs.frame, obs.outer, target, obs.dpi, obs.dpi);
+                    // Sin chequeos: enseguida se maximiza.
+                    let req = self.req();
+                    out.push(Effect::Place { req, win: obs.key, rect });
+                    out.push(Effect::Maximize { win: obs.key });
+                    true
+                }
+                _ => false,
+            };
+            if !moved && !obs.maximized {
                 out.push(Effect::Maximize { win: obs.key });
             }
             let since = now_us.saturating_sub(key_us) as f64 / 1000.0;

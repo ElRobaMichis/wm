@@ -85,6 +85,38 @@ fn z_right_after_releasing_waits_for_the_drag_to_finish() {
     assert!(e.iter().any(|e| matches!(e, Effect::Inspect { win: Some(WIN), .. })), "{e:?}");
 }
 
+/// Prueba del usuario: maximizada en el monitor 1, arrastrada al 2; Z la
+/// vuelve a maximizar en el 1, no en el 2.
+#[test]
+fn undo_maximizes_back_on_the_original_monitor() {
+    let mut w = World::new(Vec::new());
+    let max1 = Rect::new(0, 0, 1920, 1040);
+    let req = inspect_req(&press(&mut w, Button::Left, (960, 10), 1_000_000));
+    w.step(Event::Grabbed { req, result: Ok(grab(max1, true)) }, 1_001_000);
+    release(&mut w, Button::Left, 1_500_000);
+    let report = DragReport { moved: true, frame: None, ms: 500 };
+    w.step(Event::DragDone { win: WIN, result: Ok(report) }, 1_510_000);
+    let e = w.step(Event::Command(Command::Undo), 2_000_000);
+    let Some(req) = e.iter().find_map(|e| match e {
+        Effect::Inspect { req, win: Some(WIN) } => Some(*req),
+        _ => None,
+    }) else {
+        panic!("{e:?}")
+    };
+    // Ahora está, normal, en el monitor 2.
+    let mut o = obs(Rect::new(2200, 100, 3000, 700), false);
+    o.monitors.push(MonitorObs {
+        bounds: Rect::new(1920, 0, 3840, 1080),
+        work: Rect::new(1920, 0, 3840, 1040),
+        dpi: 96,
+    });
+    let e = w.step(Event::Inspected { req, result: Ok(o) }, 2_001_000);
+    let placed =
+        e.iter().position(|e| matches!(e, Effect::Place { rect, .. } if rect.right <= 1920));
+    let maxed = e.iter().position(|e| matches!(e, Effect::Maximize { win: WIN }));
+    assert!(placed.is_some() && maxed.is_some() && placed < maxed, "{e:?}");
+}
+
 #[test]
 fn a_still_click_is_not_recorded() {
     let mut w = World::new(Vec::new());
