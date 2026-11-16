@@ -125,7 +125,10 @@ pub fn displays() -> windows::core::Result<Vec<Display>> {
         }
         let gdi_name = wide(&source.viewGdiDeviceName);
         let Some(m) = monitors.iter().find(|m| m.device == gdi_name) else {
-            return Err(windows::core::Error::new(E_FAIL, "configuración de pantallas incoherente"));
+            return Err(windows::core::Error::new(
+                E_FAIL,
+                "configuración de pantallas incoherente",
+            ));
         };
         let key = wide(&target.monitorDevicePath).to_lowercase();
         // Espejo: dos caminos a la misma fuente; se cuenta una vez.

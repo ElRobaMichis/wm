@@ -7,8 +7,8 @@ use std::ffi::c_void;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClassNameW, GetWindowRect, GetWindowThreadProcessId, IsHungAppWindow,
-    SMTO_ABORTIFHUNG, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SendMessageTimeoutW,
-    SetWindowPos, WM_NULL,
+    SMTO_ABORTIFHUNG, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SendMessageTimeoutW, SetWindowPos,
+    WM_NULL,
 };
 use windows::core::BOOL;
 
@@ -26,15 +26,8 @@ pub fn set_window_pos_sync(id: WindowId) {
     // SAFETY: llamadas Win32 sobre un HWND (si ya no existe, fallan sin más).
     unsafe {
         let _ = GetWindowRect(h, &mut r);
-        let _ = SetWindowPos(
-            h,
-            None,
-            r.left,
-            r.top,
-            0,
-            0,
-            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-        );
+        let _ =
+            SetWindowPos(h, None, r.left, r.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
 }
 

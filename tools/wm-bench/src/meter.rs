@@ -96,11 +96,7 @@ impl OutputMeter {
 
 /// Arranca un medidor por monitor. `row` es la fila (relativa al monitor)
 /// donde pasa el cuadrado. Miden hasta que `stop` sea `true`.
-pub fn start(
-    row: u32,
-    key: ColorKey,
-    stop: Arc<AtomicBool>,
-) -> Result<Vec<OutputMeter>, String> {
+pub fn start(row: u32, key: ColorKey, stop: Arc<AtomicBool>) -> Result<Vec<OutputMeter>, String> {
     let mut meters = Vec::new();
     for (a, o, name, desktop) in outputs()? {
         let stop = Arc::clone(&stop);

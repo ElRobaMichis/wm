@@ -77,10 +77,22 @@ impl Log {
 /// Lo que el brain espera de cada pedido en vuelo.
 enum Pending {
     /// Enumerar ventanas para resolver `Caps` + letra.
-    Scan { letter: u8, key_qpc: i64 },
+    Scan {
+        letter: u8,
+        key_qpc: i64,
+    },
     /// Traer al frente.
-    Focus { letter: u8, app: String, title: String, key_qpc: i64 },
-    Launch { letter: u8, app: String, path: String },
+    Focus {
+        letter: u8,
+        app: String,
+        title: String,
+        key_qpc: i64,
+    },
+    Launch {
+        letter: u8,
+        app: String,
+        path: String,
+    },
     RestoreAtStart,
     RestoreAtExit,
 }

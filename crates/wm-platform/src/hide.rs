@@ -26,8 +26,8 @@ use windows::Win32::System::Com::{
     CLSCTX_ALL, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, IServiceProvider,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetPropW, GetSystemMetrics, GetWindowRect, IsIconic, IsWindowVisible,
-    RemovePropW, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_HIDE, SW_SHOWMINNOACTIVE, SW_SHOWNA,
+    EnumWindows, GetPropW, GetSystemMetrics, GetWindowRect, IsIconic, IsWindowVisible, RemovePropW,
+    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_HIDE, SW_SHOWMINNOACTIVE, SW_SHOWNA,
     SW_SHOWNOACTIVATE, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SetPropW,
     SetWindowPos, ShowWindowAsync,
 };

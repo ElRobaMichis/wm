@@ -399,7 +399,9 @@ fn overlay(r: &mut Report) {
             Ok(built)
         });
     match result {
-        Ok(t) => r.check("overlay (Composition + mapa)", Status::Ok, format!("creado en {}", ms(t))),
+        Ok(t) => {
+            r.check("overlay (Composition + mapa)", Status::Ok, format!("creado en {}", ms(t)))
+        }
         Err(e) => r.check("overlay (Composition + mapa)", Status::Fail, e.to_string()),
     }
 }

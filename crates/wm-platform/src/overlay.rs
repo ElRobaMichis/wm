@@ -17,9 +17,7 @@ use windows::UI::Composition::{Compositor, ContainerVisual};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::WinRT::Composition::ICompositorDesktopInterop;
-use windows::Win32::System::WinRT::{
-    DQTAT_COM_STA, DQTYPE_THREAD_CURRENT, DispatcherQueueOptions,
-};
+use windows::Win32::System::WinRT::{DQTAT_COM_STA, DQTYPE_THREAD_CURRENT, DispatcherQueueOptions};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, HTTRANSPARENT, MA_NOACTIVATE, RegisterClassW,
     SW_HIDE, SW_SHOWNOACTIVATE, ShowWindow, WM_MOUSEACTIVATE, WM_NCHITTEST, WNDCLASSW,
@@ -199,9 +197,8 @@ pub fn process_memory() -> (usize, usize) {
         ..Default::default()
     };
     // SAFETY: estructura local con su tamaño; el proceso actual siempre es válido.
-    let _ = unsafe {
-        K32GetProcessMemoryInfo(GetCurrentProcess(), &mut c as *mut _ as *mut _, c.cb)
-    };
+    let _ =
+        unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut c as *mut _ as *mut _, c.cb) };
     (c.WorkingSetSize, c.PrivateUsage)
 }
 

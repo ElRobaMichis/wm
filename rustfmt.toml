@@ -1,0 +1,3 @@
+# Estilo del proyecto: usar todo el ancho de línea (100) antes de partir
+# expresiones, structs y llamadas cortas.
+use_small_heuristics = "Max"

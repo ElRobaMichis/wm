@@ -36,7 +36,10 @@ const DBT_DEVNODES_CHANGED: usize = 0x0007;
 pub enum DisplayEvent {
     /// Cambió la resolución o la cantidad de monitores (bits por pixel, ancho, alto
     /// del monitor principal).
-    DisplayChange { width: u16, height: u16 },
+    DisplayChange {
+        width: u16,
+        height: u16,
+    },
     /// Cambió el área de trabajo (barra de tareas).
     WorkArea,
     /// Otro cambio de configuración (incluye la escala, que llega como
@@ -166,11 +169,11 @@ pub fn start() -> windows::core::Result<Receiver<(i64, DisplayEvent)>> {
                 }
             }
         })
-        .map_err(|e| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, e.to_string()))?;
-    ready_rx
-        .recv()
         .map_err(|e| {
             windows::core::Error::new(windows::Win32::Foundation::E_FAIL, e.to_string())
-        })??;
+        })?;
+    ready_rx.recv().map_err(|e| {
+        windows::core::Error::new(windows::Win32::Foundation::E_FAIL, e.to_string())
+    })??;
     Ok(rx)
 }

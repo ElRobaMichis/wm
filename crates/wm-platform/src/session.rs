@@ -18,8 +18,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY, VK_CAPITAL,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClassNameW, GetForegroundWindow, GetShellWindow, GetWindowTextW,
-    GetWindowThreadProcessId,
+    GetClassNameW, GetForegroundWindow, GetShellWindow, GetWindowTextW, GetWindowThreadProcessId,
 };
 
 use crate::windows_list::WindowId;

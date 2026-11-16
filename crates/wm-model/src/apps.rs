@@ -158,8 +158,7 @@ pub fn resolve<W: Copy + PartialEq>(
         None => {
             let initial = letter.to_ascii_lowercase();
             let auto = windows.iter().find(|(_, app)| {
-                app.as_bytes().first() == Some(&initial)
-                    && !bindings.iter().any(|b| b.app == *app)
+                app.as_bytes().first() == Some(&initial) && !bindings.iter().any(|b| b.app == *app)
             });
             match auto {
                 Some((_, app)) => (*app).to_owned(),
@@ -265,13 +264,11 @@ mod tests {
 
     #[test]
     fn update_keeps_comments_and_changes_in_place() {
-        let old = "# mías\nc = chrome\n\n# trabajo\nt = windowsterminal | C:\\wt.exe\nz\nc = edge\n";
+        let old =
+            "# mías\nc = chrome\n\n# trabajo\nt = windowsterminal | C:\\wt.exe\nz\nc = edge\n";
         let new = [bind(b'C', "code", None), bind(b'T', "windowsterminal", Some("C:\\wt.exe"))];
         let text = update_bindings(old, &new);
-        assert_eq!(
-            text,
-            "# mías\nc = code\n\n# trabajo\nt = windowsterminal | C:\\wt.exe\nz\n"
-        );
+        assert_eq!(text, "# mías\nc = code\n\n# trabajo\nt = windowsterminal | C:\\wt.exe\nz\n");
     }
 
     #[test]

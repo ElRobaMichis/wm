@@ -10,16 +10,15 @@ use std::mem::size_of;
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CreateFontW, CreateSolidBrush, DT_CENTER, DT_SINGLELINE, DT_VCENTER, DeleteObject,
-    DrawTextW, EndPaint, FillRect, GetMonitorInfoW, HGDIOBJ, MONITOR_DEFAULTTOPRIMARY,
-    MONITORINFO, MonitorFromWindow, PAINTSTRUCT, SelectObject, SetBkMode, SetTextColor,
-    TRANSPARENT,
+    DrawTextW, EndPaint, FillRect, GetMonitorInfoW, HGDIOBJ, MONITOR_DEFAULTTOPRIMARY, MONITORINFO,
+    MonitorFromWindow, PAINTSTRUCT, SelectObject, SetBkMode, SetTextColor, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DispatchMessageW, EnumWindows,
-    GWLP_USERDATA, GetClassNameW, GetClientRect, GetMessageW, GetWindowLongPtrW, MSG,
-    PostMessageW, PostQuitMessage, RegisterClassW, SetWindowLongPtrW, TranslateMessage,
-    WINDOW_EX_STYLE, WM_APP, WM_DESTROY, WM_PAINT, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    GWLP_USERDATA, GetClassNameW, GetClientRect, GetMessageW, GetWindowLongPtrW, MSG, PostMessageW,
+    PostQuitMessage, RegisterClassW, SetWindowLongPtrW, TranslateMessage, WINDOW_EX_STYLE, WM_APP,
+    WM_DESTROY, WM_PAINT, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
 use windows::core::{BOOL, PCWSTR, w};
 
@@ -42,8 +41,16 @@ pub fn color_bgr(n: usize) -> (u8, u8, u8) {
 
 /// Colores bien distintos para reconocer cada títere a simple vista.
 const COLORS: [u32; 10] = [
-    0x003C_14DC, 0x0000_A5FF, 0x0000_D7FF, 0x0032_CD32, 0x00D1_CE00, 0x00E1_6941, 0x00D3_00C7,
-    0x0013_458B, 0x0080_8080, 0x0099_3366,
+    0x003C_14DC,
+    0x0000_A5FF,
+    0x0000_D7FF,
+    0x0032_CD32,
+    0x00D1_CE00,
+    0x00E1_6941,
+    0x00D3_00C7,
+    0x0013_458B,
+    0x0080_8080,
+    0x0099_3366,
 ];
 
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -60,8 +67,20 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 let brush = CreateSolidBrush(COLORREF(COLORS[index % COLORS.len()]));
                 FillRect(hdc, &rect, brush);
                 let font = CreateFontW(
-                    160, 0, 0, 0, 700, 0, 0, 0, Default::default(), Default::default(),
-                    Default::default(), Default::default(), 0, w!("Segoe UI"),
+                    160,
+                    0,
+                    0,
+                    0,
+                    700,
+                    0,
+                    0,
+                    0,
+                    Default::default(),
+                    Default::default(),
+                    Default::default(),
+                    Default::default(),
+                    0,
+                    w!("Segoe UI"),
                 );
                 let old = SelectObject(hdc, HGDIOBJ(font.0));
                 SetBkMode(hdc, TRANSPARENT);
@@ -126,8 +145,7 @@ pub fn run_puppets(count: usize) -> windows::core::Result<()> {
 
         for i in 0..count {
             let (col, row) = ((i as i32) % cols, (i as i32) / cols);
-            let title: Vec<u16> =
-                format!("Títere {}\0", i + 1).encode_utf16().collect();
+            let title: Vec<u16> = format!("Títere {}\0", i + 1).encode_utf16().collect();
             let hwnd = CreateWindowExW(
                 WINDOW_EX_STYLE(0),
                 CLASS,

@@ -135,10 +135,7 @@ fn describe(monitor: HMONITOR) -> Option<MonitorInfo> {
         unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) };
     let dpi = if dpi_result.is_ok() { dpi_x } else { 96 };
 
-    let mut mode = DEVMODEW {
-        dmSize: size_of::<DEVMODEW>() as u16,
-        ..Default::default()
-    };
+    let mut mode = DEVMODEW { dmSize: size_of::<DEVMODEW>() as u16, ..Default::default() };
     // SAFETY: `szDevice` termina en NUL y `mode` tiene `dmSize` correcto.
     let has_mode = unsafe {
         EnumDisplaySettingsW(PCWSTR(info.szDevice.as_ptr()), ENUM_CURRENT_SETTINGS, &mut mode)

@@ -264,11 +264,8 @@ impl Ops {
         };
         let Some(job) = state.queue.pop_front() else { return };
         let now = Instant::now();
-        state.in_flight = Some(InFlight {
-            ticket: job.ticket,
-            deadline: now + job.op.deadline(),
-            started: now,
-        });
+        state.in_flight =
+            Some(InFlight { ticket: job.ticket, deadline: now + job.op.deadline(), started: now });
         let thread = worker.thread_id;
         if worker.jobs.send(job).is_ok() {
             // SAFETY: PostThreadMessageW no bloquea.
@@ -398,12 +395,11 @@ fn spawn_worker(lane: Lane, brain: u32, results: Sender<OpsEvent>) -> std::io::R
     let (jobs_tx, jobs_rx) = mpsc::channel::<Job>();
     let abandoned = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&abandoned);
-    let handle = std::thread::Builder::new().name(format!("wm-ops-{}", lane.name())).spawn(
-        move || {
+    let handle =
+        std::thread::Builder::new().name(format!("wm-ops-{}", lane.name())).spawn(move || {
             input::ensure_message_queue();
             // SAFETY: cambia la prioridad del hilo actual.
-            let _ =
-                unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL) };
+            let _ = unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL) };
             let mut ctx = Context::new(lane);
             let run_pending = |ctx: &mut Context| {
                 while let Ok(job) = jobs_rx.try_recv() {
@@ -439,8 +435,7 @@ fn spawn_worker(lane: Lane, brain: u32, results: Sender<OpsEvent>) -> std::io::R
             // Abandonado: soltar los objetos COM sería otra llamada a
             // Explorer, que puede estar colgado. Se dejan sin liberar.
             std::mem::forget(ctx);
-        },
-    )?;
+        })?;
     // SAFETY: handle válido del hilo recién creado (vive mientras exista `handle`).
     let thread_id = unsafe { GetThreadId(HANDLE(handle.as_raw_handle())) };
     drop(handle); // el hilo queda suelto: nunca se espera a un carril

@@ -13,13 +13,13 @@ pub mod display_watch;
 #[cfg(windows)]
 pub mod displays;
 #[cfg(windows)]
-pub mod ghost;
-#[cfg(windows)]
-pub mod ghost_curtain;
+mod dynlib;
 #[cfg(windows)]
 pub mod geometry;
 #[cfg(windows)]
-mod dynlib;
+pub mod ghost;
+#[cfg(windows)]
+pub mod ghost_curtain;
 #[cfg(windows)]
 pub mod hide;
 #[cfg(windows)]

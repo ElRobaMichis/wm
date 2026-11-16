@@ -118,10 +118,8 @@ mod tests {
             place(a, Placement::BottomLeft),
             place(a, Placement::BottomRight),
         ];
-        let covered: i64 = quarters
-            .iter()
-            .map(|q| i64::from(q.width()) * i64::from(q.height()))
-            .sum();
+        let covered: i64 =
+            quarters.iter().map(|q| i64::from(q.width()) * i64::from(q.height())).sum();
         assert_eq!(covered, i64::from(a.width()) * i64::from(a.height()));
         assert_eq!(quarters[0].right, quarters[1].left);
         assert_eq!(quarters[0].bottom, quarters[2].top);

@@ -113,9 +113,10 @@ pub fn run(args: &[String], exe: &std::path::Path) -> ExitCode {
     let [left, top, right, bottom] = [0, 1, 2, 3].map(|i| ready[i] as i32);
     let target_hwnd = ready.get(4).copied().unwrap_or(0) as isize;
     let row_y = top + (bottom - top) * 3 / 4;
-    let monitor = wm_platform::monitors().into_iter().map(|m| m.bounds).find(|b| {
-        left >= b.left && left < b.right && row_y >= b.top && row_y < b.bottom
-    });
+    let monitor = wm_platform::monitors()
+        .into_iter()
+        .map(|m| m.bounds)
+        .find(|b| left >= b.left && left < b.right && row_y >= b.top && row_y < b.bottom);
     let Some(monitor) = monitor else {
         eprintln!("La ventana no está en ningún monitor.");
         return ExitCode::FAILURE;

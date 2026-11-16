@@ -3,7 +3,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use windows::Win32::System::Console::{CTRL_C_EVENT, CTRL_BREAK_EVENT, SetConsoleCtrlHandler};
+use windows::Win32::System::Console::{CTRL_BREAK_EVENT, CTRL_C_EVENT, SetConsoleCtrlHandler};
 use windows::core::BOOL;
 
 static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);

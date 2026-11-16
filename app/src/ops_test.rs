@@ -283,7 +283,9 @@ pub fn run(args: &[String]) -> ExitCode {
         match wake {
             Wake::Ping(sent) => brain.stats[brain.phase].ping.push(clock::micros(sent, t0)),
             Wake::Input(InputEvent::Action {
-                action: HyperAction::Letter { letter, .. }, qpc, ..
+                action: HyperAction::Letter { letter, .. },
+                qpc,
+                ..
             }) => {
                 brain.handle_key(letter, focus);
                 let us = clock::micros_since(qpc);

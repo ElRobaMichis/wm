@@ -41,26 +41,48 @@ fn probes(id: WindowId) -> Vec<Probe> {
     }
     vec![
         ("GetWindowTextW", Box::new(move || drop(windows_list::window_title(id)))),
-        ("visibility (IsWindowVisible, IsIconic, GetWindowRect, DwmGetWindowAttribute)",
-            Box::new(move || { let _ = hide::visibility(id); })),
-        ("IsZoomed", Box::new(move || { let _ = hide::is_maximized(id); })),
-        ("user_windows (EnumWindows + títulos + nombre de proceso)",
-            Box::new(|| drop(windows_list::user_windows()))),
+        (
+            "visibility (IsWindowVisible, IsIconic, GetWindowRect, DwmGetWindowAttribute)",
+            Box::new(move || {
+                let _ = hide::visibility(id);
+            }),
+        ),
+        (
+            "IsZoomed",
+            Box::new(move || {
+                let _ = hide::is_maximized(id);
+            }),
+        ),
+        (
+            "user_windows (EnumWindows + títulos + nombre de proceso)",
+            Box::new(|| drop(windows_list::user_windows())),
+        ),
         ("marked_windows (EnumWindows + GetPropW)", Box::new(|| drop(hide::marked_windows()))),
-        ("cloak: esconder (SetPropW + SetCloak vía Explorer)",
-            hider_op(HideMethod::ShellCloak, id, true)),
+        (
+            "cloak: esconder (SetPropW + SetCloak vía Explorer)",
+            hider_op(HideMethod::ShellCloak, id, true),
+        ),
         ("cloak: mostrar", hider_op(HideMethod::ShellCloak, id, false)),
-        ("minimize: esconder (DwmSetWindowAttribute + ShowWindowAsync)",
-            hider_op(HideMethod::Minimize, id, true)),
+        (
+            "minimize: esconder (DwmSetWindowAttribute + ShowWindowAsync)",
+            hider_op(HideMethod::Minimize, id, true),
+        ),
         ("minimize: mostrar", hider_op(HideMethod::Minimize, id, false)),
         ("offscreen: esconder (SetWindowPos ASYNC)", hider_op(HideMethod::Offscreen, id, true)),
         ("offscreen: mostrar", hider_op(HideMethod::Offscreen, id, false)),
-        ("activate (SetForegroundWindow + tecla neutra)",
-            Box::new(move || { let _ = windows_list::activate(id); })),
+        (
+            "activate (SetForegroundWindow + tecla neutra)",
+            Box::new(move || {
+                let _ = windows_list::activate(id);
+            }),
+        ),
         ("restore_all", Box::new(|| drop(hide::restore_all()))),
-        ("[control] SendMessageTimeout 100 ms", Box::new(move || {
-            let _ = probe::responds(id, 100);
-        })),
+        (
+            "[control] SendMessageTimeout 100 ms",
+            Box::new(move || {
+                let _ = probe::responds(id, 100);
+            }),
+        ),
         ("[control] SetWindowPos síncrono", Box::new(move || probe::set_window_pos_sync(id))),
     ]
 }

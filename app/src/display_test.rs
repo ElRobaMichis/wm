@@ -175,7 +175,11 @@ pub fn run(args: &[String]) -> ExitCode {
                     "  → calma tras [{}]: monitores {} ({})",
                     burst.join(", "),
                     names.join(" + "),
-                    if known.is_some() { "configuración conocida" } else { "configuración NUEVA" }
+                    if known.is_some() {
+                        "configuración conocida"
+                    } else {
+                        "configuración NUEVA"
+                    }
                 );
                 burst.clear();
                 let mut problems = Vec::new();

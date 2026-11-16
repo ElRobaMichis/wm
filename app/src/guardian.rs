@@ -122,11 +122,7 @@ fn report(when: &str, r: &RestoreReport) {
     if r.restored.is_empty() && r.failed.is_empty() {
         return;
     }
-    log(&format!(
-        "{when}: {} ventanas restauradas, {} fallaron",
-        r.restored.len(),
-        r.failed.len()
-    ));
+    log(&format!("{when}: {} ventanas restauradas, {} fallaron", r.restored.len(), r.failed.len()));
     for (id, e) in &r.failed {
         log(&format!("  NO se pudo restaurar {:#x}: {e}", id.0));
     }

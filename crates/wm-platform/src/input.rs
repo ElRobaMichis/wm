@@ -345,10 +345,16 @@ pub enum ReinstallReason {
 pub enum InputEvent {
     /// Acción de Hyper. `time_ms` es la hora de la tecla (reloj de [`tick_ms`]);
     /// `qpc`, el instante en que el hook la vio (reloj de [`crate::clock`]).
-    Action { action: HyperAction, time_ms: u32, qpc: i64 },
+    Action {
+        action: HyperAction,
+        time_ms: u32,
+        qpc: i64,
+    },
     HookReinstalled(ReinstallReason),
     /// Un callback tardó `ms` milisegundos; el estado del teclado se reinició.
-    HookStalled { ms: u32 },
+    HookStalled {
+        ms: u32,
+    },
 }
 
 fn post_raw(kind: usize, data: isize) {
@@ -454,9 +460,8 @@ pub fn wait(deadline: Option<std::time::Instant>) -> Wake {
             }
         };
         // SAFETY: sin handles; espera mensajes de la cola de este hilo.
-        let r = unsafe {
-            MsgWaitForMultipleObjectsEx(None, timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE)
-        };
+        let r =
+            unsafe { MsgWaitForMultipleObjectsEx(None, timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE) };
         if r.0 == 0x102 {
             // WAIT_TIMEOUT
             return Wake::Timeout;

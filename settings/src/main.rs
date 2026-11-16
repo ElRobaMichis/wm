@@ -93,7 +93,9 @@ fn refresh(ui: &SettingsWindow, st: &State) {
             LetterItem {
                 letter: SharedString::from(l.to_string()),
                 name: a.map_or_else(SharedString::new, |a| st.catalog.name[a].as_str().into()),
-                exe: a.map_or_else(SharedString::new, |a| format!("{}.exe", st.catalog.exe[a]).into()),
+                exe: a.map_or_else(SharedString::new, |a| {
+                    format!("{}.exe", st.catalog.exe[a]).into()
+                }),
                 assigned: a.is_some(),
             }
         })
@@ -148,14 +150,11 @@ fn main() -> Result<(), slint::PlatformError> {
         eprintln!("No se pudo elegir el idioma «{lang}»: {e:?}");
     }
     let path = bindings_path();
-    let file_text =
-        path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+    let file_text = path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
     let (bindings, _errors) = parse_bindings(&file_text);
     let catalog = Catalog::new(&bindings);
-    let launch: HashMap<String, String> = bindings
-        .iter()
-        .filter_map(|b| Some((b.app.clone(), b.launch.clone()?)))
-        .collect();
+    let launch: HashMap<String, String> =
+        bindings.iter().filter_map(|b| Some((b.app.clone(), b.launch.clone()?))).collect();
     let initial: Vec<(char, Option<usize>)> = (b'A'..=b'Z')
         .map(|l| {
             let app = bindings.iter().find(|b| b.letter == l).and_then(|b| catalog.index(&b.app));

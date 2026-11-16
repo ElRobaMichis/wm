@@ -25,9 +25,9 @@ mod meter;
 #[cfg(windows)]
 mod settings;
 #[cfg(windows)]
-mod uia;
-#[cfg(windows)]
 mod sysinfo;
+#[cfg(windows)]
+mod uia;
 
 use std::process::ExitCode;
 

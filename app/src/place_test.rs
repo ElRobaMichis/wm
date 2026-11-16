@@ -43,9 +43,10 @@ pub fn run(args: &[String]) -> ExitCode {
         return ExitCode::from(2);
     };
     let close = args.iter().any(|a| a == "close");
-    let cross: Option<usize> = args.iter().position(|a| a == "cross").map(|i| {
-        args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(20)
-    });
+    let cross: Option<usize> = args
+        .iter()
+        .position(|a| a == "cross")
+        .map(|i| args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(20));
     let was_max = wm_platform::hide::is_maximized(id);
     if was_max {
         wm_platform::hide::set_maximized_for_test(id, false);
