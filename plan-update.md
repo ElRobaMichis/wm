@@ -7,7 +7,7 @@
 > - Sin el ítem "Actualizar sola" en el menú (siempre activo; `WM_UPDATE=0` lo apaga).
 > - La prueba de "versión rota → volver atrás" queda en las pruebas del modelo (`rollback_plan`) y a mano: una versión que no pasa `self-check` ni se prepara.
 >
-> **Para publicar (U0, lo hace el usuario):** la clave privada se generó en `%USERPROFILE%\.wm-release\wm-update-key.pem` (fuera del repo; **hacer una copia**: sin ella, una versión nueva no llega y hay que reinstalar a mano) y la pública está en `update-pubkey.txt`. Falta crear el environment `release` en GitHub con el secret `WM_UPDATE_KEY` (el contenido del `.pem`) y empujar el tag `v0.1.0`.
+> **Cambio de U0/U7 (16/11/2026): la clave privada nunca se sube a GitHub.** Vive solo en la PC del autor (`%USERPROFILE%\.wm-release\wm-update-key.pem`; **hacer una copia**: sin ella, una versión nueva no llega y hay que reinstalar a mano). La CI compila y publica la pre-release **sin firmas**; `tools/sign-release.sh vX.Y.Z`, en esa PC, baja los assets, comprueba tamaño y SHA-256 contra el manifiesto, firma y sube los `.sig`. Sin `.sig`, ningún wm instalado acepta la versión. Así no hacen falta el environment ni el secret, y un robo de la cuenta de GitHub no alcanza para firmar.
 
 Diseño de Fable 5.2 (16/11/2026), pedido por el usuario: que la usuaria de prueba tenga `wm` instalado y que, cuando él publique una versión en GitHub, le llegue sola, sin descargar de nuevo ni tocar la terminal. **[V]** = verificado en el código; **[S]** = supuesto a comprobar.
 

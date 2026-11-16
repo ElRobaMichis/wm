@@ -14,7 +14,7 @@ Gestor de ventanas para Windows, escrito en Rust. Pensado para que cualquiera lo
 
 **Desinstalar:** Configuración → Aplicaciones → wm, o `wm uninstall`. Las letras elegidas (`%APPDATA%\wm`) quedan por si se vuelve a instalar.
 
-**Publicar una versión** (desarrollador): subir `version` en el `Cargo.toml`, `git tag -a vX.Y.Z -m "notas"` y `git push origin vX.Y.Z`. La CI crea el release como pre-release; a los instalados les llega al desmarcar "pre-release" en GitHub.
+**Publicar una versión** (desarrollador): subir `version` en el `Cargo.toml`, `git tag -a vX.Y.Z -m "notas"` y `git push origin vX.Y.Z`. La CI crea el release como pre-release sin firmas; después, en la PC que tiene la clave, `tools/sign-release.sh vX.Y.Z` verifica y firma. A los instalados les llega al desmarcar "pre-release" en GitHub.
 
 ## Probar
 

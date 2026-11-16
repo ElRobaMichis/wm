@@ -2,11 +2,13 @@
 # tag `vX.Y.Z` que coincida con la versión del Cargo.toml:
 #   git tag -a v0.1.0 -m "Primera versión"   (la primera línea = notas)
 #   git push origin v0.1.0
-# Compila x64 y ARM64, arma los assets y los manifiestos (`wm release-pack`),
-# firma los manifiestos con el secret WM_UPDATE_KEY (environment `release`) y
-# crea el release como **pre-release**: a la usuaria le llega recién cuando se
-# desmarca "pre-release" en GitHub (los que tienen wm instalado bajan
-# `releases/latest`, que ignora las pre-releases).
+# Compila x64 y ARM64, arma los assets y los manifiestos (`wm release-pack`) y
+# crea el release como **pre-release, sin firmas**. Las firmas de los
+# manifiestos se hacen en la PC del autor (`tools/sign-release.sh`), donde
+# vive la clave privada: nunca se sube a GitHub. Sin `.sig`, ningún wm
+# instalado acepta la versión. A los instalados les llega recién cuando se
+# desmarca "pre-release" (bajan `releases/latest`, que ignora las
+# pre-releases).
 name: Release
 
 on:
@@ -31,8 +33,6 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -69,41 +69,20 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
-    environment: release
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-
       - uses: actions/download-artifact@v4
         with:
           pattern: dist-*
           path: dist
           merge-multiple: true
 
-      - name: Firmar los manifiestos
-        env:
-          WM_UPDATE_KEY: ${{ secrets.WM_UPDATE_KEY }}
-        run: |
-          umask 077
-          printf '%s\n' "$WM_UPDATE_KEY" > key.pem
-          # La clave del secret tiene que ser la de update-pubkey.txt: si no,
-          # los wm instalados rechazarían la actualización.
-          pub=$(openssl ec -in key.pem -pubout -outform DER 2>/dev/null | tail -c 64 | xxd -p | tr -d '\n')
-          if [ "$pub" != "$(tr -d ' \r\n' < update-pubkey.txt)" ]; then
-            rm -f key.pem; echo "WM_UPDATE_KEY no coincide con update-pubkey.txt."; exit 1
-          fi
-          for f in dist/latest-*.txt; do
-            openssl dgst -sha256 -sign key.pem -out "$f.sig" "$f"
-            openssl ec -in key.pem -pubout 2>/dev/null | openssl dgst -sha256 -verify /dev/stdin -signature "$f.sig" "$f"
-          done
-          rm -f key.pem
-          ls -la dist
-
-      - name: Crear el release (pre-release)
+      - name: Crear el release (pre-release, sin firmas todavía)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          ls -la dist
           gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
             --prerelease --title "wm $GITHUB_REF_NAME" \
             --notes "Para instalar: bajá wm-setup-x64.exe (o wm-setup-arm64.exe) y abrilo. Los que ya tienen wm lo reciben solo cuando este release deja de ser pre-release."
