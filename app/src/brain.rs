@@ -196,7 +196,10 @@ impl Brain {
                 // Hito 2a: el hilo `ui` todavía no existe (el modelo no los
                 // pide mientras el mapa no se habilite).
                 Effect::ShowMap { .. } | Effect::MapLayer { .. } | Effect::HideMap => {}
-                Effect::ResetKeyboard => {}
+                Effect::ResetKeyboard => {
+                    self.log.line("El mapa estuvo visible 30 s: reinicio el teclado.");
+                    input::request_reset();
+                }
                 Effect::Normalize { win } => {
                     self.ops.submit(Op::Normalize(WindowId(win.hwnd)));
                 }
@@ -257,6 +260,10 @@ impl Brain {
                     ReinstallReason::Unlock => "se desbloqueó la sesión",
                 };
                 self.log.line(format!("Hook reinstalado: {why}."));
+                self.land_all();
+                self.feed(Event::KeyboardReset);
+            }
+            InputEvent::KeyboardReset(_) => {
                 self.land_all();
                 self.feed(Event::KeyboardReset);
             }

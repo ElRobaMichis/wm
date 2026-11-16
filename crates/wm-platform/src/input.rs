@@ -21,7 +21,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::mem::size_of;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
@@ -329,6 +329,21 @@ const KIND_OTHER: usize = 4;
 const KIND_REINSTALLED: usize = 5;
 const KIND_STALL: usize = 6;
 const KIND_LAYER: usize = 7;
+const KIND_RESET: usize = 8;
+
+/// Por qué el hilo de entrada reinició el teclado sin una tecla de por medio.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResetReason {
+    /// Se bloqueó la sesión (las teclas soltadas con la sesión bloqueada no
+    /// llegan al hook).
+    Lock,
+    /// Cambió el escritorio de entrada (UAC, `Ctrl+Alt+Supr`).
+    DesktopSwitch,
+    /// El brain no respondía (modo seguro) o volvió a responder.
+    SafeMode,
+    /// Lo pidió el brain ([`request_reset`]).
+    Requested,
+}
 
 /// Por qué se reinstaló el hook.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -362,6 +377,9 @@ pub enum InputEvent {
     HookStalled {
         ms: u32,
     },
+    /// El teclado se reinició sin pasar por `Layer::Off` (Hyper ya no está
+    /// abajo): el mapa se oculta (plan-core.md §5.2).
+    KeyboardReset(ResetReason),
 }
 
 fn post_raw(kind: usize, data: isize) {
@@ -545,6 +563,15 @@ fn decode(msg: &MSG) -> Option<InputEvent> {
             return Some(InputEvent::HookReinstalled(reason));
         }
         KIND_STALL => return Some(InputEvent::HookStalled { ms: msg.lParam.0 as u32 }),
+        KIND_RESET => {
+            let reason = match value {
+                0 => ResetReason::Lock,
+                1 => ResetReason::DesktopSwitch,
+                2 => ResetReason::SafeMode,
+                _ => ResetReason::Requested,
+            };
+            return Some(InputEvent::KeyboardReset(reason));
+        }
         KIND_LAYER => {
             let layer = match msg.lParam.0 {
                 1 => Layer::Apps,
@@ -639,6 +666,7 @@ fn brain_alive(now_ms: u32) -> bool {
         }
         SAFE_MODE.store(false, Ordering::Release);
         MACHINE.with(|m| m.borrow_mut().reset());
+        post_raw(KIND_RESET, 2);
         return true;
     }
     if pending != 0 && now_ms.wrapping_sub(pending) > BRAIN_TIMEOUT_MS {
@@ -646,6 +674,7 @@ fn brain_alive(now_ms: u32) -> bool {
         SAFE_MODE.store(true, Ordering::Release);
         SAFE_MODE_ENTRIES.fetch_add(1, Ordering::Relaxed);
         MACHINE.with(|m| m.borrow_mut().reset());
+        post_raw(KIND_RESET, 2);
         return false;
     }
     true
@@ -709,11 +738,77 @@ unsafe extern "system" fn sink_proc(
         WM_WTSSESSION_CHANGE if wparam.0 == WTS_SESSION_LOCK => {
             // Las teclas soltadas con la sesión bloqueada no llegan al hook.
             MACHINE.with(|m| m.borrow_mut().reset());
+            post_raw(KIND_RESET, 0);
+        }
+        WM_RESET_KEYBOARD => {
+            MACHINE.with(|m| m.borrow_mut().reset());
+            post_raw(KIND_RESET, 3);
         }
         _ => {}
     }
     // SAFETY: procesamiento por defecto; para WM_INPUT además libera el buffer.
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+/// Mensaje a la ventana oculta del hilo de entrada: reiniciar el teclado.
+const WM_RESET_KEYBOARD: u32 = WM_APP + 0x30;
+
+/// La ventana oculta del hilo de entrada (0 si todavía no existe).
+static SINK: AtomicIsize = AtomicIsize::new(0);
+
+/// Le pide al hilo de entrada que reinicie la máquina de teclado (por
+/// ejemplo, si el mapa venció su tope: se perdió "Caps arriba"). No bloquea.
+/// Responde con [`InputEvent::KeyboardReset`].
+pub fn request_reset() {
+    use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
+    let sink = SINK.load(Ordering::Acquire);
+    if sink != 0 {
+        // SAFETY: PostMessageW no bloquea; ventana propia.
+        let _ = unsafe {
+            PostMessageW(
+                Some(HWND(sink as *mut core::ffi::c_void)),
+                WM_RESET_KEYBOARD,
+                WPARAM(0),
+                LPARAM(0),
+            )
+        };
+    }
+}
+
+/// Cambió el escritorio de entrada (UAC, `Ctrl+Alt+Supr`): las teclas de ese
+/// escritorio no pasan por el hook. Corre en el hilo de entrada (fuera de
+/// contexto: Windows lo despacha en su bucle de mensajes).
+unsafe extern "system" fn desktop_switched(
+    _hook: windows::Win32::UI::Accessibility::HWINEVENTHOOK,
+    _event: u32,
+    _hwnd: HWND,
+    _object: i32,
+    _child: i32,
+    _thread: u32,
+    _time: u32,
+) {
+    MACHINE.with(|m| m.borrow_mut().reset());
+    post_raw(KIND_RESET, 1);
+}
+
+fn watch_desktop_switch() {
+    use windows::Win32::UI::Accessibility::SetWinEventHook;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EVENT_SYSTEM_DESKTOPSWITCH, WINEVENT_OUTOFCONTEXT,
+    };
+    // SAFETY: callback con la firma de WINEVENTPROC; fuera de contexto, se
+    // despacha en el bucle de mensajes de este hilo.
+    let _ = unsafe {
+        SetWinEventHook(
+            EVENT_SYSTEM_DESKTOPSWITCH,
+            EVENT_SYSTEM_DESKTOPSWITCH,
+            None,
+            Some(desktop_switched),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT,
+        )
+    };
 }
 
 fn on_raw_input(lparam: LPARAM) {
@@ -795,6 +890,7 @@ fn create_sink_window() -> windows::core::Result<HWND> {
         };
         RegisterRawInputDevices(&[device], size_of::<RAWINPUTDEVICE>() as u32)?;
         WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION)?;
+        SINK.store(hwnd.0 as isize, Ordering::Release);
         Ok(hwnd)
     }
 }
@@ -823,6 +919,7 @@ pub fn start_keyboard_hook(brain_thread_id: u32, test_mode: bool) -> std::io::Re
             HOOK.with(|h| h.set(hook.0 as isize));
             create_sink_window().map(|_| ())
         });
+        watch_desktop_switch();
         if let Err(e) = setup {
             let _ = tx.send(Err(std::io::Error::other(e.to_string())));
             return;
