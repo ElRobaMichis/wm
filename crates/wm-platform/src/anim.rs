@@ -142,7 +142,9 @@ pub struct Anim {
 impl Anim {
     /// Crea el hilo sin esperarlo; avisa con [`AnimEvent::Ready`].
     pub fn start(brain: u32) -> Self {
-        Self::start_with(brain, Fit::Same)
+        // Cambiar de tamaño también vuela, recortando en dos pasos: 0 defectos
+        // con títere, Brave, Rayo y Terminal (architecture.md §13.8b).
+        Self::start_with(brain, Fit::Crop)
     }
 
     /// Como [`Anim::start`], con otra política de tamaño (mini-spike 6b).
@@ -327,6 +329,10 @@ struct Current {
     late: bool,
     /// Bordes invisibles (izquierda, arriba) de la ventana al despegar.
     border: (i32, i32),
+    /// Marco real cuando se hizo el último `SetWindowPos`, y el del cuadro
+    /// anterior (para ver si la app ya lo atendió y quedó quieta).
+    asked_at: Option<Rect>,
+    last_real: Option<Rect>,
 }
 
 impl Current {
@@ -461,6 +467,7 @@ fn flight_step(c: &mut Current, now: Instant, start: Instant, from: Rect) {
         c.flight_ms = (now - start).as_millis() as u32;
         if c.late {
             // Recorte que achica: recién ahora la real cambia de tamaño.
+            c.asked_at = ghost::frame_bounds(c.win);
             let _ = windows_list::place_async_top(c.win, c.rect);
         }
         c.phase = Phase::Arrive { since: now };
@@ -511,14 +518,25 @@ impl Lane {
     }
 
     fn fly(&mut self, ticket: Ticket, win: WindowId, rect: Rect, to: Rect, ms: u32) {
+        // Misma ventana con cambio de tamaño (en el vuelo en curso o en el
+        // nuevo): la fuente ya no alcanza para redirigir; se baja y se vuela
+        // de nuevo desde donde quedó la real.
+        if self.current.as_ref().is_some_and(|c| c.win == win && (c.crop || !same_size(c.to, to))) {
+            self.land_now();
+        }
         // Misma ventana: redirigir desde donde va.
         if let Some(c) = self.current.as_mut().filter(|c| c.win == win) {
             let old = c.ticket;
             match c.phase {
                 Phase::Show { .. } | Phase::Cloak { .. } => {
+                    // Todavía no despegó: el pedido al despegar es el nuevo
+                    // (acá solo llegan vuelos del mismo tamaño).
                     (c.ticket, c.rect, c.to, c.ms) = (ticket, rect, to, ms);
+                    c.first = Some(rect);
                 }
                 Phase::Flight { .. } | Phase::Arrive { .. } => {
+                    c.asked_at = ghost::frame_bounds(win);
+                    c.last_real = None;
                     if windows_list::place_async_top(win, rect).is_err() {
                         // No se pudo pedir: bajarla donde esté y que el
                         // modelo la coloque sin animación.
@@ -618,6 +636,8 @@ impl Lane {
             first,
             late,
             border,
+            asked_at: None,
+            last_real: None,
         });
     }
 
@@ -635,6 +655,7 @@ impl Lane {
                 if confirmed {
                     // Un cuadro con la real escondida: ahora sí, el pedido
                     // (salvo un recorte que achica: va al final).
+                    c.asked_at = ghost::frame_bounds(c.win);
                     if let Some(r) = c.first
                         && let Err(e) = windows_list::place_async_top(c.win, r)
                     {
@@ -655,7 +676,13 @@ impl Lane {
             Phase::Arrive { since } => {
                 let real = ghost::frame_bounds(c.win);
                 c.arrived = real == Some(c.to);
-                if c.arrived || now - since > ARRIVE_LIMIT {
+                // La app ya atendió el último pedido (el marco cambió desde
+                // entonces) y quedó quieta en otro lugar: tamaño mínimo o
+                // fijo. No hay nada más que esperar (una app lenta todavía
+                // tiene el marco de antes del pedido y sí se espera).
+                let settled_elsewhere = real.is_some() && real != c.asked_at && real == c.last_real;
+                c.last_real = real;
+                if c.arrived || settled_elsewhere || now - since > ARRIVE_LIMIT {
                     c.land_ms = (now - since).as_millis() as u32;
                     if !c.arrived
                         && let Some(r) = real
@@ -731,6 +758,10 @@ impl Lane {
                 let _ = self.hider.show(c.win);
             }
             Phase::Flight { .. } | Phase::Arrive { .. } => {
+                // Recorte que pedía el tamaño final al llegar: pedirlo ya.
+                if c.late && matches!(c.phase, Phase::Flight { .. }) {
+                    let _ = windows_list::place_async_top(c.win, c.rect);
+                }
                 if let Some(r) = ghost::frame_bounds(c.win) {
                     c.show_at(r);
                 }

@@ -90,16 +90,23 @@ pub struct FlyFail {
     pub why: String,
 }
 
-/// Desplazamiento mínimo para animar: menos se ve como un salto igual.
-const FLY_MIN_PX: f64 = 64.0;
+/// Recorrido mínimo para animar: menos se ve como un salto igual.
+const FLY_MIN_PX: i32 = 64;
+
+/// Cuánto se mueve el borde que más se mueve (al cambiar de tamaño, un borde
+/// puede quedar quieto y otro recorrer media pantalla).
+fn travel(from: Rect, to: Rect) -> i32 {
+    [to.left - from.left, to.top - from.top, to.right - from.right, to.bottom - from.bottom]
+        .into_iter()
+        .map(i32::abs)
+        .max()
+        .unwrap_or(0)
+}
 
 /// Duración de un vuelo: más largo cuanto más lejos, entre 110 y 180 ms
 /// (validados en el spike 6: 150 y 200 ms para 800 px, §13.8).
 pub fn fly_ms(from: Rect, to: Rect) -> u32 {
-    let dx = f64::from(to.left - from.left);
-    let dy = f64::from(to.top - from.top);
-    let dist = dx.hypot(dy);
-    (100.0 + dist / 16.0).clamp(110.0, 180.0) as u32
+    (100.0 + f64::from(travel(from, to)) / 16.0).clamp(110.0, 180.0) as u32
 }
 
 /// Chequeos después de pedir una ubicación, en ms desde el pedido.
@@ -462,6 +469,9 @@ pub struct World {
     placed: HashMap<WinKey, (Spot, Rect)>,
     /// Se puede animar (lo habilita el brain cuando el carril está listo).
     fly: bool,
+    /// Ventanas que no tomaron el tamaño pedido (tamaño mínimo o fijo): sus
+    /// cambios de tamaño van sin animación.
+    stubborn: std::collections::HashSet<WinKey>,
 }
 
 impl World {
@@ -947,20 +957,20 @@ impl World {
         }
     }
 
-    /// Se anima solo si el destino tiene exactamente el mismo tamaño (1 px
-    /// de diferencia estiraría la miniatura todo el vuelo), la misma escala,
-    /// y la ventana está normal, al frente y lo bastante lejos.
+    /// Se anima si la ventana está normal, al frente, en la misma escala y lo
+    /// bastante lejos. Cambiar de tamaño también vuela (el carril recorta la
+    /// miniatura, mini-spike 6b, architecture.md §13.8b), salvo en una
+    /// ventana que ya mostró que no toma el tamaño pedido: terminaría en otro
+    /// lado y daría un salto al final.
     fn may_fly(&self, obs: &Obs, spot: Spot, target: Rect) -> bool {
-        let dx = f64::from(target.left - obs.frame.left);
-        let dy = f64::from(target.top - obs.frame.top);
+        let resize = target.width() != obs.frame.width() || target.height() != obs.frame.height();
         self.fly
             && obs.no_fly.is_none()
             && !obs.maximized
             && !obs.minimized
-            && target.width() == obs.frame.width()
-            && target.height() == obs.frame.height()
+            && !(resize && self.stubborn.contains(&obs.key))
             && obs.dpi == spot.monitor.dpi
-            && dx.hypot(dy) >= FLY_MIN_PX
+            && travel(obs.frame, target) >= FLY_MIN_PX
     }
 
     /// Si la ventana está en vuelo, bajarla ya (antes de otro pedido).
@@ -1238,6 +1248,7 @@ impl World {
             // lugar): no hay nada que hacer, y la app no está colgada.
             let (w, h) = (obs.frame.width(), obs.frame.height());
             if edge_error(obs.frame, anchor(j.target, j.spot.monitor.work, w, h)) <= TOLERANCE_PX {
+                self.stubborn.insert(win);
                 let line = format!(
                     "{}: la app no se achica ({w}×{h}); ya estaba pegada al borde, {:.1} ms",
                     j.what,
@@ -1281,6 +1292,9 @@ impl World {
         // tamaño que logró, pegada al borde exterior del lugar pedido.
         let resized = (w - j.target.width()).abs() > TOLERANCE_PX
             || (h - j.target.height()).abs() > TOLERANCE_PX;
+        if resized && stable {
+            self.stubborn.insert(win);
+        }
         if resized && !j.anchored && stable {
             let anchored = anchor(j.target, j.spot.monitor.work, w, h);
             j.anchored = true;

@@ -946,14 +946,30 @@ fn half_to_opposite_half_flies() {
 }
 
 #[test]
-fn changing_size_is_instant() {
+fn changing_size_flies_too() {
+    // Mini-spike 6b: el carril recorta la miniatura (architecture.md §13.8b).
     let mut w = flying_world();
     let mut sim = Sim::new();
     sim.at(0, P::LeftHalf);
     sim.key(&mut w, b'W'); // mitad de arriba: otro tamaño
     assert!(sim.is_at(0, P::TopHalf));
-    assert_eq!(sim.flights, 0);
-    assert_eq!(sim.places, 1);
+    assert_eq!((sim.flights, sim.places), (1, 0));
+}
+
+#[test]
+fn a_window_that_did_not_take_the_size_changes_size_without_flying() {
+    let mut w = flying_world();
+    let mut sim = Sim::new();
+    sim.win.min_width = 1200; // no se achica a media pantalla
+    sim.at(0, P::TopHalf);
+    sim.key(&mut w, b'A'); // la primera vez vuela y no llega: se ancla
+    assert_eq!(sim.flights, 1);
+    assert!(sim.logs.last().unwrap().contains("no se achica"), "{:?}", sim.logs);
+    let places = sim.places;
+    sim.key(&mut w, b'D'); // de ahí en más, cambiar de tamaño es instantáneo
+    assert_eq!(sim.flights, 1, "{:?}", sim.logs);
+    assert!(sim.places > places);
+    assert_eq!(sim.win.frame.right, work().right, "pegada a la derecha: {:?}", sim.logs);
 }
 
 #[test]
@@ -1055,13 +1071,13 @@ fn the_model_has_no_deadline_while_flying() {
 }
 
 #[test]
-fn a_chord_that_changes_size_lands_the_flight_first() {
+fn a_chord_during_a_flight_redirects_it() {
     let mut w = flying_world();
     let mut sim = Sim::new();
     sim.at(0, P::LeftHalf);
     sim.chord(&mut w, b"DS", true); // D vuela; con S, la esquina (otro tamaño)
     assert!(sim.is_at(0, P::BottomRight), "{:?}", sim.logs);
-    assert_eq!(sim.lands, 1);
+    assert_eq!((sim.flights, sim.lands, sim.places), (2, 0, 0));
 }
 
 #[test]
@@ -1195,13 +1211,13 @@ fn a_single_key_from_a_corner_waits_for_a_second_one_then_goes() {
     let mut sim = Sim::new();
     sim.at(0, P::TopLeft);
     let start = sim.now;
-    sim.key(&mut w, b'A'); // sola: la mitad izquierda (otro tamaño: instantáneo)
+    sim.key(&mut w, b'A'); // sola: la mitad izquierda
     assert!(sim.is_at(0, P::LeftHalf), "{:?}", sim.logs);
-    assert_eq!(sim.flights, 0);
+    assert_eq!(sim.flights, 1, "una sola tecla: un vuelo, sin paso intermedio");
     assert!(sim.now - start >= 50 * MS, "esperó la segunda tecla");
-    // Desde una mitad no se espera.
-    let start = sim.now;
-    sim.key(&mut w, b'W');
-    assert!(sim.is_at(0, P::TopHalf));
-    assert!(sim.now - start < 50 * MS, "tardó {} ms", (sim.now - start) / MS);
+    // Desde una mitad no se espera: el vuelo sale con la respuesta del Inspect.
+    let effects = w.step(arrange(b'W', HELD_W), sim.now);
+    let Effect::Inspect { req, .. } = effects[0] else { panic!("{effects:?}") };
+    let effects = w.step(Event::Inspected { req, result: Ok(sim.obs()) }, sim.now);
+    assert!(matches!(effects.first(), Some(Effect::Fly { .. })), "{effects:?}");
 }
