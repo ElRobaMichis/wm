@@ -8,7 +8,9 @@
 //! - **Capa de ventana:** lo que hace cada tecla con el pulgar.
 //! - **Pie:** una línea de ayuda.
 //!
-//! Falta (hito 4): la fila de escritorios 1–4.
+//! - **Fila 1–4 (hito 4):** los escritorios. En la capa de apps, el activo
+//!   en `accent` y cada uno con su cantidad de ventanas (vacío, en `text-3`);
+//!   en la capa de ventana, "llevar" en los que no son el activo.
 
 use crate::apps::AppBinding;
 use crate::keyboard::Layer;
@@ -30,6 +32,8 @@ pub enum Tone {
     Normal,
     /// Libre: solo la letra, `text-3`.
     Dim,
+    /// El escritorio activo: `accent`.
+    Accent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,7 +48,23 @@ pub struct KeyCell {
 pub struct MapView {
     pub layer: Layer,
     pub cells: Vec<KeyCell>,
+    /// La fila 1–4 (escritorios), arriba de las letras.
+    pub digits: Vec<KeyCell>,
     pub footer: String,
+}
+
+/// Lo que el mapa muestra de los escritorios.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeskSummary {
+    pub active: u8,
+    /// Ventanas en cada escritorio (1 a 4).
+    pub counts: [usize; 4],
+}
+
+impl Default for DeskSummary {
+    fn default() -> Self {
+        Self { active: 1, counts: [0; 4] }
+    }
 }
 
 /// Qué hace cada tecla de la capa de ventana (`Caps` + Alt).
@@ -61,8 +81,10 @@ const WINDOW_KEYS: [(char, &str); 9] = [
     ('V', "achicar"),
 ];
 
-const APPS_FOOTER: &str = "letra = ir a la app  ·  Alt = acomodar la ventana";
-const WINDOW_FOOTER: &str = "dos juntas = esquina  ·  repetir = otro monitor  ·  Z = deshacer";
+const APPS_FOOTER: &str =
+    "letra = ir a la app  ·  número = escritorio  ·  Alt = acomodar la ventana";
+const WINDOW_FOOTER: &str =
+    "dos juntas = esquina  ·  repetir = otro monitor  ·  Z = deshacer  ·  número = llevar";
 
 fn shorten(s: &str) -> String {
     if s.chars().count() <= LABEL_MAX {
@@ -94,6 +116,48 @@ pub fn display_name(exe: &str) -> String {
 /// La capa `layer` del mapa. `open`: las apps abiertas (ejecutables), en
 /// orden Z (la primera, arriba), como las ve `Caps` + letra.
 pub fn map_view(layer: Layer, bindings: &[AppBinding], open: &[&str]) -> MapView {
+    map_view_with(layer, bindings, open, DeskSummary::default())
+}
+
+/// La fila de escritorios de una capa.
+fn digits(layer: Layer, desks: DeskSummary) -> Vec<KeyCell> {
+    (1..=4u8)
+        .map(|n| {
+            let letter = char::from(b'0' + n);
+            let count = desks.counts[usize::from(n - 1)];
+            let active = n == desks.active;
+            let (label, tone) = match layer {
+                Layer::Window if active => (String::new(), Tone::Dim),
+                Layer::Window => ("llevar".to_owned(), Tone::Open),
+                _ => {
+                    let label = match count {
+                        0 if active => "aquí".to_owned(),
+                        0 => String::new(),
+                        1 => "1 ventana".to_owned(),
+                        n => format!("{n} ventanas"),
+                    };
+                    let tone = if active {
+                        Tone::Accent
+                    } else if count > 0 {
+                        Tone::Normal
+                    } else {
+                        Tone::Dim
+                    };
+                    (label, tone)
+                }
+            };
+            KeyCell { letter, label, tone }
+        })
+        .collect()
+}
+
+/// Como [`map_view`], con los escritorios.
+pub fn map_view_with(
+    layer: Layer,
+    bindings: &[AppBinding],
+    open: &[&str],
+    desks: DeskSummary,
+) -> MapView {
     let cell = |letter: char| -> KeyCell {
         let (label, tone) = match layer {
             Layer::Window => match WINDOW_KEYS.iter().find(|(l, _)| *l == letter) {
@@ -127,7 +191,7 @@ pub fn map_view(layer: Layer, bindings: &[AppBinding], open: &[&str]) -> MapView
     };
     let cells = ROWS.iter().flat_map(|row| row.chars()).map(cell).collect();
     let footer = if layer == Layer::Window { WINDOW_FOOTER } else { APPS_FOOTER }.to_owned();
-    MapView { layer, cells, footer }
+    MapView { layer, cells, digits: digits(layer, desks), footer }
 }
 
 #[cfg(test)]
@@ -175,6 +239,24 @@ mod tests {
         let named = v.cells.iter().filter(|c| c.tone == Tone::Open).count();
         assert_eq!(named, 9);
         assert!(v.footer.contains("esquina"));
+    }
+
+    #[test]
+    fn the_desk_row_shows_the_active_desk_and_counts() {
+        let desks = DeskSummary { active: 2, counts: [3, 1, 0, 0] };
+        let v = map_view_with(Layer::Apps, &[], &[], desks);
+        assert_eq!(v.digits.len(), 4);
+        assert_eq!(v.digits[0].label, "3 ventanas");
+        assert_eq!(v.digits[0].tone, Tone::Normal);
+        assert_eq!(v.digits[1].tone, Tone::Accent);
+        assert_eq!(v.digits[1].label, "1 ventana");
+        assert_eq!(v.digits[2].tone, Tone::Dim);
+        let w = map_view_with(Layer::Window, &[], &[], desks);
+        assert_eq!(w.digits[1].tone, Tone::Dim, "no se lleva al escritorio en el que está");
+        assert_eq!(w.digits[0].label, "llevar");
+        for c in v.digits.iter().chain(&w.digits) {
+            assert!(c.label.chars().count() <= LABEL_MAX, "{c:?}");
+        }
     }
 
     #[test]

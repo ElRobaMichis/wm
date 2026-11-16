@@ -592,6 +592,8 @@ pub struct World {
     map_scan: Option<Req>,
     /// Ya se mandó `ShowMap` (y todavía no `HideMap`).
     map_shown: bool,
+    /// Las apps abiertas cuando se armó el mapa.
+    map_open: Vec<String>,
     /// Lo que se sabe del tamaño mínimo o máximo de cada ventana (de las
     /// veces que no tomó el tamaño pedido): un cambio de tamaño que no
     /// respeta esos límites va sin animación.
@@ -740,12 +742,24 @@ impl World {
         if !self.map.visible() {
             return;
         }
-        let open: Vec<&str> = windows.iter().map(|w| w.app.as_str()).collect();
-        let views = vec![
-            crate::mapview::map_view(Layer::Apps, &self.bindings, &open),
-            crate::mapview::map_view(Layer::Window, &self.bindings, &open),
-        ];
+        self.map_open = windows.iter().map(|w| w.app.clone()).collect();
         self.map_shown = true;
+        self.send_map(out);
+    }
+
+    /// Manda el mapa con las apps abiertas de la última vez y los escritorios
+    /// de ahora (también al terminar un cambio de escritorio con el mapa
+    /// visible).
+    fn send_map(&mut self, out: &mut Vec<Effect>) {
+        let open: Vec<&str> = self.map_open.iter().map(String::as_str).collect();
+        let desks = crate::mapview::DeskSummary {
+            active: self.desks.active(),
+            counts: self.desks.counts(),
+        };
+        let views = vec![
+            crate::mapview::map_view_with(Layer::Apps, &self.bindings, &open, desks),
+            crate::mapview::map_view_with(Layer::Window, &self.bindings, &open, desks),
+        ];
         out.push(Effect::ShowMap { layer: self.layer, views });
     }
 
@@ -771,10 +785,16 @@ impl World {
                 if consumed {
                     return out;
                 }
-                if self.map_shown
-                    && let HyperAction::Letter { letter, .. } = action
-                {
-                    out.push(Effect::MapKey { letter: letter as char });
+                if self.map_shown {
+                    match action {
+                        HyperAction::Letter { letter, .. } => {
+                            out.push(Effect::MapKey { letter: letter as char })
+                        }
+                        HyperAction::Digit { digit: d @ 1..=4, .. } => {
+                            out.push(Effect::MapKey { letter: char::from(b'0' + d) })
+                        }
+                        _ => {}
+                    }
                 }
                 if age_ms > MAX_ACTION_AGE_MS {
                     let what = describe(action);

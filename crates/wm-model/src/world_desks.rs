@@ -327,6 +327,10 @@ impl World {
                 )));
             }
         }
+        // El mapa visible muestra el escritorio activo y las cantidades.
+        if self.map_shown && self.map.visible() {
+            self.send_map(out);
+        }
         if let Some((goal, key_us)) = self.queued.take() {
             self.start_sync(goal, key_us, out);
         }

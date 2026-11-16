@@ -83,6 +83,25 @@ fn map_size() -> (f32, f32) {
     (10.0 * KEY + 9.0 * GAP, 3.0 * KEY + 2.0 * GAP)
 }
 
+/// Tamaño del mapa real (hito 4): la fila 1–4 arriba y las letras corridas
+/// media tecla, como en un teclado.
+fn view_size() -> (f32, f32) {
+    (10.0 * KEY + 9.0 * GAP + (KEY + GAP) / 2.0, 4.0 * KEY + 3.0 * GAP)
+}
+
+/// Posiciones del mapa real: primero las cuatro teclas 1–4, después las
+/// letras en el orden de [`ROWS`].
+fn view_keys() -> Vec<(f32, f32)> {
+    let mut out: Vec<(f32, f32)> = (0..4).map(|c| (c as f32 * (KEY + GAP), 0.0)).collect();
+    for (r, row) in ROWS.iter().enumerate() {
+        let indent = (r + 1) as f32 * (KEY + GAP) / 2.0;
+        for c in 0..row.len() {
+            out.push((indent + c as f32 * (KEY + GAP), (r + 1) as f32 * (KEY + GAP)));
+        }
+    }
+    out
+}
+
 /// Posición (x, y) de cada tecla dentro del mapa, con su letra y app.
 fn keys() -> Vec<(f32, f32, char, &'static str)> {
     let mut out = Vec::new();
@@ -356,7 +375,7 @@ fn build_shapes(
 ) -> windows::core::Result<()> {
     let items: Vec<(f32, f32, char, String, Tone)> =
         keys().into_iter().map(|(x, y, l, app)| (x, y, l, app.to_owned(), Tone::Open)).collect();
-    let (visual, _) = shape_keys(compositor, &items, None)?;
+    let (visual, _) = shape_keys(compositor, &items, None, map_size())?;
     container.Children()?.InsertAtTop(&visual)?;
     keep.push(visual.cast()?);
     Ok(())
@@ -438,13 +457,13 @@ fn shape_keys(
     compositor: &Compositor,
     items: &[(f32, f32, char, String, Tone)],
     footer: Option<&str>,
+    (w, h): (f32, f32),
 ) -> windows::core::Result<(windows::UI::Composition::ShapeVisual, KeyShapes)> {
     let geist = Geist::load()?;
     let d2d: ID2D1Factory = d2d_factory()?;
     let bold = font(&geist, &geist.semibold)?;
     let regular = font(&geist, &geist.regular)?;
 
-    let (w, h) = map_size();
     let visual = compositor.CreateShapeVisual()?;
     visual.SetSize(Vector2 { X: w, Y: h + if footer.is_some() { FOOTER } else { 0.0 } })?;
     let shapes = visual.Shapes()?;
@@ -454,6 +473,7 @@ fn shape_keys(
     let text = brush(tokens::TEXT)?;
     let text_2 = brush(tokens::TEXT_2)?;
     let text_3 = brush(tokens::TEXT_3)?;
+    let accent = brush(tokens::ACCENT)?;
     let mut key_shapes = Vec::new();
     for (x, y, letter, label, tone) in items {
         let (x, y) = (*x, *y);
@@ -468,11 +488,19 @@ fn shape_keys(
         shapes.Append(&key)?;
         key_shapes.push((*letter, key));
 
-        let letter_brush = if *tone == Tone::Dim { &text_3 } else { &text };
+        let letter_brush = match tone {
+            Tone::Dim => &text_3,
+            Tone::Accent => &accent,
+            _ => &text,
+        };
         let (g, lw) = text_geometry(&d2d, &bold, &letter.to_string(), LETTER_EM)?;
         shape_text(compositor, &shapes, g, letter_brush, x + (KEY - lw) / 2.0, y + 8.0)?;
         if *tone != Tone::Dim && !label.is_empty() {
-            let label_brush = if *tone == Tone::Open { &text } else { &text_2 };
+            let label_brush = match tone {
+                Tone::Open => &text,
+                Tone::Accent => &accent,
+                _ => &text_2,
+            };
             let (mut g, mut nw) = text_geometry(&d2d, &regular, label, NAME_EM)?;
             // Si no entra en la tecla, más chica.
             let room = KEY - 10.0;
@@ -501,7 +529,7 @@ pub fn build_view(
     dpi: u32,
     view: &wm_model::mapview::MapView,
 ) -> windows::core::Result<MapVisual> {
-    let (kw, kh) = map_size();
+    let (kw, kh) = view_size();
     let (w, h) = (kw + 2.0 * PAD, kh + FOOTER + 2.0 * PAD);
     let container = compositor.CreateContainerVisual()?;
     container.SetSize(Vector2 { X: w, Y: h })?;
@@ -526,12 +554,14 @@ pub fn build_view(
     container.Children()?.InsertAtTop(&panel)?;
 
     let items: Vec<(f32, f32, char, String, Tone)> = view
-        .cells
+        .digits
         .iter()
-        .zip(keys())
-        .map(|(c, (x, y, _, _))| (x, y, c.letter, c.label.clone(), c.tone))
+        .chain(&view.cells)
+        .zip(view_keys())
+        .map(|(c, (x, y))| (x, y, c.letter, c.label.clone(), c.tone))
         .collect();
-    let (keys_visual, key_shapes) = shape_keys(compositor, &items, Some(&view.footer))?;
+    let (keys_visual, key_shapes) =
+        shape_keys(compositor, &items, Some(&view.footer), view_size())?;
     keys_visual.SetOffset(Vector3 { X: PAD, Y: PAD, Z: 0.0 })?;
     container.Children()?.InsertAtTop(&keys_visual)?;
     parent.Children()?.InsertAtTop(&container)?;

@@ -62,9 +62,25 @@ impl Rig {
                 Effect::ShowMap { layer, views } => {
                     assert_eq!(views.len(), 2);
                     self.views = views;
-                    assert!(self.shown.is_none(), "dos ShowMap seguidos");
+                    // Con el mapa visible, un ShowMap solo lo actualiza (tras
+                    // cambiar de escritorio).
+                    if self.shown.is_none() {
+                        self.shows += 1;
+                    }
                     self.shown = Some(layer);
-                    self.shows += 1;
+                }
+                // Escritorios (Caps + número): respuestas inmediatas.
+                Effect::SetDesks { req, .. } => {
+                    self.feed(Event::DesksSet { req, failed: Vec::new() })
+                }
+                Effect::Show { req, .. } => self.feed(Event::Shown { req, result: Ok(Vec::new()) }),
+                Effect::Hide { req, .. } => {
+                    self.feed(Event::Hidden { req, result: Ok(Vec::new()) })
+                }
+                Effect::Focus { req, .. } | Effect::FocusShell { req } => {
+                    let report =
+                        crate::world::FocusReport { ok: true, neutral_key: false, elapsed_us: 1 };
+                    self.feed(Event::Focused { req, result: Ok(report) })
                 }
                 Effect::MapLayer { layer } => {
                     assert!(self.shown.is_some(), "MapLayer sin mapa");

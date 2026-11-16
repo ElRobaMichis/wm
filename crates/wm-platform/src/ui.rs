@@ -320,13 +320,19 @@ impl State {
             let window = overlay_text::build_view(c, &s.root, w, h, s.dpi, &built.views[1])?;
             built.screens[i] = Some((apps, window));
         }
-        // Pulsación nueva: ninguna tecla en `accent` todavía.
-        if let Some(Some((apps, window))) = self.built.as_mut().map(|b| &mut b.screens[i]) {
+        // Ya visible en este monitor (contenido nuevo tras cambiar de
+        // escritorio): sin fundido. Si no, pulsación nueva: ninguna tecla en
+        // `accent` todavía.
+        let again = self.shown == Some(i);
+        if !again && let Some(Some((apps, window))) = self.built.as_mut().map(|b| &mut b.screens[i])
+        {
             apps.light(None)?;
             window.light(None)?;
         }
         self.set_layer(i, layer)?;
-        self.fade_in(i)?;
+        if !again {
+            self.fade_in(i)?;
+        }
         self.overlays.show_only(i);
         SHOWN.store(self.overlays.screens()[i].hwnd.0 as isize, Ordering::Release);
         self.shown = Some(i);
