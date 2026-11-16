@@ -8,12 +8,15 @@
 pub mod apps;
 pub mod i18n;
 pub mod keyboard;
+pub mod map;
 pub mod place;
 pub mod screens;
 pub mod settings_demo;
 pub mod world;
 #[cfg(test)]
 mod world_arrange_tests;
+#[cfg(test)]
+mod world_map_tests;
 
 /// Rectángulo en píxeles físicos de la pantalla virtual.
 ///

@@ -36,6 +36,7 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::apps::{AppBinding, Target, resolve};
 use crate::keyboard::{HyperAction, Layer};
+use crate::map::{Map, MapOut};
 use crate::place::{
     Dir, MonitorObs, Move, anchor, centered, centered_percent, chord, chord_name, chord_pushes,
     edge_error, mirror, monitor_of, neighbor, outer_for, placement_name, slot_of, step,
@@ -331,6 +332,8 @@ pub enum Event {
     },
     /// Se puede animar (el carril `anim` está listo) o ya no.
     FlyEnabled(bool),
+    /// Se puede mostrar el mapa (el hilo `ui` está listo) o ya no.
+    MapEnabled(bool),
     /// Venció el plazo de [`World::deadline`].
     Tick,
 }
@@ -376,6 +379,17 @@ pub enum Effect {
     Land {
         win: WinKey,
     },
+    /// Mostrar el mapa de teclado con esta capa (plan-core.md §5).
+    ShowMap {
+        layer: Layer,
+    },
+    /// El mapa ya visible: mostrar otra capa.
+    MapLayer {
+        layer: Layer,
+    },
+    HideMap,
+    /// Reiniciar la máquina de teclado del hook (tope del mapa vencido).
+    ResetKeyboard,
     /// Sacarla de maximizada (o minimizada) sin activarla.
     Normalize {
         win: WinKey,
@@ -496,6 +510,8 @@ pub struct World {
     placed: HashMap<WinKey, (Spot, Rect)>,
     /// Se puede animar (lo habilita el brain cuando el carril está listo).
     fly: bool,
+    /// El mapa de teclado (hito 2a).
+    map: Map,
     /// Lo que se sabe del tamaño mínimo o máximo de cada ventana (de las
     /// veces que no tomó el tamaño pedido): un cambio de tamaño que no
     /// respeta esos límites va sin animación.
@@ -574,7 +590,28 @@ impl World {
     pub fn deadline(&self) -> Option<u64> {
         // Un vuelo no tiene plazos del modelo: lo vigila el brain.
         let jobs = self.jobs.values().filter(|j| !j.inspecting && !j.flying).map(next_check_us);
-        jobs.chain(self.deferred.as_ref().map(|d| d.due_us)).min()
+        jobs.chain(self.deferred.as_ref().map(|d| d.due_us)).chain(self.map.deadline()).min()
+    }
+
+    /// El mapa de teclado se ve ahora.
+    pub fn map_visible(&self) -> bool {
+        self.map.visible()
+    }
+
+    fn map_effects(&mut self, outs: Vec<MapOut>, out: &mut Vec<Effect>) {
+        for o in outs {
+            out.push(match o {
+                MapOut::Show(layer) => Effect::ShowMap { layer },
+                MapOut::Layer(layer) => Effect::MapLayer { layer },
+                MapOut::Hide => Effect::HideMap,
+                MapOut::ResetKeyboard => {
+                    // El hook vuelve a Off sin avisar: lo mismo acá.
+                    self.layer = Layer::Off;
+                    self.keys = None;
+                    Effect::ResetKeyboard
+                }
+            });
+        }
     }
 
     fn req(&mut self) -> Req {
@@ -588,6 +625,14 @@ impl World {
         let mut out = Vec::new();
         match event {
             Event::Action { action, held, age_ms } => {
+                // Cualquier acción (también una descartada) suprime el mapa si
+                // todavía no se ve; Esc con el mapa visible solo lo cierra.
+                let mut m = Vec::new();
+                let consumed = self.map.on_action(action == HyperAction::Escape, &mut m);
+                self.map_effects(m, &mut out);
+                if consumed {
+                    return out;
+                }
                 if age_ms > MAX_ACTION_AGE_MS {
                     let what = describe(action);
                     out.push(Effect::Log(format!(
@@ -598,6 +643,9 @@ impl World {
                 }
             }
             Event::Layer(layer) => {
+                let mut m = Vec::new();
+                self.map.on_layer(self.layer, layer, now_us, &mut m);
+                self.map_effects(m, &mut out);
                 self.layer = layer;
                 if layer != Layer::Window {
                     self.keys = None; // las teclas siguientes empiezan otro gesto
@@ -606,6 +654,14 @@ impl World {
             Event::KeyboardReset => {
                 self.layer = Layer::Off;
                 self.keys = None;
+                let mut m = Vec::new();
+                self.map.reset(&mut m);
+                self.map_effects(m, &mut out);
+            }
+            Event::MapEnabled(on) => {
+                let mut m = Vec::new();
+                self.map.set_enabled(on, &mut m);
+                self.map_effects(m, &mut out);
             }
             Event::Bindings(b) => self.bindings = b,
             Event::Windows { req, result } => {
@@ -1359,6 +1415,9 @@ impl World {
 
     /// Lanza los chequeos vencidos.
     fn tick(&mut self, now_us: u64, out: &mut Vec<Effect>) {
+        let mut m = Vec::new();
+        self.map.tick(self.layer, now_us, &mut m);
+        self.map_effects(m, out);
         if self.deferred.as_ref().is_some_and(|d| d.due_us <= now_us) {
             let d = self.deferred.take().expect("recién visto");
             self.run_deferred(d, now_us, out);
@@ -1703,6 +1762,10 @@ mod tests {
                         | Effect::Place { .. }
                         | Effect::Fly { .. }
                         | Effect::Land { .. }
+                        | Effect::ShowMap { .. }
+                        | Effect::MapLayer { .. }
+                        | Effect::HideMap
+                        | Effect::ResetKeyboard
                         | Effect::Normalize { .. }
                         | Effect::Maximize { .. } => {
                             panic!("la capa de apps no coloca ventanas")

@@ -193,6 +193,10 @@ impl Brain {
                         anim.land(WindowId(win.hwnd));
                     }
                 }
+                // Hito 2a: el hilo `ui` todavía no existe (el modelo no los
+                // pide mientras el mapa no se habilite).
+                Effect::ShowMap { .. } | Effect::MapLayer { .. } | Effect::HideMap => {}
+                Effect::ResetKeyboard => {}
                 Effect::Normalize { win } => {
                     self.ops.submit(Op::Normalize(WindowId(win.hwnd)));
                 }
