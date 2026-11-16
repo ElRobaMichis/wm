@@ -26,9 +26,16 @@ pub const VK_RWIN: u8 = 0x5C;
 pub const VK_LMENU: u8 = 0xA4;
 pub const VK_RMENU: u8 = 0xA5;
 
-/// Tiempo desde el que mantener Caps solo ya no es un "toque" (y en el futuro
-/// muestra el mapa de teclado, keyboard-design.md §10.1).
+/// Mantener Caps sola este tiempo muestra el mapa de teclado
+/// (keyboard-design.md §10.1, plan-core.md §5.1).
 pub const MAP_DELAY_MS: u32 = 400;
+
+/// Un toque de Caps (Bloq Mayús) dura menos que esto. Es menor que
+/// [`MAP_DELAY_MS`] a propósito: el toque se mide con la hora del hook (tick
+/// de 10–16 ms) y el mapa con el reloj del brain, así que con el mismo
+/// umbral una pulsación de ~400–416 ms podía mostrar el mapa y además
+/// cambiar Bloq Mayús. Entre 350 y 400 ms no pasa nada (banda muerta).
+pub const TAP_MAX_MS: u32 = 350;
 
 /// Modificadores que, si llegaron al sistema antes de Hyper, necesitan una
 /// tecla máscara al soltarse.
@@ -243,7 +250,7 @@ impl HyperKeyboard {
         }
         let was_down = self.caps_down;
         self.caps_down = false;
-        let quick = e.time_ms.wrapping_sub(self.caps_since) < MAP_DELAY_MS;
+        let quick = e.time_ms.wrapping_sub(self.caps_since) < TAP_MAX_MS;
         let inject =
             if was_down && !self.chord && quick { Inject::ToggleCapsLock } else { Inject::None };
         Decision { pass: false, inject, action: None, layer: None, held: 0 }
@@ -306,6 +313,19 @@ mod tests {
         let mut k = HyperKeyboard::new();
         k.on_key(ev(VK_CAPITAL, true, 1000));
         assert_eq!(k.on_key(ev(VK_CAPITAL, false, 1000 + MAP_DELAY_MS)).inject, Inject::None);
+    }
+
+    #[test]
+    fn the_tap_ends_before_the_map_can_show() {
+        // Banda muerta: entre el toque y el mapa no pasa nada.
+        let mut k = HyperKeyboard::new();
+        k.on_key(ev(VK_CAPITAL, true, 1000));
+        let up = k.on_key(ev(VK_CAPITAL, false, 1000 + TAP_MAX_MS - 1));
+        assert_eq!(up.inject, Inject::ToggleCapsLock);
+        k.on_key(ev(VK_CAPITAL, true, 5000));
+        let up = k.on_key(ev(VK_CAPITAL, false, 5000 + TAP_MAX_MS));
+        assert_eq!(up.inject, Inject::None, "a los 350 ms ya no es toque");
+        const { assert!(TAP_MAX_MS + 30 < MAP_DELAY_MS) };
     }
 
     #[test]
