@@ -368,6 +368,10 @@ pub enum Event {
         req: Req,
         result: Result<Vec<WinKey>, String>,
     },
+    /// Hito 4b.2: esta ventana pasó al frente (ya traducida al dueño raíz).
+    Foreground(WinKey),
+    /// Hito 4b.2: a esta ventana le quitaron el cloak.
+    Uncloaked(WinKey),
 }
 
 /// Lo que el modelo le pide a la plataforma.
@@ -604,6 +608,8 @@ pub struct World {
     sync: Option<world_desks::DeskSync>,
     /// La próxima, si llegó otra mientras tanto (gana la última).
     queued: Option<(crate::desks::Goal, u64)>,
+    /// Reconciliar a esta hora (un destape inesperado, hito 4b.2).
+    verify_due: Option<u64>,
 }
 
 /// Tamaños que una ventana no aceptó. Antes se marcaba la ventana entera y
@@ -693,7 +699,10 @@ impl World {
     pub fn deadline(&self) -> Option<u64> {
         // Un vuelo no tiene plazos del modelo: lo vigila el brain.
         let jobs = self.jobs.values().filter(|j| !j.inspecting && !j.flying).map(next_check_us);
-        jobs.chain(self.deferred.as_ref().map(|d| d.due_us)).chain(self.map.deadline()).min()
+        jobs.chain(self.deferred.as_ref().map(|d| d.due_us))
+            .chain(self.map.deadline())
+            .chain(self.verify_due)
+            .min()
     }
 
     /// El mapa de teclado se ve ahora.
@@ -943,6 +952,8 @@ impl World {
                     self.sync_hidden(result, now_us, &mut out);
                 }
             }
+            Event::Foreground(win) => self.on_foreground(win, now_us, &mut out),
+            Event::Uncloaked(win) => self.on_uncloaked(win, now_us, &mut out),
             Event::Launched { req, result } => {
                 let Some(Pending::Launch { letter, app, path }) = self.pending.remove(&req) else {
                     return out;
@@ -1703,6 +1714,10 @@ impl World {
 
     /// Lanza los chequeos vencidos.
     fn tick(&mut self, now_us: u64, out: &mut Vec<Effect>) {
+        if self.verify_due.is_some_and(|t| t <= now_us) {
+            self.verify_due = None;
+            self.start_sync(crate::desks::Goal::Verify, now_us, out);
+        }
         let mut m = Vec::new();
         self.map.tick(self.layer, now_us, &mut m);
         self.map_effects(m, out);

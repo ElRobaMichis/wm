@@ -127,11 +127,48 @@ impl World {
         if self.sync.is_none() {
             return false;
         }
-        // Reconciliar no pisa un pedido del usuario.
-        if goal != Goal::Verify || self.queued.is_none() {
+        // Lo que sale de un aviso de Windows (reconciliar, una ventana de otro
+        // escritorio al frente) no pisa una tecla del usuario.
+        let automatic = |g: Goal| matches!(g, Goal::Verify | Goal::Foreign(_));
+        if !automatic(goal) || self.queued.is_none_or(|(g, _)| automatic(g)) {
             self.queued = Some((goal, key_us));
         }
         true
+    }
+
+    /// Una ventana pasó al frente (hito 4b.2). Del escritorio activo: se
+    /// recuerda para volver a ella. Desconocida: un `Scan` la adopta. De
+    /// otro escritorio (clic en la barra, Alt+Tab, o Windows activó una
+    /// escondida): saltar o rebotar ([`Goal::Foreign`]).
+    pub(super) fn on_foreground(&mut self, win: WinKey, now_us: u64, out: &mut Vec<Effect>) {
+        match self.desks.desk_of(win) {
+            None => self.start_sync(Goal::Verify, now_us, out),
+            Some(d) if self.desks.is_sticky(win) || d == self.desks.active() => {
+                self.desks.note_foreground(win)
+            }
+            Some(_) => self.start_sync(Goal::Foreign(win), now_us, out),
+        }
+    }
+
+    /// A una ventana le quitaron el cloak. Si es de otro escritorio y no la
+    /// destapamos nosotros, reconciliar en 150 ms (si antes llega su
+    /// `FOREGROUND`, el salto ya lo resuelve). Dos veces seguidas: queda en
+    /// todos los escritorios (R4: nunca pelear en bucle).
+    pub(super) fn on_uncloaked(&mut self, win: WinKey, now_us: u64, out: &mut Vec<Effect>) {
+        let Some(d) = self.desks.desk_of(win) else { return };
+        if self.desks.is_sticky(win)
+            || d == self.desks.active()
+            || self.jobs.get(&win).is_some_and(|j| j.flying)
+        {
+            return;
+        }
+        if self.desks.strike(win) {
+            out.push(Effect::Log(format!(
+                "Escritorios: la ventana {:#x} se destapó sola dos veces; queda en todos.",
+                win.hwnd
+            )));
+        }
+        self.verify_due = Some(now_us + 150_000);
     }
 
     pub(super) fn sync_scanned(
@@ -270,6 +307,12 @@ impl World {
     ) {
         let Some(s) = self.sync.as_ref() else { return };
         let ok = result.as_ref().is_ok_and(|f| f.ok);
+        if ok
+            && !s.shell_tried
+            && let Some(FocusTo::Win(k)) = s.plan.as_ref().map(|p| p.focus)
+        {
+            self.desks.note_foreground(k);
+        }
         if !ok && !s.shell_tried {
             // Nunca dejar el teclado sobre una ventana que se va a esconder.
             return self.focus_shell(out);

@@ -150,6 +150,8 @@ pub struct Brain {
     hide_method: wm_platform::hide::HideMethod,
     /// Lo relanzó el guardián tras una caída (D4: confiar en `wm.desk`).
     pub relaunched: bool,
+    /// Ventana al frente y destapes (hito 4b.2), en este hilo.
+    winevents: wm_platform::winevents::WinEvents,
 }
 
 impl Brain {
@@ -173,6 +175,7 @@ impl Brain {
             quit: false,
             hide_method: wm_platform::hide::HideMethod::ShellCloak,
             relaunched: false,
+            winevents: wm_platform::winevents::WinEvents::start(input::current_thread_id()),
         }
     }
 
@@ -185,6 +188,28 @@ impl Brain {
         }
         self.log.line(format!("apps.txt recargado: {} asignaciones.", bindings.len()));
         self.feed(Event::Bindings(bindings));
+    }
+
+    /// Avisos de Windows: ventana al frente y destapes (hito 4b.2).
+    fn collect_winevents(&mut self) {
+        use wm_platform::winevents::WinEvent;
+        let key = |id: WindowId| WinKey { hwnd: id.0, pid: windows_list::window_pid(id) };
+        for e in self.winevents.drain() {
+            match e {
+                WinEvent::Foreground(id) => {
+                    let k = key(windows_list::root_owner(id));
+                    if k.pid != 0 {
+                        self.feed(Event::Foreground(k));
+                    }
+                }
+                WinEvent::Uncloaked(id) => {
+                    let k = key(id);
+                    if k.pid != 0 {
+                        self.feed(Event::Uncloaked(k));
+                    }
+                }
+            }
+        }
     }
 
     /// Órdenes de la bandeja.
@@ -502,6 +527,7 @@ impl Brain {
     /// Resultados de los carriles (y plazos vencidos).
     pub fn collect(&mut self) {
         wm_platform::ops::rearm_wake();
+        self.collect_winevents();
         self.collect_tray();
         self.collect_watch();
         self.collect_anim();

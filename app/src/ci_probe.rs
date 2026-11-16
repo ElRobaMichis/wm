@@ -683,9 +683,15 @@ fn core(r: &mut Report, puppets: &[WindowId]) {
             _ => std::thread::sleep(Duration::from_millis(10)),
         }
     };
-    let ok = moved.is_some() && code == Some(0);
+    // Salida limpia con una ventana en otro escritorio: todo visible y sin
+    // `wm.desk` (hito 4c).
+    let clean = wait_for(Duration::from_millis(500), || {
+        puppets.iter().all(|&p| hide::fully_visible(hide::visibility(p)) && hide::desk_of(p).is_none())
+    })
+    .is_some();
+    let ok = moved.is_some() && code == Some(0) && clean;
     let detail = format!(
-        "arrancó en {}; Caps + W → otro títere: {}; Salir → {}",
+        "arrancó en {}; Caps + W → otro títere: {}; Salir → {}; todo visible y sin wm.desk: {clean}",
         ms(boot),
         moved.map_or_else(|| "no".into(), |d| format!("sí, en {}", ms(d))),
         if quit_sent {
@@ -775,6 +781,21 @@ fn desks_check(r: &mut Report, puppets: &[WindowId]) {
     carry(b'Z');
     let t = wait_for(limit, || shown(a) && hide::desk_of(a) == Some(1));
     step("Caps + Alt + Z la trae", t, &mut parts, &mut ok);
+
+    // Como el clic en la barra de tareas: activar una escondida salta a su
+    // escritorio (Windows la destapa y avisa FOREGROUND).
+    carry(b'2');
+    let _ = wait_for(limit, || hidden(a));
+    let _ = windows_list::activate(a);
+    let t = wait_for(limit, || {
+        shown(a) && windows_list::foreground() == Some(a) && others.iter().all(|&o| hidden(o))
+    });
+    step("activar una escondida salta", t, &mut parts, &mut ok);
+    // Queda en el 2 a propósito: "Salir" tiene que mostrar todo y borrar
+    // `wm.desk` (lo revisa el chequeo "wm core").
+    go(b'1');
+    let t = wait_for(limit, || hidden(a) && others.iter().all(|&o| shown(o)));
+    step("y Caps + 1 vuelve", t, &mut parts, &mut ok);
 
     r.check(NAME, if ok { Status::Ok } else { Status::Fail }, parts.join("; "));
 }

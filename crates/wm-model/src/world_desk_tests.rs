@@ -151,6 +151,26 @@ impl Plat {
         true
     }
 
+    /// El usuario elige una ventana en la barra de tareas o con Alt+Tab:
+    /// Windows la destapa, la activa y avisa (primero el destape).
+    fn click(&mut self, world: &mut World, k: WinKey) {
+        let was_cloaked = self.wins.iter().any(|w| w.key == k && w.cloaked);
+        self.activate(k);
+        if was_cloaked {
+            self.run(world, Event::Uncloaked(k));
+        }
+        self.run(world, Event::Foreground(k));
+        self.settle(world);
+    }
+
+    /// Deja pasar el tiempo hasta que el modelo no tenga plazos.
+    fn settle(&mut self, world: &mut World) {
+        while let Some(t) = world.deadline() {
+            self.now = self.now.max(t);
+            self.run(world, Event::Tick);
+        }
+    }
+
     fn key(&mut self, world: &mut World, action: HyperAction) {
         self.run(world, Event::Action { action, held: 0, age_ms: 0 });
     }
@@ -349,6 +369,63 @@ fn a_key_during_a_change_waits_its_turn() {
     assert_eq!(world.active_desk(), 3);
 }
 
+#[test]
+fn clicking_a_hidden_window_in_the_taskbar_jumps_to_its_desk() {
+    let (mut world, mut p) = boot(&["aaa", "bbb", "ccc"]);
+    let top = p.fg.expect("foco");
+    p.carry(&mut world, 3);
+    assert!(!p.visible(top));
+    p.click(&mut world, top);
+    p.check(&world);
+    assert_eq!(world.active_desk(), 3);
+    assert_eq!(p.fg, Some(top));
+    assert!(!p.wins[0].marked, "al saltar se le quita la marca");
+}
+
+#[test]
+fn windows_activating_a_hidden_window_bounces_back() {
+    let (mut world, mut p) = boot(&["aaa", "bbb"]);
+    let top = p.fg.expect("foco");
+    p.carry(&mut world, 2);
+    // La que quedó al frente se cierra y Windows activa la escondida (no
+    // pasa con Windows 11 según desk-check, pero el modelo lo cubre).
+    let other = p.fg.expect("foco");
+    p.wins.retain(|w| w.key != other);
+    p.click(&mut world, top);
+    p.check(&world);
+    assert_eq!(world.active_desk(), 1, "no se cambia de escritorio");
+    assert!(!p.visible(top), "la escondida vuelve a esconderse");
+}
+
+#[test]
+fn an_unexpected_uncloak_is_hidden_again_and_twice_makes_it_sticky() {
+    let (mut world, mut p) = boot(&["aaa", "bbb"]);
+    let top = p.fg.expect("foco");
+    p.carry(&mut world, 2);
+    for round in 0..2 {
+        // Alguien (Explorer al reiniciar) la destapa sin activarla.
+        p.get(top).expect("existe").cloaked = false;
+        p.run(&mut world, Event::Uncloaked(top));
+        p.settle(&mut world);
+        if round == 0 {
+            p.check(&world);
+            assert!(!p.visible(top));
+        }
+    }
+    assert!(world.desks_sticky(top));
+    p.check(&world);
+    assert!(p.visible(top), "queda en todos los escritorios");
+}
+
+#[test]
+fn a_new_window_that_takes_focus_is_adopted_at_once() {
+    let (mut world, mut p) = boot(&["aaa"]);
+    let new = p.open("nueva");
+    p.run(&mut world, Event::Foreground(new));
+    assert_eq!(world.desk_of(new), Some(1));
+    p.check(&world);
+}
+
 /// 10 000 secuencias al azar: ir, llevar, letras, deshacer, abrir, cerrar y
 /// minimizar. Después de cada paso valen las invariantes.
 #[test]
@@ -364,7 +441,7 @@ fn random_sequences_keep_the_invariants() {
     for _ in 0..10_000 / 20 {
         let (mut world, mut p) = boot(&apps[..2]);
         for _ in 0..20 {
-            let op = next() % 8;
+            let op = next() % 9;
             p.logs.push(format!("== paso {op}; fg {:?}", p.fg));
             match op {
                 0 | 1 => p.go(&mut world, (next() % 4) as u8 + 1),
@@ -383,6 +460,13 @@ fn random_sequences_keep_the_invariants() {
                     if let Some(f) = p.fg {
                         p.wins.retain(|w| w.key != f);
                         p.fg = p.wins.iter().find(|w| !w.cloaked && !w.minimized).map(|w| w.key);
+                    }
+                }
+                8 => {
+                    // Clic en la barra (o Alt+Tab) sobre una cualquiera.
+                    if !p.wins.is_empty() {
+                        let k = p.wins[(next() as usize) % p.wins.len()].key;
+                        p.click(&mut world, k);
                     }
                 }
                 _ => {

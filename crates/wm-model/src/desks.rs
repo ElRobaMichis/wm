@@ -205,10 +205,6 @@ impl Desks {
         flying: &dyn Fn(WinKey) -> bool,
     ) -> Result<Plan, String> {
         let prev_active = self.active();
-        // El foco actual es del escritorio que se deja: recordarlo.
-        if let Some(f) = fg {
-            self.note_foreground(f);
-        }
         let mut set = match goal {
             Goal::Boot { recover } => {
                 self.wins.clear();
@@ -229,6 +225,11 @@ impl Desks {
             }
             _ => self.adopt_with(wins, false),
         };
+        // El foco actual es del escritorio que se deja: recordarlo (después
+        // de adoptar, para que cuente también una ventana recién vista).
+        if let Some(f) = fg {
+            self.note_foreground(f);
+        }
         let known = |k: WinKey| wins.iter().find(|w| w.key == k);
         let mut focus = FocusTo::Keep;
         let mut carried = None;

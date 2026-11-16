@@ -60,6 +60,8 @@ pub mod watch;
 mod win;
 #[cfg(windows)]
 pub mod windows_list;
+#[cfg(windows)]
+pub mod winevents;
 
 #[cfg(windows)]
 pub use win::{dpi_awareness, monitors, os_build, os_edition};
