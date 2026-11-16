@@ -175,7 +175,7 @@ pub fn place_async(id: WindowId, rect: wm_model::Rect) -> Result<(), String> {
     .map_err(|e| format!("SetWindowPos: {e}"))
 }
 
-fn process_name(pid: u32) -> Option<String> {
+pub(crate) fn process_name(pid: u32) -> Option<String> {
     // SAFETY: OpenProcess con el permiso mínimo; el handle se cierra abajo.
     let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
     let mut buf = [0u16; 1024];

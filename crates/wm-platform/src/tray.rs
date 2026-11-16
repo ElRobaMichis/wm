@@ -23,8 +23,8 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::{CreateBitmap, DeleteObject};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Shell::{
-    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFY_ICON_DATA_FLAGS,
-    NOTIFY_ICON_MESSAGE, NOTIFYICONDATAW,
+    NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIIF_NOSOUND, NIIF_RESPECT_QUIET_TIME,
+    NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFY_ICON_DATA_FLAGS, NOTIFY_ICON_MESSAGE, NOTIFYICONDATAW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
@@ -44,6 +44,8 @@ use crate::ops;
 const WM_TRAY_ICON: u32 = WM_APP + 0x40;
 /// El brain cambió el estado (pausa, deshacer): refrescar ícono y menú.
 const WM_TRAY_SYNC: u32 = WM_APP + 0x41;
+/// Cambió la ventana al frente (lParam: su HWND).
+const WM_TRAY_FOREGROUND: u32 = WM_APP + 0x42;
 
 /// Órdenes por `wm.command` (wParam).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +111,12 @@ struct Lane {
     taskbar_created: u32,
     command_msg: u32,
     settings: Option<std::process::Child>,
+    /// Aviso de "atajos no disponibles": apps ya avisadas en esta sesión y
+    /// cuándo fue el último (un globo por app, nunca dos en 60 s).
+    warned: std::collections::HashSet<String>,
+    last_warning: Option<std::time::Instant>,
+    /// Con nosotros como administrador, los atajos llegan siempre.
+    self_elevated: bool,
 }
 
 /// Nombre de la ventana `wm-ui` (con `WM_INSTANCE`, el de esa instancia).
@@ -207,8 +215,12 @@ fn run(brain: u32, events: Sender<TrayEvent>) {
         taskbar_created,
         command_msg: command_message(),
         settings: None,
+        warned: std::collections::HashSet::new(),
+        last_warning: None,
+        self_elevated: crate::session::self_elevated(),
     };
     lane.add_icon();
+    watch_foreground();
     let ready = if lane.added { Ok(()) } else { Err("no se pudo agregar el ícono".to_owned()) };
     LANE.with(|l| *l.borrow_mut() = Some(lane));
     reply(TrayEvent::Ready(ready));
@@ -317,6 +329,10 @@ impl Lane {
             }
             WM_TRAY_SYNC => {
                 self.modify_icon();
+                true
+            }
+            WM_TRAY_FOREGROUND => {
+                self.foreground_changed(HWND(lparam.0 as *mut _));
                 true
             }
             m if m == self.taskbar_created && m != 0 => {
@@ -445,6 +461,39 @@ impl Lane {
         }
     }
 
+    /// Cambió la ventana al frente: si es de una app que corre como
+    /// administrador, el hook no recibe las teclas (UIPI) y los atajos no
+    /// hacen nada. Un globo de la bandeja lo explica (una vez por app).
+    fn foreground_changed(&mut self, hwnd: HWND) {
+        if self.self_elevated || PAUSED.load(Ordering::Relaxed) || !self.added {
+            return;
+        }
+        let id = crate::windows_list::WindowId(hwnd.0 as isize);
+        let pid = crate::windows_list::window_pid(id);
+        if pid == 0 || pid == std::process::id() || !crate::session::process_elevated(pid) {
+            return;
+        }
+        let app = crate::windows_list::process_name(pid).unwrap_or_else(|| "esa app".into());
+        let recent = self.last_warning.is_some_and(|t| t.elapsed().as_secs() < 60);
+        if recent || !self.warned.insert(app.clone()) {
+            return;
+        }
+        self.last_warning = Some(std::time::Instant::now());
+        let mut d = self.data(NIF_INFO);
+        put(&mut d.szInfoTitle, "Atajos no disponibles");
+        put(
+            &mut d.szInfo,
+            &format!(
+                "«{app}» se ejecuta como administrador: mientras esté al frente, Windows no deja que wm reciba las teclas."
+            ),
+        );
+        d.dwInfoFlags = NIIF_INFO | NIIF_NOSOUND | NIIF_RESPECT_QUIET_TIME;
+        notify(NIM_MODIFY, &d);
+        self.send(TrayEvent::Log(format!(
+            "Atajos no disponibles: {app} se ejecuta como administrador (aviso en la bandeja)."
+        )));
+    }
+
     fn data(&self, flags: NOTIFY_ICON_DATA_FLAGS) -> NOTIFYICONDATAW {
         let paused = PAUSED.load(Ordering::Relaxed);
         let mut d = NOTIFYICONDATAW {
@@ -458,9 +507,7 @@ impl Lane {
         };
         let tip =
             if paused { "wm: atajos en pausa" } else { "wm: mantené Caps para ver los atajos" };
-        for (i, c) in tip.encode_utf16().take(d.szTip.len() - 1).enumerate() {
-            d.szTip[i] = c;
-        }
+        put(&mut d.szTip, tip);
         d
     }
 
@@ -496,6 +543,59 @@ impl Lane {
             let _ = unsafe { DestroyIcon(icon) };
         }
     }
+}
+
+/// Copia `text` a un búfer UTF-16 de tamaño fijo (recortado, con el 0 final).
+fn put(buf: &mut [u16], text: &str) {
+    let n = buf.len() - 1;
+    let mut i = 0;
+    for c in text.encode_utf16().take(n) {
+        buf[i] = c;
+        i += 1;
+    }
+    buf[i] = 0;
+}
+
+/// Ventana al frente cambió: `EVENT_SYSTEM_FOREGROUND` fuera de contexto,
+/// que Windows despacha en el bucle de este hilo (0 en reposo, una llamada
+/// por cambio de ventana). Se reenvía a `wm-ui` para atenderlo con el estado.
+fn watch_foreground() {
+    use windows::Win32::UI::Accessibility::SetWinEventHook;
+    use windows::Win32::UI::WindowsAndMessaging::{EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT};
+    unsafe extern "system" fn changed(
+        _hook: windows::Win32::UI::Accessibility::HWINEVENTHOOK,
+        _event: u32,
+        hwnd: HWND,
+        _object: i32,
+        _child: i32,
+        _thread: u32,
+        _time: u32,
+    ) {
+        let raw = WINDOW.load(Ordering::Acquire);
+        if raw != 0 {
+            // SAFETY: PostMessageW no bloquea; ventana propia.
+            let _ = unsafe {
+                PostMessageW(
+                    Some(HWND(raw as *mut _)),
+                    WM_TRAY_FOREGROUND,
+                    WPARAM(0),
+                    LPARAM(hwnd.0 as isize),
+                )
+            };
+        }
+    }
+    // SAFETY: callback con la firma de WINEVENTPROC; fuera de contexto.
+    let _ = unsafe {
+        SetWinEventHook(
+            EVENT_SYSTEM_FOREGROUND,
+            EVENT_SYSTEM_FOREGROUND,
+            None,
+            Some(changed),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT,
+        )
+    };
 }
 
 /// `Shell_NotifyIconW` resuelta en tiempo de ejecución: `wm.exe` no importa

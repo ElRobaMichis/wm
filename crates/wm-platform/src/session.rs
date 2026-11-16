@@ -226,3 +226,37 @@ pub fn light_taskbar() -> bool {
     };
     r.is_ok() && v == 1
 }
+
+/// ¿Este proceso corre como administrador?
+pub fn self_elevated() -> bool {
+    elevated() == Some(true)
+}
+
+/// ¿El proceso `pid` corre como administrador? Si no se puede leer su token
+/// (lo normal con uno elevado desde uno que no lo es), se toma como que sí.
+pub fn process_elevated(pid: u32) -> bool {
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    // SAFETY: handles propios, cerrados al final; estructura local.
+    unsafe {
+        let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            return true;
+        };
+        let mut token = HANDLE::default();
+        let opened = OpenProcessToken(process, TOKEN_QUERY, &mut token);
+        let _ = CloseHandle(process);
+        if opened.is_err() {
+            return true;
+        }
+        let mut elevation = TOKEN_ELEVATION::default();
+        let mut len = 0u32;
+        let ok = GetTokenInformation(
+            token,
+            TokenElevation,
+            Some((&mut elevation as *mut TOKEN_ELEVATION).cast::<c_void>()),
+            size_of::<TOKEN_ELEVATION>() as u32,
+            &mut len,
+        );
+        let _ = CloseHandle(token);
+        ok.is_err() || elevation.TokenIsElevated != 0
+    }
+}
