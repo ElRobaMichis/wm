@@ -134,6 +134,58 @@ pub fn monitor_of(monitors: &[MonitorObs], r: Rect) -> Option<usize> {
     })
 }
 
+/// Monitor vecino de `from` en la dirección `dir` (para empujar,
+/// keyboard-design.md §14.4): el más cercano entre los que están del todo de
+/// ese lado; entre dos igual de cerca, el que más se solapa en el otro eje.
+/// Nunca devuelve `from`.
+pub fn neighbor(monitors: &[MonitorObs], from: usize, dir: Dir) -> Option<usize> {
+    let a = monitors.get(from)?.bounds;
+    // (distancia entre bordes, solape en el otro eje) de cada candidato.
+    let key = |b: Rect| -> Option<(i64, i64)> {
+        let (gap, overlap) = match dir {
+            Dir::Left => (a.left - b.right, a.bottom.min(b.bottom) - a.top.max(b.top)),
+            Dir::Right => (b.left - a.right, a.bottom.min(b.bottom) - a.top.max(b.top)),
+            Dir::Up => (a.top - b.bottom, a.right.min(b.right) - a.left.max(b.left)),
+            Dir::Down => (b.top - a.bottom, a.right.min(b.right) - a.left.max(b.left)),
+        };
+        (gap >= 0).then_some((i64::from(gap), i64::from(overlap.max(0))))
+    };
+    (0..monitors.len())
+        .filter(|&i| i != from)
+        .filter_map(|i| key(monitors[i].bounds).map(|k| (i, k)))
+        // Primero los que se solapan en el otro eje (los que "están al lado").
+        .min_by_key(|&(_, (gap, overlap))| (overlap == 0, gap, -overlap))
+        .map(|(i, _)| i)
+}
+
+/// La ubicación espejada al cruzar a un monitor vecino en `dir`: empujar a
+/// la izquierda desde la mitad izquierda entra por la mitad derecha, y una
+/// esquina conserva la otra componente (arriba sigue arriba).
+pub fn mirror(p: Placement, dir: Dir) -> Placement {
+    use Placement as P;
+    if dir.vertical() {
+        match p {
+            P::TopHalf => P::BottomHalf,
+            P::BottomHalf => P::TopHalf,
+            P::TopLeft => P::BottomLeft,
+            P::BottomLeft => P::TopLeft,
+            P::TopRight => P::BottomRight,
+            P::BottomRight => P::TopRight,
+            other => other,
+        }
+    } else {
+        match p {
+            P::LeftHalf => P::RightHalf,
+            P::RightHalf => P::LeftHalf,
+            P::TopLeft => P::TopRight,
+            P::TopRight => P::TopLeft,
+            P::BottomLeft => P::BottomRight,
+            P::BottomRight => P::BottomLeft,
+            other => other,
+        }
+    }
+}
+
 /// Mayor diferencia por borde entre dos rectángulos.
 pub fn edge_error(a: Rect, b: Rect) -> i32 {
     (a.left - b.left)
@@ -214,6 +266,56 @@ mod tests {
         assert_eq!(got, Rect::new(-7, 0, 967, 1047));
         // A 150 % los bordes crecen: 7 → 10.
         assert_eq!(outer_for(frame, outer, target, 96, 144).left, -10);
+    }
+
+    #[test]
+    fn neighbor_is_the_closest_monitor_on_that_side() {
+        // Tres en fila: 0 | 1 | 2.
+        let ms = [mon(0, 1920), mon(1920, 1920), mon(3840, 1920)];
+        assert_eq!(neighbor(&ms, 1, Dir::Left), Some(0));
+        assert_eq!(neighbor(&ms, 1, Dir::Right), Some(2));
+        assert_eq!(neighbor(&ms, 0, Dir::Right), Some(1), "el más cercano, no el de más allá");
+        assert_eq!(neighbor(&ms, 0, Dir::Left), None);
+        assert_eq!(neighbor(&ms, 1, Dir::Up), None);
+    }
+
+    #[test]
+    fn neighbor_prefers_the_one_beside_over_a_diagonal_one() {
+        let a = mon(0, 1920);
+        // Uno arriba a la derecha (en diagonal) y otro a la derecha, más lejos.
+        let diagonal = MonitorObs {
+            bounds: Rect::new(1920, -1080, 3840, 0),
+            work: Rect::new(1920, -1080, 3840, -40),
+            dpi: 96,
+        };
+        let beside = mon(2000, 1920);
+        assert_eq!(neighbor(&[a, diagonal, beside], 0, Dir::Right), Some(2));
+        // Solo en diagonal: igual sirve.
+        assert_eq!(neighbor(&[a, diagonal], 0, Dir::Right), Some(1));
+        assert_eq!(neighbor(&[a, diagonal], 0, Dir::Up), Some(1));
+    }
+
+    #[test]
+    fn neighbor_never_returns_itself_and_round_trips() {
+        let ms = [mon(0, 1920), mon(1920, 2560)];
+        for (from, dir, back) in [(0, Dir::Right, Dir::Left), (1, Dir::Left, Dir::Right)] {
+            let n = neighbor(&ms, from, dir).expect("hay vecino");
+            assert_ne!(n, from);
+            assert_eq!(neighbor(&ms, n, back), Some(from), "ida y vuelta");
+        }
+    }
+
+    #[test]
+    fn mirror_enters_by_the_opposite_side_keeping_the_other_component() {
+        assert_eq!(mirror(Placement::LeftHalf, Dir::Left), Placement::RightHalf);
+        assert_eq!(mirror(Placement::TopLeft, Dir::Left), Placement::TopRight);
+        assert_eq!(mirror(Placement::BottomRight, Dir::Down), Placement::TopRight);
+        assert_eq!(mirror(Placement::TopHalf, Dir::Up), Placement::BottomHalf);
+        for p in [Placement::LeftHalf, Placement::TopLeft, Placement::BottomRight] {
+            for d in [Dir::Left, Dir::Up] {
+                assert_eq!(mirror(mirror(p, d), d), p, "espejar dos veces es la identidad");
+            }
+        }
     }
 
     #[test]

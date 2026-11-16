@@ -1,9 +1,10 @@
-//! Pruebas de la capa de ventana de [`World`] (hito 1a) con una plataforma
-//! simulada: ventanas con bordes invisibles, tamaño mínimo, maximizadas y
-//! apps que tardan en moverse.
+//! Pruebas de la capa de ventana de [`World`] (hitos 1a y 1b) con una
+//! plataforma simulada: ventanas con bordes invisibles que crecen con la
+//! escala, tamaño mínimo, maximizadas, apps que tardan en moverse y que se
+//! reescalan al cruzar a un monitor con otro DPI.
 
 use crate::keyboard::{HELD_A, HELD_W, HyperAction};
-use crate::place::MonitorObs;
+use crate::place::{MonitorObs, monitor_of};
 use crate::world::{Effect, Event, Obs, WinKey, World};
 use crate::{Placement, Rect, place};
 
@@ -14,8 +15,10 @@ const MS: u64 = 1000;
 struct FakeWin {
     key: WinKey,
     frame: Rect,
-    /// Bordes invisibles (izquierda, arriba, derecha, abajo).
+    /// Bordes invisibles a 96 DPI (izquierda, arriba, derecha, abajo).
     margins: (i32, i32, i32, i32),
+    /// DPI con el que se dibuja ahora (los bordes crecen con la escala).
+    dpi: u32,
     maximized: bool,
     min_width: i32,
     /// Milisegundos que tarda la app en aplicar un pedido.
@@ -23,8 +26,14 @@ struct FakeWin {
 }
 
 impl FakeWin {
-    fn outer(&self) -> Rect {
+    fn margins_now(&self) -> (i32, i32, i32, i32) {
+        let s = |m: i32| m * self.dpi as i32 / 96;
         let (l, t, r, b) = self.margins;
+        (s(l), s(t), s(r), s(b))
+    }
+
+    fn outer(&self) -> Rect {
+        let (l, t, r, b) = self.margins_now();
         Rect::new(
             self.frame.left - l,
             self.frame.top - t,
@@ -40,6 +49,9 @@ struct Sim {
     monitors: Vec<MonitorObs>,
     /// Pedidos que la app todavía no aplicó: (cuándo, rect exterior).
     queued: Vec<(u64, Rect)>,
+    /// Cambios de DPI pendientes (cuándo, DPI nuevo): llegan después de
+    /// cruzar a un monitor con otra escala.
+    dpi_queue: Vec<(u64, u32)>,
     logs: Vec<String>,
     places: usize,
     normalized: bool,
@@ -59,6 +71,7 @@ impl Sim {
             key: WinKey { hwnd: 7, pid: 70 },
             frame: Rect::new(300, 200, 1100, 800),
             margins: (7, 0, 7, 7),
+            dpi: 96,
             maximized: false,
             min_width: 0,
             lag_ms: 0,
@@ -68,6 +81,7 @@ impl Sim {
             win,
             monitors: vec![monitor(0), monitor(1920)],
             queued: Vec::new(),
+            dpi_queue: Vec::new(),
             logs: Vec::new(),
             places: 0,
             normalized: false,
@@ -81,7 +95,7 @@ impl Sim {
             title: "Brave".into(),
             frame: self.win.frame,
             outer: self.win.outer(),
-            dpi: 96,
+            dpi: self.win.dpi,
             maximized: self.win.maximized,
             minimized: false,
             monitors: self.monitors.clone(),
@@ -94,7 +108,7 @@ impl Sim {
         let (ready, later): (Vec<_>, Vec<_>) = self.queued.drain(..).partition(|(t, _)| *t <= now);
         self.queued = later;
         for (_, outer) in ready {
-            let (l, t, r, b) = self.win.margins;
+            let (l, t, r, b) = self.win.margins_now();
             let mut frame =
                 Rect::new(outer.left + l, outer.top + t, outer.right - r, outer.bottom - b);
             if frame.width() < self.win.min_width {
@@ -102,6 +116,24 @@ impl Sim {
             }
             self.win.frame = frame;
             self.win.maximized = false;
+            // Cruzó a un monitor con otra escala: Windows le avisa un poco después.
+            if let Some(m) = monitor_of(&self.monitors, frame)
+                && self.monitors[m].dpi != self.win.dpi
+            {
+                self.dpi_queue.push((now + 10 * MS, self.monitors[m].dpi));
+            }
+        }
+        let (ready, later): (Vec<_>, Vec<_>) =
+            self.dpi_queue.drain(..).partition(|(t, _)| *t <= now);
+        self.dpi_queue = later;
+        for (_, dpi) in ready {
+            // La app se reescala: el rectángulo exterior queda y los bordes
+            // invisibles crecen, así que el marco se ajusta.
+            let outer = self.win.outer();
+            self.win.dpi = dpi;
+            let (l, t, r, b) = self.win.margins_now();
+            self.win.frame =
+                Rect::new(outer.left + l, outer.top + t, outer.right - r, outer.bottom - b);
         }
     }
 
@@ -248,13 +280,59 @@ fn minimum_size_is_accepted_after_a_second_pass() {
 }
 
 #[test]
-fn already_there_does_nothing() {
+fn pushing_past_the_last_monitor_does_nothing() {
     let mut w = World::new(Vec::new());
     let mut sim = Sim::new();
-    sim.win.frame = place(work(), Placement::LeftHalf);
+    sim.win.frame = place(work(), Placement::LeftHalf); // monitor de más a la izquierda
     sim.run(&mut w, arrange(b'A', HELD_A));
     assert_eq!(sim.places, 0);
-    assert!(sim.logs[0].contains("ya estaba ahí"));
+    assert!(sim.logs[0].contains("no hay otro monitor a la izquierda"), "{:?}", sim.logs);
+}
+
+#[test]
+fn repeating_a_direction_pushes_to_the_next_monitor() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.run(&mut w, arrange(b'D', 0)); // mitad derecha del monitor 0
+    sim.run(&mut w, arrange(b'D', 0)); // empuja: mitad izquierda del monitor 1
+    assert_eq!(sim.win.frame, place(monitor(1920).work, Placement::LeftHalf));
+    assert!(sim.logs[1].contains("monitor de la derecha, mitad izquierda"), "{:?}", sim.logs);
+    sim.run(&mut w, arrange(b'A', 0)); // vuelve: mitad derecha del monitor 0
+    assert_eq!(sim.win.frame, place(work(), Placement::RightHalf));
+}
+
+#[test]
+fn a_half_placed_by_hand_is_also_pushed() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.win.frame = place(work(), Placement::RightHalf); // la puso el usuario
+    sim.run(&mut w, arrange(b'D', 0));
+    assert_eq!(sim.win.frame, place(monitor(1920).work, Placement::LeftHalf));
+}
+
+#[test]
+fn repeating_on_a_corner_keeps_the_other_component() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.win.frame = Rect::new(2200, 100, 3000, 700); // monitor 1
+    sim.run(&mut w, arrange(b'A', HELD_W | HELD_A)); // esquina arriba a la izquierda
+    assert_eq!(sim.win.frame, place(monitor(1920).work, Placement::TopLeft));
+    sim.now += 2_000 * MS; // pasado el tiempo de combinación: igual es "repetir"
+    sim.run(&mut w, arrange(b'A', HELD_A));
+    assert_eq!(sim.win.frame, place(work(), Placement::TopRight), "{:?}", sim.logs);
+}
+
+#[test]
+fn crossing_to_a_higher_dpi_waits_for_the_rescale() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.monitors[1].dpi = 144; // el de la derecha a 150 %
+    sim.win.frame = place(work(), Placement::RightHalf);
+    sim.run(&mut w, arrange(b'D', 0));
+    assert_eq!(sim.win.dpi, 144);
+    assert_eq!(sim.win.frame, place(monitor(1920).work, Placement::LeftHalf));
+    assert_eq!(sim.places, 1, "los bordes ya iban escalados: una sola pasada");
+    assert!(sim.logs[0].contains("0 px en 1 pasada"), "{:?}", sim.logs);
 }
 
 #[test]

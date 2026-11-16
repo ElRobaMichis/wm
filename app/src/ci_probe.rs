@@ -15,7 +15,9 @@
 //!    lleva a otro títere (son `wm.exe`) y `Caps` + Esc lo cierra con código 0;
 //! 7. **capa de ventana** (con el mismo core): `Caps` + Alt + A = mitad
 //!    izquierda, W enseguida = esquina, D + S juntas = la otra esquina, con
-//!    el marco visible a ≤ 1 px.
+//!    el marco visible a ≤ 1 px;
+//! 8. **empujar** (solo con dos monitores o más): repetir la dirección lleva
+//!    la ventana al monitor vecino, entrando por la mitad opuesta, y vuelve.
 //!
 //! Imprime una línea por chequeo y, con `--summary`, agrega una tabla en
 //! Markdown a ese archivo (en la CI, `$GITHUB_STEP_SUMMARY`). Sale con 0 si
@@ -161,9 +163,15 @@ pub fn run(args: &[String]) -> ExitCode {
         hiding(&mut r, puppets[1]);
         frame(&mut r, puppets[2]);
     } else {
-        for name in
-            ["foco", "wm core", "capa de ventana", "hook + SendInput", "esconder", "marco DWM"]
-        {
+        for name in [
+            "foco",
+            "wm core",
+            "capa de ventana",
+            "empujar",
+            "hook + SendInput",
+            "esconder",
+            "marco DWM",
+        ] {
             r.check(name, Status::Skip, "sin títeres".into());
         }
     }
@@ -446,6 +454,65 @@ fn arrange_checks(r: &mut Report, id: WindowId) {
     }
     let status = if all_ok { Status::Ok } else { Status::Fail };
     r.check("capa de ventana", status, parts.join("; "));
+    push_checks(r, id, &monitors, m);
+}
+
+/// Con dos monitores o más: llevar la ventana a la mitad del lado que tiene
+/// vecino, repetir para empujarla y volver.
+fn push_checks(r: &mut Report, id: WindowId, monitors: &[wm_model::place::MonitorObs], m: usize) {
+    use wm_model::place::{Dir, edge_error, neighbor};
+    use wm_model::{Placement, place};
+    const CAPS: u8 = 0x14;
+    const ALT: u8 = 0xA4;
+    let (dir, key, back_key, half, other_half) = if neighbor(monitors, m, Dir::Right).is_some() {
+        (Dir::Right, b'D', b'A', Placement::RightHalf, Placement::LeftHalf)
+    } else if neighbor(monitors, m, Dir::Left).is_some() {
+        (Dir::Left, b'A', b'D', Placement::LeftHalf, Placement::RightHalf)
+    } else {
+        r.check("empujar", Status::Skip, format!("{} monitor: no hay vecino", monitors.len()));
+        return;
+    };
+    let n = neighbor(monitors, m, dir).expect("recién visto");
+    // Pasado el tiempo de combinación, para que la primera tecla sea una mitad.
+    std::thread::sleep(Duration::from_millis(1100));
+    let steps = [
+        (key, place(monitors[m].work, half), "mitad"),
+        (key, place(monitors[n].work, other_half), "empujada al vecino"),
+        (back_key, place(monitors[m].work, half), "de vuelta"),
+    ];
+    let mut parts = Vec::new();
+    let mut all_ok = true;
+    for (k, target, label) in steps {
+        let start = Instant::now();
+        session::send_keys(&[
+            (CAPS, true),
+            (ALT, true),
+            (k, true),
+            (k, false),
+            (ALT, false),
+            (CAPS, false),
+        ]);
+        let reached = loop {
+            let err =
+                wm_platform::ghost::frame_bounds(id).map_or(i32::MAX, |f| edge_error(f, target));
+            if err <= 1 {
+                break Some(start.elapsed());
+            }
+            if start.elapsed() > Duration::from_secs(1) {
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        all_ok &= reached.is_some();
+        parts.push(match reached {
+            Some(d) => format!("{label} en {}", ms(d)),
+            None => format!("{label}: NO llegó"),
+        });
+        std::thread::sleep(Duration::from_millis(150));
+    }
+    let (a, b) = (monitors[m].dpi, monitors[n].dpi);
+    parts.push(format!("DPI {a} → {b}"));
+    r.check("empujar", if all_ok { Status::Ok } else { Status::Fail }, parts.join("; "));
 }
 
 fn hook(r: &mut Report, target: WindowId) {

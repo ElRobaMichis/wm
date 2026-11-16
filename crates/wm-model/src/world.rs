@@ -22,9 +22,10 @@ use std::collections::HashMap;
 use crate::apps::{AppBinding, Target, resolve};
 use crate::keyboard::{HyperAction, Layer};
 use crate::place::{
-    Dir, MonitorObs, edge_error, monitor_of, outer_for, placement_for, placement_name,
+    Dir, MonitorObs, edge_error, mirror, monitor_of, neighbor, outer_for, placement_for,
+    placement_name,
 };
-use crate::{Rect, place};
+use crate::{Placement, Rect, place};
 
 /// Una ventana observada con `Inspect` (siempre viene de Windows).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +72,9 @@ struct Job {
     /// Marco al pedir esta pasada: mientras siga igual, la app todavía no
     /// aplicó el pedido (no es "quedó quieta en otro lugar").
     from_frame: Rect,
+    /// DPI del monitor de destino: al cruzar a uno con otra escala, la
+    /// ventana tiene que informarlo antes de juzgar dónde quedó.
+    want_dpi: u32,
 }
 
 /// La última dirección aplicada, para formar esquinas en secuencia.
@@ -78,6 +82,7 @@ struct Job {
 struct Combo {
     win: WinKey,
     dir: Dir,
+    placement: Placement,
     at_us: u64,
     target: Rect,
 }
@@ -434,30 +439,54 @@ impl World {
             out.push(Effect::Log(format!("{what}: {} está en pantalla completa.", obs.app)));
             return;
         }
+        let still = |c: &Combo| c.win == obs.key && edge_error(obs.frame, c.target) <= TOLERANCE_PX;
+        // Repetir la misma tecla sobre una ubicación nuestra que sigue igual.
+        let repeat = self.combo.filter(|c| c.dir == dir && still(c)).map(|c| c.placement);
         let perp = dir.held_perpendicular(held).or_else(|| {
             self.combo
                 .filter(|c| {
-                    c.win == obs.key
-                        && c.dir.perpendicular(dir)
+                    c.dir.perpendicular(dir)
+                        && still(c)
                         && now_us.saturating_sub(c.at_us) <= COMBO_US
-                        && edge_error(obs.frame, c.target) <= TOLERANCE_PX
                 })
                 .map(|c| c.dir)
         });
-        let placement = placement_for(dir, perp);
-        let target = place(monitor.work, placement);
-        self.combo = Some(Combo { win: obs.key, dir, at_us: now_us, target });
-        let what = format!("{what} → {} ({})", placement_name(placement), obs.app);
-        if !obs.maximized && edge_error(obs.frame, target) <= TOLERANCE_PX {
-            // Repetir la dirección empuja al monitor vecino (hito 1b).
-            self.jobs.remove(&obs.key);
-            out.push(Effect::Log(format!("{what}: ya estaba ahí.")));
-            return;
+        let mut placement = placement_for(dir, perp);
+        let mut target = place(monitor.work, placement);
+        let mut to_dpi = monitor.dpi;
+        let mut where_ = placement_name(placement).to_owned();
+        // Ya está ahí (o se repitió la tecla): empujar al monitor vecino,
+        // entrando por el lado opuesto (keyboard-design.md §14.4).
+        let here = !obs.maximized && edge_error(obs.frame, target) <= TOLERANCE_PX;
+        if let Some(slot) = repeat.or(here.then_some(placement)) {
+            let Some(n) = neighbor(&obs.monitors, m, dir) else {
+                self.jobs.remove(&obs.key);
+                self.combo = Some(Combo {
+                    win: obs.key,
+                    dir,
+                    placement: slot,
+                    at_us: now_us,
+                    target: obs.frame,
+                });
+                out.push(Effect::Log(format!(
+                    "{what} → {} ({}): no hay otro monitor a la {}.",
+                    placement_name(slot),
+                    obs.app,
+                    dir.name()
+                )));
+                return;
+            };
+            placement = mirror(slot, dir);
+            target = place(obs.monitors[n].work, placement);
+            to_dpi = obs.monitors[n].dpi;
+            where_ = format!("monitor de la {}, {}", dir.name(), placement_name(placement));
         }
+        self.combo = Some(Combo { win: obs.key, dir, placement, at_us: now_us, target });
+        let what = format!("{what} → {where_} ({})", obs.app);
         if obs.maximized {
             out.push(Effect::Normalize { win: obs.key });
         }
-        let rect = outer_for(obs.frame, obs.outer, target, obs.dpi, obs.dpi);
+        let rect = outer_for(obs.frame, obs.outer, target, obs.dpi, to_dpi);
         self.next_job += 1;
         let job = Job {
             id: self.next_job,
@@ -470,6 +499,7 @@ impl World {
             inspecting: false,
             last_frame: None,
             from_frame: obs.frame,
+            want_dpi: to_dpi,
         };
         // La última tecla gana: la colocación anterior de esta ventana se olvida.
         self.jobs.insert(obs.key, job);
@@ -537,7 +567,10 @@ impl World {
             return;
         }
         let moved = obs.frame != j.from_frame;
-        if !(stable && moved || exhausted) {
+        // Al cruzar de escala, la app se reescala sola al recibir el DPI nuevo:
+        // hasta que lo informe, el marco todavía no es el final.
+        let dpi_pending = obs.dpi != j.want_dpi;
+        if !(stable && moved && !dpi_pending || exhausted) {
             return; // la app todavía no aplicó el pedido o se está acomodando
         }
         if j.pass == 1 {
