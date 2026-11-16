@@ -616,7 +616,7 @@ impl Lane {
         if let Err(e) = g.place(from) {
             return self.refuse(ticket, win, format!("miniatura: {e}"));
         }
-        self.host.show();
+        self.host.show_below(crate::ui::shown_window());
         self.current = Some(Current {
             ticket,
             win,

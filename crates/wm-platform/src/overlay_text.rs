@@ -387,28 +387,41 @@ const PAD: f32 = 24.0;
 const FOOTER: f32 = 36.0;
 const FOOTER_EM: f32 = 15.0;
 
-/// Las teclas de una capa ya dibujadas: su fondo, para pintar la elegida en
-/// `accent` ([`MapVisual::light`]).
+/// Las teclas de una capa ya dibujadas: su fondo, para que la recién usada
+/// destelle en `accent` ([`MapVisual::light`]).
 pub struct MapVisual {
     pub container: ContainerVisual,
     keys: Vec<(char, windows::UI::Composition::CompositionSpriteShape)>,
     key_brush: CompositionColorBrush,
-    accent_brush: CompositionColorBrush,
     lit: Option<char>,
 }
 
+/// El destello: `accent` firme un momento y vuelve a `surface` (lo anima
+/// DWM). Antes quedaba en `accent` hasta la tecla siguiente y parecía
+/// trabada (prueba del usuario).
+const FLASH: std::time::Duration = std::time::Duration::from_millis(450);
+const FLASH_HOLD: f32 = 0.35;
+
 impl MapVisual {
-    /// Pinta `letter` en `accent` (y despinta la anterior). `None`: ninguna.
+    /// Hace destellar `letter` en `accent`. `None`: ninguna (y corta un
+    /// destello en curso).
     pub fn light(&mut self, letter: Option<char>) -> windows::core::Result<()> {
-        if self.lit == letter {
-            return Ok(());
-        }
         for (l, shape) in &self.keys {
-            if Some(*l) == self.lit {
+            if Some(*l) == self.lit && Some(*l) != letter {
                 shape.SetFillBrush(&self.key_brush)?;
             }
             if Some(*l) == letter {
-                shape.SetFillBrush(&self.accent_brush)?;
+                let c = self.key_brush.Compositor()?;
+                let brush = c.CreateColorBrushWithColor(tokens::ACCENT)?;
+                let anim = c.CreateColorKeyFrameAnimation()?;
+                anim.InsertKeyFrame(0.0, tokens::ACCENT)?;
+                anim.InsertKeyFrame(FLASH_HOLD, tokens::ACCENT)?;
+                anim.InsertKeyFrame(1.0, tokens::SURFACE)?;
+                anim.SetDuration(windows::Foundation::TimeSpan {
+                    Duration: (FLASH.as_nanos() / 100) as i64,
+                })?;
+                shape.SetFillBrush(&brush)?;
+                brush.StartAnimation(&windows::core::HSTRING::from("Color"), &anim)?;
             }
         }
         self.lit = letter;
@@ -523,7 +536,6 @@ pub fn build_view(
         container,
         keys: key_shapes,
         key_brush: compositor.CreateColorBrushWithColor(tokens::SURFACE)?,
-        accent_brush: compositor.CreateColorBrushWithColor(tokens::ACCENT)?,
         lit: None,
     })
 }

@@ -34,8 +34,10 @@ const WM_UI_RUN: u32 = WM_APP + 0x22;
 /// Plazo de cada pedido: si no vuelve, el hilo está trabado.
 const DEADLINE: Duration = Duration::from_millis(500);
 
-/// El hilo se oculta solo si el mapa lleva este tiempo visible (el brain
-/// lo oculta a los 30 s; esto cubre al brain trabado).
+/// El hilo se oculta solo si el mapa lleva este tiempo visible **sin
+/// pedidos** (el brain lo oculta a los 30 s sin actividad; esto cubre al
+/// brain trabado). Cada pedido lo renueva: antes contaba desde que apareció
+/// y el mapa desaparecía en pleno uso (prueba del usuario).
 const SELF_HIDE_MS: u32 = 32_000;
 
 /// Las dos capas del mapa: apps y ventana.
@@ -66,6 +68,16 @@ enum Cmd {
 
 /// Las ventanas del mapa, para esconderlas si el hilo se traba.
 static WINDOWS: Mutex<Vec<isize>> = Mutex::new(Vec::new());
+
+/// La ventana del mapa que se ve ahora (0: ninguna). La lee el carril
+/// `anim` para que el fantasma de un vuelo quede debajo del mapa.
+static SHOWN: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+/// La ventana del mapa visible, si hay.
+pub fn shown_window() -> Option<isize> {
+    let raw = SHOWN.load(Ordering::Acquire);
+    (raw != 0).then_some(raw)
+}
 
 struct Worker {
     thread_id: u32,
@@ -232,6 +244,9 @@ fn run(brain: u32, cmds: Receiver<Cmd>, events: Sender<UiEvent>, abandoned: Arc<
 
 impl State {
     fn run(&mut self, cmd: Cmd) -> UiEvent {
+        if self.shown.is_some() && !matches!(cmd, Cmd::Hide) {
+            self.arm_timer();
+        }
         match cmd {
             Cmd::Show { layer, views, at } => match self.show(layer, views) {
                 Ok(monitor) => UiEvent::Shown { ms: at.elapsed().as_secs_f64() * 1000.0, monitor },
@@ -289,12 +304,20 @@ impl State {
         }
         self.set_layer(i, layer)?;
         self.overlays.show_only(i);
+        SHOWN.store(self.overlays.screens()[i].hwnd.0 as isize, Ordering::Release);
         self.shown = Some(i);
-        if self.timer == 0 {
-            // SAFETY: temporizador de hilo (sin ventana); WM_TIMER llega a la cola.
-            self.timer = unsafe { SetTimer(None, 0, SELF_HIDE_MS, None) };
-        }
+        self.arm_timer();
         Ok(i)
+    }
+
+    /// (Re)arma el autocierre: un temporizador de hilo nuevo desde ahora.
+    fn arm_timer(&mut self) {
+        if self.timer != 0 {
+            // SAFETY: temporizador propio de este hilo.
+            let _ = unsafe { KillTimer(None, self.timer) };
+        }
+        // SAFETY: temporizador de hilo (sin ventana); WM_TIMER llega a la cola.
+        self.timer = unsafe { SetTimer(None, 0, SELF_HIDE_MS, None) };
     }
 
     fn set_layer(&self, i: usize, layer: Layer) -> windows::core::Result<()> {
@@ -306,6 +329,7 @@ impl State {
     }
 
     fn hide(&mut self) {
+        SHOWN.store(0, Ordering::Release);
         self.overlays.hide();
         self.shown = None;
         if self.timer != 0 {

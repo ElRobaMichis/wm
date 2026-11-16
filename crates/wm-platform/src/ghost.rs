@@ -167,6 +167,31 @@ impl GhostHost {
         self.host.0 as isize
     }
 
+    /// Muestra el anfitrión justo **debajo** de `above` (el mapa de teclado,
+    /// si se ve): los dos están encima de todo y, sin esto, el fantasma de un
+    /// vuelo tapaba el mapa. Sin `above`, como [`GhostHost::show`].
+    pub fn show_below(&self, above: Option<isize>) {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SetWindowPos,
+        };
+        let Some(raw) = above else { return self.show() };
+        // SAFETY: ventanas propias del proceso.
+        let ok = unsafe {
+            SetWindowPos(
+                self.host,
+                Some(HWND(raw as *mut c_void)),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            )
+        };
+        if ok.is_err() {
+            self.show();
+        }
+    }
+
     pub fn show(&self) {
         // SAFETY: ventana propia.
         let _ = unsafe { ShowWindow(self.host, SW_SHOWNOACTIVATE) };
