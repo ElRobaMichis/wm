@@ -7,9 +7,18 @@ license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[lib]
+name = "wm_app"
+path = "src/lib.rs"
+
 [[bin]]
 name = "wm"
 path = "src/main.rs"
+
+# El mismo programa sin consola (plan-core.md D5).
+[[bin]]
+name = "wmw"
+path = "src/wmw.rs"
 
 [dependencies]
 wm-model.workspace = true

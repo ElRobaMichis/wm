@@ -48,18 +48,25 @@ jobs:
           $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC" -Recurse -Filter dumpbin.exe |
             Select-Object -First 1
           if (-not $dumpbin) { throw "No se encontró dumpbin.exe" }
-          $exe = "target\${{ matrix.target }}\release\wm.exe"
-          $deps = & $dumpbin.FullName /dependents $exe | Out-String
-          Write-Output $deps
-          if ($deps -match '(?i)vcruntime|msvcp|ucrtbase|api-ms-win-crt') {
-            throw "El ejecutable depende del runtime de C; revisar crt-static (.cargo/config.toml)."
+          # wm.exe (consola) y wmw.exe (sin consola, plan-core.md D5).
+          foreach ($name in @("wm.exe", "wmw.exe")) {
+            $exe = "target\${{ matrix.target }}\release\$name"
+            $deps = & $dumpbin.FullName /dependents $exe | Out-String
+            Write-Output "== $name"
+            Write-Output $deps
+            if ($deps -match '(?i)vcruntime|msvcp|ucrtbase|api-ms-win-crt') {
+              throw "$name depende del runtime de C; revisar crt-static (.cargo/config.toml)."
+            }
+            # Las DLL de gráficos (y shell32/userenv, desde el hito 3) se cargan a
+            # demanda (crates/wm-platform/src/dynlib.rs): importarlas en forma
+            # estática las cargaría en todos los roles y podría impedir que wm
+            # arranque en Windows 10 (architecture.md §13.7).
+            if ($deps -match '(?i)d3d11|dxgi|d2d1|dwrite|dcomp|coremessaging|psapi|shell32|userenv') {
+              throw "$name importa una DLL de gráficos o del shell en forma estática; usar dynlib."
+            }
           }
-          # Las DLL de gráficos se cargan a demanda (crates/wm-platform/src/dynlib.rs):
-          # importarlas en forma estática las cargaría en todos los roles y podría
-          # impedir que wm arranque en Windows 10 (architecture.md §13.7).
-          if ($deps -match '(?i)d3d11|dxgi|d2d1|dwrite|dcomp|coremessaging|psapi') {
-            throw "wm.exe importa una DLL de gráficos en forma estática; usar dynlib."
-          }
+          $sub = & $dumpbin.FullName /headers "target\${{ matrix.target }}\release\wmw.exe" | Out-String
+          if ($sub -notmatch '(?i)Windows GUI') { throw "wmw.exe no es de subsistema Windows GUI." }
 
       - name: Doctor
         run: target\${{ matrix.target }}\release\wm.exe doctor
