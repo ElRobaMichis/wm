@@ -3,12 +3,11 @@
 #   git tag -a v0.1.0 -m "Primera versión"   (la primera línea = notas)
 #   git push origin v0.1.0
 # Compila x64 y ARM64, arma los assets y los manifiestos (`wm release-pack`) y
-# crea el release como **pre-release, sin firmas**. Las firmas de los
+# crea el release (versión oficial) **sin firmas**. Las firmas de los
 # manifiestos se hacen en la PC del autor (`tools/sign-release.sh`), donde
-# vive la clave privada: nunca se sube a GitHub. Sin `.sig`, ningún wm
-# instalado acepta la versión. A los instalados les llega recién cuando se
-# desmarca "pre-release" (bajan `releases/latest`, que ignora las
-# pre-releases).
+# vive la clave privada: nunca se sube a GitHub. Esa firma es la compuerta:
+# sin `.sig`, ningún wm instalado ve la versión (cuenta como "al día"); le
+# llega a todos apenas se firma.
 name: Release
 
 on:
@@ -78,11 +77,11 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Crear el release (pre-release, sin firmas todavía)
+      - name: Crear el release (sin firmas todavía)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           ls -la dist
           gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
-            --prerelease --title "wm $GITHUB_REF_NAME" \
-            --notes "Para instalar: bajá wm-setup-x64.exe (o wm-setup-arm64.exe) y abrilo. Los que ya tienen wm lo reciben solo cuando este release deja de ser pre-release."
+            --latest --title "wm $GITHUB_REF_NAME" \
+            --notes "Para instalar: bajá wm-setup-x64.exe (o wm-setup-arm64.exe) y abrilo. Los que ya tienen wm instalado reciben esta versión solos."
