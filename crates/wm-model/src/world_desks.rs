@@ -35,6 +35,11 @@ impl World {
         self.desks.set_scope(app);
     }
 
+    /// Ventanas de cada escritorio (1 a 4), para la bandeja.
+    pub fn desk_counts(&self) -> [usize; 4] {
+        self.desks.counts()
+    }
+
     /// El escritorio activo (1-4).
     pub fn active_desk(&self) -> u8 {
         self.desks.active()

@@ -1745,6 +1745,7 @@ impl World {
             Command::Undo => self.undo_next(now_us, out),
             Command::ShowAll => self.start_sync(crate::desks::Goal::ShowAll, now_us, out),
             Command::Reconcile => self.start_sync(crate::desks::Goal::Verify, now_us, out),
+            Command::Desk(n) => self.start_sync(crate::desks::Goal::Desk(n), now_us, out),
         }
     }
 
@@ -2380,6 +2381,8 @@ pub enum Command {
     /// Explorer se reinició: revisar que cada ventana esté como pide su
     /// escritorio.
     Reconcile,
+    /// Ir a este escritorio (menú de la bandeja, hito 5e).
+    Desk(u8),
 }
 
 #[cfg(test)]

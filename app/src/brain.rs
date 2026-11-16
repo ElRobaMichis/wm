@@ -316,7 +316,12 @@ impl Brain {
     /// Le pasa un evento al modelo y ejecuta lo que pida.
     pub fn feed(&mut self, event: Event) {
         let effects = self.world.step(event, self.now_us());
-        self.tray.sync(self.world.paused(), self.world.can_undo());
+        self.tray.sync(
+            self.world.paused(),
+            self.world.can_undo(),
+            self.world.active_desk(),
+            self.world.desk_counts(),
+        );
         for effect in effects {
             match effect {
                 Effect::Scan { req } => {

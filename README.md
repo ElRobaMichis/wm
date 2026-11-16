@@ -2,7 +2,7 @@
 
 Gestor de ventanas para Windows, escrito en Rust. Pensado para que cualquiera lo use sin leer documentación: pocos atajos lógicos, mouse como opción de primera clase, consumo mínimo y animaciones fluidas a la frecuencia real del monitor.
 
-> **Estado:** en desarrollo, hitos 0 a 4 de la primera versión hechos ([plan-core.md](plan-core.md)): `Caps` + letra va a una app; `Caps` + Alt acomoda la ventana al frente (mitades, esquinas, otro monitor, maximizar, centrar, agrandar y achicar, deshacer) con animación; mantener `Caps` muestra el mapa de teclado; `Caps` + 1–4 cambia de escritorio. Arranca con `wmw` (sin consola, con ícono en la bandeja) y se puede iniciar con Windows. Falta el mouse (hito 5).
+> **Estado:** en desarrollo, hitos 0 a 5 de la primera versión hechos ([plan-core.md](plan-core.md)): `Caps` + letra va a una app; `Caps` + Alt acomoda la ventana al frente (mitades, esquinas, otro monitor, maximizar, centrar, agrandar y achicar, deshacer) con animación; mantener `Caps` muestra el mapa de teclado; `Caps` + 1–4 cambia de escritorio; `Caps` + arrastrar mueve una ventana desde cualquier parte. Arranca con `wmw` (sin consola, con ícono en la bandeja) y se puede iniciar con Windows.
 
 ## Probar
 
@@ -13,8 +13,8 @@ target/release/wmw
 
 `wmw.exe` es `wm` sin ventana de consola: arranca el guardián, que lanza el core y lo vuelve a lanzar si se cae (mostrando antes todas las ventanas que haya escondido). Aparece un ícono en la bandeja:
 
-- **clic:** abre los ajustes;
-- **clic derecho:** Ajustes, Pausar atajos, Deshacer el último movimiento, Mostrar todas las ventanas, Iniciar con Windows y Salir.
+- muestra el número del escritorio activo;
+- **clic (izquierdo o derecho):** los escritorios 1–4 (con cuántas ventanas tiene cada uno), Ajustes, Pausar atajos, Deshacer el último movimiento, Mostrar todas las ventanas, Iniciar con Windows y Salir.
 
 `wm.exe` es el mismo programa con consola (para ver el log en vivo y para la línea de comandos): `wm` sin argumentos hace lo mismo que `wmw`; `wm core` corre solo el core.
 
@@ -25,6 +25,8 @@ target/release/wmw
 | `Caps` + Alt + F / C / Z / G / V | Maximizar / centrar / deshacer / agrandar / achicar |
 | `Caps` + 1 / 2 / 3 / 4 | Ir a ese escritorio (las ventanas de los otros se esconden) |
 | `Caps` + Alt + 1 / 2 / 3 / 4 | Llevar la ventana al frente a ese escritorio (Z lo deshace) |
+| `Caps` + arrastrar | Mover la ventana agarrándola desde cualquier parte (Z lo deshace) |
+| `Caps` + clic derecho + arrastrar | Cambiar el tamaño desde la esquina más cercana |
 | Mantener `Caps` | El mapa de teclado (con Alt, la capa de ventana) |
 | `Caps` (toque corto) | Bloq Mayús normal |
 

@@ -98,6 +98,21 @@ pub enum TrayEvent {
 /// Estado que muestra la bandeja (lo actualiza el brain).
 static PAUSED: AtomicBool = AtomicBool::new(false);
 static CAN_UNDO: AtomicBool = AtomicBool::new(false);
+/// Escritorio activo (1-4) y ventanas de cada uno (8 bits cada uno), para
+/// el número del ícono y el menú (hito 5e).
+static DESKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn pack_desks(active: u8, counts: [usize; 4]) -> u64 {
+    counts
+        .iter()
+        .enumerate()
+        .fold(u64::from(active), |acc, (i, c)| acc | ((*c).min(255) as u64) << (8 * (i + 1)))
+}
+
+fn unpack_desks(v: u64) -> (u8, [usize; 4]) {
+    let c = |i: u32| ((v >> (8 * (i + 1))) & 0xFF) as usize;
+    ((v & 0xFF) as u8, [c(0), c(1), c(2), c(3)])
+}
 /// La ventana `wm-ui` (0: todavía no hay).
 static WINDOW: AtomicIsize = AtomicIsize::new(0);
 
@@ -109,8 +124,9 @@ struct Lane {
     brain: u32,
     events: Sender<TrayEvent>,
     hwnd: HWND,
+    /// El ícono actual y para qué (pausa, escritorio) se dibujó.
     icon: Option<HICON>,
-    icon_paused: Option<HICON>,
+    icon_key: (bool, u8),
     added: bool,
     taskbar_created: u32,
     command_msg: u32,
@@ -151,9 +167,11 @@ impl Tray {
     }
 
     /// El brain cambió algo que se ve en la bandeja.
-    pub fn sync(&self, paused: bool, can_undo: bool) {
-        let changed = PAUSED.swap(paused, Ordering::Relaxed)
-            != paused | (CAN_UNDO.swap(can_undo, Ordering::Relaxed) != can_undo);
+    pub fn sync(&self, paused: bool, can_undo: bool, desk: u8, counts: [usize; 4]) {
+        let packed = pack_desks(desk, counts);
+        let changed = (PAUSED.swap(paused, Ordering::Relaxed) != paused)
+            | (CAN_UNDO.swap(can_undo, Ordering::Relaxed) != can_undo)
+            | (DESKS.swap(packed, Ordering::Relaxed) != packed);
         if changed {
             post(WM_TRAY_SYNC, 0);
         }
@@ -220,8 +238,8 @@ fn run(brain: u32, events: Sender<TrayEvent>) {
         brain,
         events: events.clone(),
         hwnd,
-        icon: make_icon(false).ok(),
-        icon_paused: make_icon(true).ok(),
+        icon: make_icon(false, 1).ok(),
+        icon_key: (false, 1),
         added: false,
         taskbar_created,
         command_msg: command_message(),
@@ -332,7 +350,9 @@ impl Lane {
         match msg {
             WM_TRAY_ICON => {
                 match lparam.0 as u32 {
-                    WM_LBUTTONUP => self.order(Order::Settings),
+                    // Ella no hace clic derecho en la bandeja: el clic
+                    // izquierdo abre el mismo menú, con los escritorios.
+                    WM_LBUTTONUP => self.menu(),
                     WM_RBUTTONUP => self.menu(),
                     _ => {}
                 }
@@ -433,12 +453,28 @@ impl Lane {
         const AUTOSTART: usize = 4;
         const QUIT: usize = 5;
         const SHOW_ALL: usize = 6;
+        /// Escritorios: 11 a 14.
+        const DESK_BASE: usize = 10;
         let paused = PAUSED.load(Ordering::Relaxed);
         let can_undo = CAN_UNDO.load(Ordering::Relaxed);
         let autostart = crate::autostart::status();
         // SAFETY: menú propio, se destruye al terminar.
         unsafe {
             let Ok(menu) = CreatePopupMenu() else { return };
+            let (active, counts) = unpack_desks(DESKS.load(Ordering::Relaxed));
+            for n in 1..=4u8 {
+                let c = counts[usize::from(n - 1)];
+                let what = match c {
+                    0 => "vacío".to_owned(),
+                    1 => "1 ventana".to_owned(),
+                    c => format!("{c} ventanas"),
+                };
+                let text: Vec<u16> =
+                    format!("Escritorio {n}  ·  {what}\0").encode_utf16().collect();
+                let flags = if n == active { MF_STRING | MF_CHECKED } else { MF_STRING };
+                let _ = AppendMenuW(menu, flags, DESK_BASE + usize::from(n), PCWSTR(text.as_ptr()));
+            }
+            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
             let _ = AppendMenuW(menu, MF_STRING, SETTINGS, w!("Ajustes…"));
             let pause = if paused { w!("Reanudar atajos") } else { w!("Pausar atajos") };
             let _ = AppendMenuW(menu, MF_STRING, PAUSE, pause);
@@ -472,6 +508,9 @@ impl Lane {
                 PAUSE => self.order(if paused { Order::Resume } else { Order::Pause }),
                 UNDO => self.order(Order::Undo),
                 SHOW_ALL => self.order(Order::ShowAll),
+                id @ 11..=14 => {
+                    self.send(TrayEvent::Command(Command::Desk((id - DESK_BASE) as u8)))
+                }
                 AUTOSTART => self.order(Order::ToggleAutostart),
                 QUIT => self.order(Order::Quit),
                 _ => {}
@@ -512,20 +551,41 @@ impl Lane {
         )));
     }
 
-    fn data(&self, flags: NOTIFY_ICON_DATA_FLAGS) -> NOTIFYICONDATAW {
+    /// El ícono para el estado de ahora (se redibuja si cambió).
+    fn current_icon(&mut self) -> HICON {
         let paused = PAUSED.load(Ordering::Relaxed);
+        let (desk, _) = unpack_desks(DESKS.load(Ordering::Relaxed));
+        let key = (paused, desk);
+        if (self.icon.is_none() || self.icon_key != key)
+            && let Ok(new) = make_icon(paused, desk)
+        {
+            if let Some(old) = self.icon.replace(new) {
+                // SAFETY: ícono propio que ya no se usa.
+                let _ = unsafe { DestroyIcon(old) };
+            }
+            self.icon_key = key;
+        }
+        self.icon.unwrap_or_default()
+    }
+
+    fn data(&mut self, flags: NOTIFY_ICON_DATA_FLAGS) -> NOTIFYICONDATAW {
+        let paused = PAUSED.load(Ordering::Relaxed);
+        let (desk, _) = unpack_desks(DESKS.load(Ordering::Relaxed));
         let mut d = NOTIFYICONDATAW {
             cbSize: size_of::<NOTIFYICONDATAW>() as u32,
             hWnd: self.hwnd,
             uID: 1,
             uFlags: flags,
             uCallbackMessage: WM_TRAY_ICON,
-            hIcon: if paused { self.icon_paused } else { self.icon }.unwrap_or_default(),
+            hIcon: self.current_icon(),
             ..Default::default()
         };
-        let tip =
-            if paused { "wm: atajos en pausa" } else { "wm: mantené Caps para ver los atajos" };
-        put(&mut d.szTip, tip);
+        let tip = if paused {
+            format!("wm: atajos en pausa · escritorio {desk}")
+        } else {
+            format!("wm: escritorio {desk} · mantené Caps para ver los atajos")
+        };
+        put(&mut d.szTip, &tip);
         d
     }
 
@@ -556,8 +616,8 @@ impl Lane {
             notify(NIM_DELETE, &d);
             self.added = false;
         }
-        for icon in [self.icon.take(), self.icon_paused.take()].into_iter().flatten() {
-            // SAFETY: íconos propios.
+        if let Some(icon) = self.icon.take() {
+            // SAFETY: ícono propio.
             let _ = unsafe { DestroyIcon(icon) };
         }
     }
@@ -633,7 +693,30 @@ fn notify(message: NOTIFY_ICON_MESSAGE, data: &NOTIFYICONDATAW) -> bool {
 /// cuadrado redondeado con la mitad izquierda llena (una ventana acomodada
 /// a la izquierda); en pausa, solo el contorno. Blanco sobre una barra
 /// oscura, negro sobre una clara.
-fn make_icon(paused: bool) -> windows::core::Result<HICON> {
+/// Dígitos 1-4 en 5 × 7 (filas de arriba a abajo; bit 4 = columna izquierda).
+const DIGITS: [[u8; 7]; 4] = [
+    [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+    [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111],
+    [0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110],
+    [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
+];
+
+/// ¿El píxel `(x, y)` del ícono de lado `n` es parte del dígito `desk`?
+fn digit_pixel(desk: u8, n: usize, x: usize, y: usize) -> bool {
+    let Some(glyph) = DIGITS.get(usize::from(desk.max(1)) - 1) else { return false };
+    let m = n / 8;
+    let inner = n - 2 * m;
+    let s = (inner / 9).max(1); // escala del dígito
+    let (gw, gh) = (5 * s, 7 * s);
+    let (ox, oy) = ((n - gw) / 2, (n - gh) / 2);
+    if x < ox || y < oy || x >= ox + gw || y >= oy + gh {
+        return false;
+    }
+    let (cx, cy) = ((x - ox) / s, (y - oy) / s);
+    glyph[cy] & (0b10000 >> cx) != 0
+}
+
+fn make_icon(paused: bool, desk: u8) -> windows::core::Result<HICON> {
     // SAFETY: sin precondiciones.
     let n = unsafe { GetSystemMetrics(SM_CXSMICON) }.clamp(16, 64) as usize;
     let light = crate::session::light_taskbar();
@@ -642,7 +725,6 @@ fn make_icon(paused: bool) -> windows::core::Result<HICON> {
     let m = n / 8; // margen
     let t = (n / 16).max(1); // grosor del contorno
     let (lo, hi) = (m, n - m); // [lo, hi)
-    let mid = n / 2;
     for y in 0..n {
         for x in 0..n {
             if x < lo || x >= hi || y < lo || y >= hi {
@@ -653,9 +735,12 @@ fn make_icon(paused: bool) -> windows::core::Result<HICON> {
             if corner {
                 continue;
             }
+            // Activo: cuadrado lleno con el número calado. En pausa: solo el
+            // contorno, con el número dibujado.
             let edge = x < lo + t || x >= hi - t || y < lo + t || y >= hi - t;
-            let fill = !paused && x < mid;
-            if edge || fill {
+            let digit = digit_pixel(desk, n, x, y);
+            let on = if paused { edge || digit } else { !digit };
+            if on {
                 let i = (y * n + x) * 4;
                 px[i..i + 4].copy_from_slice(&[b, g, r, 0xFF]);
             }
@@ -674,5 +759,44 @@ fn make_icon(paused: bool) -> windows::core::Result<HICON> {
         let _ = DeleteObject(color.into());
         let _ = DeleteObject(mask.into());
         icon
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// El número del escritorio entra en el ícono a 16 y a 24 px.
+    #[test]
+    fn digits_fit_in_the_icon() {
+        for n in [16usize, 24, 32] {
+            for desk in 1..=4u8 {
+                let lit = (0..n * n).filter(|i| digit_pixel(desk, n, i % n, i / n)).count();
+                assert!(lit >= 10, "dígito {desk} a {n} px: {lit} píxeles");
+                // Ningún píxel del dígito en el margen.
+                let m = n / 8 + (n / 16).max(1);
+                for y in 0..n {
+                    for x in 0..n {
+                        if digit_pixel(desk, n, x, y) {
+                            assert!(
+                                x >= m && y >= m && x < n - m && y < n - m,
+                                "{desk} {n}: ({x}, {y})"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // Para mirar: el 2 a 16 px.
+        for y in 0..16 {
+            let row: String =
+                (0..16).map(|x| if digit_pixel(2, 16, x, y) { '#' } else { '.' }).collect();
+            println!("{row}");
+        }
+    }
+
+    #[test]
+    fn desks_pack_and_unpack() {
+        assert_eq!(unpack_desks(pack_desks(3, [5, 0, 2, 300])), (3, [5, 0, 2, 255]));
     }
 }

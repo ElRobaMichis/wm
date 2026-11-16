@@ -81,10 +81,8 @@ const WINDOW_KEYS: [(char, &str); 9] = [
     ('V', "achicar"),
 ];
 
-const APPS_FOOTER: &str =
-    "letra = ir a la app  ·  número = escritorio  ·  Alt = acomodar la ventana";
-const WINDOW_FOOTER: &str =
-    "dos juntas = esquina  ·  repetir = otro monitor  ·  Z = deshacer  ·  número = llevar";
+const APPS_FOOTER: &str = "letra = ir a la app  ·  número = escritorio  ·  Alt = acomodar  ·  arrastrar con el mouse = mover la ventana";
+const WINDOW_FOOTER: &str = "dos juntas = esquina  ·  repetir = otro monitor  ·  Z = deshacer  ·  número = llevar  ·  clic derecho + arrastrar = tamaño";
 
 fn shorten(s: &str) -> String {
     if s.chars().count() <= LABEL_MAX {
