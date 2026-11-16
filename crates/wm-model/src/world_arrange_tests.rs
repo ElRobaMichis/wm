@@ -24,6 +24,8 @@ struct FakeWin {
     /// DPI con el que se dibuja ahora (los bordes crecen con la escala).
     dpi: u32,
     maximized: bool,
+    /// Marco al que vuelve al restaurarla (Windows lo recuerda).
+    restore: Rect,
     min_width: i32,
     /// Milisegundos que tarda la app en aplicar un pedido.
     lag_ms: u64,
@@ -77,6 +79,7 @@ impl Sim {
             margins: (7, 0, 7, 7),
             dpi: 96,
             maximized: false,
+            restore: Rect::new(300, 200, 1100, 800),
             min_width: 0,
             lag_ms: 0,
         };
@@ -168,6 +171,19 @@ impl Sim {
                         Effect::Normalize { win } => {
                             assert_eq!(win, self.win.key);
                             self.normalized = true;
+                            if self.win.maximized {
+                                self.win.maximized = false;
+                                self.win.frame = self.win.restore;
+                            }
+                        }
+                        Effect::Maximize { win } => {
+                            assert_eq!(win, self.win.key);
+                            if !self.win.maximized {
+                                let m = monitor_of(&self.monitors, self.win.frame).unwrap();
+                                self.win.restore = self.win.frame;
+                                self.win.maximized = true;
+                                self.win.frame = self.monitors[m].work;
+                            }
                         }
                         Effect::Log(line) => self.logs.push(line),
                         other => panic!("efecto inesperado: {other:?}"),
@@ -598,4 +614,118 @@ fn permutations(keys: &[u8]) -> Vec<Vec<u8>> {
         }
     }
     out
+}
+
+// ---- F, C y Z (hito 1c) ----
+
+#[test]
+fn f_maximizes_and_f_again_goes_back() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    let start = sim.win.frame;
+    sim.key(&mut w, b'F');
+    assert!(sim.win.maximized);
+    sim.key(&mut w, b'F');
+    assert!(!sim.win.maximized);
+    assert_eq!(sim.win.frame, start, "vuelve al tamaño anterior");
+}
+
+#[test]
+fn c_centers_then_cycles_60_80_and_back_to_the_original_size() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    let (ww, hh) = (sim.win.frame.width(), sim.win.frame.height());
+    sim.key(&mut w, b'C');
+    assert_eq!(sim.win.frame, crate::place::centered(work(), ww, hh), "centrada, mismo tamaño");
+    sim.key(&mut w, b'C');
+    assert_eq!(sim.win.frame, crate::place::centered_percent(work(), 60));
+    sim.key(&mut w, b'C');
+    assert_eq!(sim.win.frame, crate::place::centered_percent(work(), 80));
+    sim.key(&mut w, b'C');
+    assert_eq!(sim.win.frame, crate::place::centered(work(), ww, hh), "vuelve al original");
+}
+
+#[test]
+fn c_on_an_already_centered_window_starts_at_60() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.win.frame = crate::place::centered(work(), 900, 700);
+    sim.key(&mut w, b'C');
+    assert_eq!(sim.win.frame, crate::place::centered_percent(work(), 60));
+}
+
+#[test]
+fn z_undoes_every_kind_of_move_in_order() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    let start = sim.win.frame;
+    sim.key(&mut w, b'A'); // mitad izquierda
+    sim.key(&mut w, b'W'); // esquina
+    sim.chord(&mut w, b"SD", true); // un acorde: una sola entrada
+    sim.key(&mut w, b'D'); // empuja al monitor 1
+    sim.key(&mut w, b'C'); // centrada
+    sim.key(&mut w, b'F'); // maximizada
+    sim.key(&mut w, b'Z'); // deshace F
+    assert!(!sim.win.maximized);
+    sim.key(&mut w, b'Z'); // deshace C: vuelve a ↙ del monitor 1
+    assert!(sim.is_at(1, P::BottomLeft), "{:?}", sim.logs);
+    sim.key(&mut w, b'Z'); // deshace el empuje: ↘ del monitor 0
+    assert!(sim.is_at(0, P::BottomRight), "{:?}", sim.logs);
+    sim.key(&mut w, b'Z'); // deshace el acorde S + D (una sola Z): ↖
+    assert!(sim.is_at(0, P::TopLeft), "{:?}", sim.logs);
+    sim.key(&mut w, b'Z');
+    assert!(sim.is_at(0, P::LeftHalf));
+    sim.key(&mut w, b'Z');
+    assert_eq!(sim.win.frame, start, "volvió al principio");
+    sim.key(&mut w, b'Z');
+    assert!(sim.logs.last().unwrap().contains("no hay nada para deshacer"));
+}
+
+#[test]
+fn after_undo_the_next_key_counts_from_the_restored_corner() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.at(0, P::BottomRight);
+    sim.key(&mut w, b'C');
+    sim.key(&mut w, b'Z'); // vuelve a ↘
+    assert!(sim.is_at(0, P::BottomRight));
+    sim.key(&mut w, b'W'); // desde ↘: un escalón arriba = mitad derecha
+    assert!(sim.is_at(0, P::RightHalf), "{:?}", sim.logs);
+}
+
+#[test]
+fn z_restores_a_maximized_window() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.key(&mut w, b'F');
+    sim.key(&mut w, b'A'); // sale de maximizada a la mitad izquierda
+    assert!(sim.is_at(0, P::LeftHalf));
+    sim.key(&mut w, b'Z');
+    assert!(sim.win.maximized, "vuelve a estar maximizada");
+}
+
+#[test]
+fn z_skips_windows_that_no_longer_exist() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.key(&mut w, b'A');
+    sim.key(&mut w, b'D');
+    let effects = w.step(arrange(b'Z', 0), sim.now); // pide la ventana de la última entrada
+    let Effect::Inspect { req, win } = effects[0] else { panic!("{effects:?}") };
+    assert_eq!(win, Some(sim.win.key));
+    // La ventana "ya no existe": salta a la anterior en la misma tecla.
+    let effects =
+        w.step(Event::Inspected { req, result: Err("la ventana ya no existe".into()) }, sim.now);
+    assert!(matches!(effects[0], Effect::Inspect { .. }), "pide la entrada anterior: {effects:?}");
+}
+
+#[test]
+fn opposite_keys_leave_nothing_to_undo() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.at(0, P::TopLeft);
+    sim.chord(&mut w, b"AD", false); // A mueve, D anula: vuelve a ↖
+    assert!(sim.is_at(0, P::TopLeft));
+    sim.key(&mut w, b'Z');
+    assert!(sim.logs.last().unwrap().contains("no hay nada para deshacer"), "{:?}", sim.logs);
 }

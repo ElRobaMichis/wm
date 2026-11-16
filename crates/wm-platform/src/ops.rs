@@ -83,6 +83,8 @@ pub enum Op {
     Inspect(Option<(WindowId, u32)>),
     /// Sacar de maximizada o minimizada sin activar (asíncrono).
     Normalize(WindowId),
+    /// Maximizar (asíncrono).
+    Maximize(WindowId),
     /// Esconder con un método.
     Hide { id: WindowId, method: HideMethod },
     /// Mostrar una ventana escondida por nosotros (con el método de su marca).
@@ -103,7 +105,7 @@ impl Op {
         match self {
             // `activate` puede esperar hasta 2 × 50 ms a que cambie el foco.
             Op::Focus(..) => Duration::from_millis(300),
-            Op::Place { .. } | Op::Scan | Op::Inspect(_) | Op::Normalize(_) => {
+            Op::Place { .. } | Op::Scan | Op::Inspect(_) | Op::Normalize(_) | Op::Maximize(_) => {
                 Duration::from_millis(50)
             }
             Op::Hide { method: HideMethod::ShellCloak, .. } | Op::Unhide(_) => {
@@ -364,9 +366,12 @@ fn route(op: &Op) -> Lane {
     let cloaked = |id: &WindowId| hide::hidden_with(*id) == Some(HideMethod::ShellCloak);
     match op {
         Op::Focus(..) => Lane::Focus,
-        Op::Place { .. } | Op::Scan | Op::Launch(_) | Op::Inspect(_) | Op::Normalize(_) => {
-            Lane::Win
-        }
+        Op::Place { .. }
+        | Op::Scan
+        | Op::Launch(_)
+        | Op::Inspect(_)
+        | Op::Normalize(_)
+        | Op::Maximize(_) => Lane::Win,
         Op::Hide { id, method } => {
             if *method == HideMethod::ShellCloak || cloaked(id) {
                 Lane::Shell
@@ -485,6 +490,7 @@ impl Context {
             }
             Op::Inspect(target) => windows_list::inspect(*target).map(Output::Inspection),
             Op::Normalize(id) => windows_list::normalize(*id).map(|()| Output::Nothing),
+            Op::Maximize(id) => windows_list::maximize(*id).map(|()| Output::Nothing),
             Op::Hide { id, method } => self.hider(*method)?.hide(*id).map(|()| Output::Nothing),
             Op::Unhide(id) => {
                 // `show` usa el método de la marca; en `win` no hace falta COM.

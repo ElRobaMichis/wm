@@ -271,6 +271,15 @@ pub fn normalize(id: WindowId) -> Result<(), String> {
     if !ok && window_pid(id) == 0 { Err("la ventana ya no existe".to_owned()) } else { Ok(()) }
 }
 
+/// Maximiza una ventana, como su botón (asíncrono: Windows recuerda el
+/// tamaño anterior para restaurarla).
+pub fn maximize(id: WindowId) -> Result<(), String> {
+    use windows::Win32::UI::WindowsAndMessaging::{SW_MAXIMIZE, ShowWindowAsync};
+    // SAFETY: pedido asíncrono a un HWND; si no existe, falla sin efectos.
+    let ok = unsafe { ShowWindowAsync(id.hwnd(), SW_MAXIMIZE) }.as_bool();
+    if !ok && window_pid(id) == 0 { Err("la ventana ya no existe".to_owned()) } else { Ok(()) }
+}
+
 pub fn foreground() -> Option<WindowId> {
     // SAFETY: sin precondiciones.
     let h = unsafe { GetForegroundWindow() };

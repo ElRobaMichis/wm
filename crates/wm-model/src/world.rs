@@ -25,13 +25,13 @@
 //! app que no responde), se acepta lo logrado. Una sola colocación en curso
 //! por ventana: la última tecla gana. Sin plazos pendientes, el brain duerme.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use crate::apps::{AppBinding, Target, resolve};
 use crate::keyboard::{HyperAction, Layer};
 use crate::place::{
-    Dir, MonitorObs, Move, chord, chord_name, chord_pushes, edge_error, mirror, monitor_of,
-    neighbor, outer_for, placement_name, slot_of, step,
+    Dir, MonitorObs, Move, centered, centered_percent, chord, chord_name, chord_pushes, edge_error,
+    mirror, monitor_of, neighbor, outer_for, placement_name, slot_of, step,
 };
 use crate::{Placement, Rect, place};
 
@@ -62,6 +62,37 @@ const CHORD_WAIT_US: u64 = 50_000;
 
 /// Error aceptado por borde.
 const TOLERANCE_PX: i32 = 1;
+
+/// Entradas del historial para deshacer (Z).
+const JOURNAL_MAX: usize = 32;
+
+/// Una entrada del historial: cómo estaba una ventana antes de un movimiento
+/// nuestro (plan-core.md §3.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Entry {
+    win: WinKey,
+    frame: Rect,
+    maximized: bool,
+    /// Gesto que la anotó: un acorde (varias teclas) es una sola entrada.
+    tag: u64,
+}
+
+/// Los pasos de centrar (C): primero sin cambiar el tamaño; repetir alterna
+/// 60 % → 80 % → tamaño original.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CenterStep {
+    Original,
+    P60,
+    P80,
+}
+
+/// El ciclo de C de una ventana, válido mientras siga donde la dejó.
+#[derive(Debug, Clone, Copy)]
+struct Centering {
+    original: (i32, i32),
+    step: CenterStep,
+    target: Rect,
+}
 
 /// Una colocación en curso.
 #[derive(Debug, Clone)]
@@ -113,6 +144,8 @@ struct Gesture {
     /// El [`Keys::id`] del gesto.
     id: u64,
     win: WinKey,
+    /// Estaba maximizada antes de la primera tecla (para deshacer).
+    origin_max: bool,
     /// Dónde estaba antes de la primera tecla.
     origin: Spot,
     origin_rect: Rect,
@@ -124,6 +157,8 @@ struct Gesture {
 #[derive(Debug, Clone)]
 struct Deferred {
     due_us: u64,
+    /// Para el historial: cómo estaba antes.
+    before: Entry,
     obs: Obs,
     what: String,
     key_us: u64,
@@ -233,6 +268,10 @@ pub enum Effect {
     Normalize {
         win: WinKey,
     },
+    /// Maximizarla, como el botón de la ventana.
+    Maximize {
+        win: WinKey,
+    },
     Log(String),
     /// Terminar el core (Hyper + Esc, hasta que exista la bandeja).
     Quit,
@@ -279,6 +318,21 @@ enum Pending {
         /// `true`: continúa un gesto (es la segunda tecla o más).
         continues: bool,
     },
+    /// F: maximizar o volver.
+    Full {
+        key_us: u64,
+        what: String,
+    },
+    /// C: centrar.
+    Center {
+        key_us: u64,
+        what: String,
+    },
+    /// Z: deshacer esta entrada (y, si la ventana ya no existe, la anterior).
+    Undo {
+        key_us: u64,
+        entry: Entry,
+    },
     /// Verificar una colocación.
     Verify {
         win: WinKey,
@@ -303,6 +357,10 @@ pub struct World {
     next_job: u64,
     keys: Option<Keys>,
     next_gesture: u64,
+    journal: VecDeque<Entry>,
+    /// Entrada a anotar si el próximo `go` mueve la ventana.
+    record: Option<Entry>,
+    centers: HashMap<WinKey, Centering>,
     gesture: Option<Gesture>,
     deferred: Option<Deferred>,
     /// Dónde dejamos cada ventana y qué marco logró: mientras siga igual, la
@@ -422,6 +480,19 @@ impl World {
                 Some(Pending::Verify { win, job }) => {
                     self.verify(win, job, result, now_us, &mut out)
                 }
+                Some(Pending::Full { key_us, what }) => match result {
+                    Ok(obs) => self.full(obs, what, key_us, now_us, &mut out),
+                    Err(e) => out.push(Effect::Log(format!("{what}: {e}"))),
+                },
+                Some(Pending::Center { key_us, what }) => match result {
+                    Ok(obs) => self.center(obs, what, key_us, now_us, &mut out),
+                    Err(e) => out.push(Effect::Log(format!("{what}: {e}"))),
+                },
+                Some(Pending::Undo { key_us, entry }) => match result {
+                    Ok(obs) => self.undo(entry, obs, key_us, now_us, &mut out),
+                    // La ventana ya no existe: la entrada anterior, en la misma tecla.
+                    Err(_) => self.undo_next(key_us, &mut out),
+                },
                 _ => {}
             },
             Event::Placed { req, result } => {
@@ -485,7 +556,22 @@ impl World {
                     self.pending.insert(req, pending);
                     out.push(Effect::Inspect { req, win: None });
                 } else {
-                    out.push(Effect::Log(format!("{what}: todavía no hace nada.")));
+                    self.keys = None; // F, C, Z no forman acordes con las direcciones
+                    let key_us = now_us.saturating_sub(u64::from(age_ms) * 1000);
+                    match letter {
+                        b'F' => {
+                            let req = self.req();
+                            self.pending.insert(req, Pending::Full { key_us, what });
+                            out.push(Effect::Inspect { req, win: None });
+                        }
+                        b'C' => {
+                            let req = self.req();
+                            self.pending.insert(req, Pending::Center { key_us, what });
+                            out.push(Effect::Inspect { req, win: None });
+                        }
+                        b'Z' => self.undo_next(key_us, out),
+                        _ => out.push(Effect::Log(format!("{what}: todavía no hace nada."))),
+                    }
                 }
             }
             HyperAction::Digit { digit, thumb } => {
@@ -543,12 +629,21 @@ impl World {
             self.run_deferred(d, now_us, out);
         }
         let (here, here_rect) = self.locate(&obs, m);
-        self.gesture =
-            Some(Gesture { id, win: obs.key, origin: here, origin_rect: here_rect, seen: bit });
+        let origin_max = obs.maximized && !self.jobs.contains_key(&obs.key);
+        self.gesture = Some(Gesture {
+            id,
+            win: obs.key,
+            origin_max,
+            origin: here,
+            origin_rect: here_rect,
+            seen: bit,
+        });
+        let before = Entry { win: obs.key, frame: here_rect, maximized: origin_max, tag: id };
         match step(here.placement, dir) {
             Move::Stay(p) => {
                 let to = Spot { monitor: here.monitor, placement: p };
                 let what = format!("{what} → {} ({})", placement_name(p), obs.app);
+                self.record = Some(before);
                 self.go(&obs, to, place(to.monitor.work, p), what, key_us, now_us, out);
             }
             Move::Push { dir: push, enter } => {
@@ -557,6 +652,7 @@ impl World {
                 let to = n.map(|n| Spot { monitor: obs.monitors[n], placement: enter });
                 self.deferred = Some(Deferred {
                     due_us: now_us + CHORD_WAIT_US,
+                    before,
                     obs,
                     what,
                     key_us,
@@ -579,12 +675,18 @@ impl World {
         now_us: u64,
         out: &mut Vec<Effect>,
     ) {
+        let before = Entry { win: g.win, frame: g.origin_rect, maximized: g.origin_max, tag: g.id };
         let Some(target) = chord(g.seen) else {
-            // Teclas opuestas: no nombran nada; vuelve a donde estaba.
+            // Teclas opuestas: no nombran nada; vuelve a donde estaba (y el
+            // gesto no deja nada para deshacer).
+            if self.journal.back().is_some_and(|e| e.tag == g.id) {
+                self.journal.pop_back();
+            }
             let what = format!("{what} → se anulan ({})", obs.app);
             self.go(obs, g.origin, g.origin_rect, what, key_us, now_us, out);
             return;
         };
+        self.record = Some(before);
         if target != g.origin.placement {
             let to = Spot { monitor: g.origin.monitor, placement: target };
             let what = format!("{what} → {} ({})", placement_name(target), obs.app);
@@ -622,6 +724,7 @@ impl World {
                     d.obs.app
                 );
                 let rect = place(to.monitor.work, to.placement);
+                self.record = Some(d.before);
                 self.go(&d.obs, to, rect, what, d.key_us, now_us, out);
             }
             None => out.push(Effect::Log(format!(
@@ -670,6 +773,15 @@ impl World {
         now_us: u64,
         out: &mut Vec<Effect>,
     ) {
+        let record = self.record.take();
+        // Un rectángulo concreto (deshacer, centrar) que coincide con una mitad
+        // o esquina cuenta como esa ubicación para la tecla siguiente.
+        let spot = if spot.placement == Placement::Full {
+            let placement = slot_of(spot.monitor.work, target).unwrap_or(Placement::Full);
+            Spot { placement, ..spot }
+        } else {
+            spot
+        };
         if self.jobs.get(&obs.key).is_some_and(|j| j.target == target) {
             return; // ya va hacia ahí
         }
@@ -679,6 +791,9 @@ impl World {
         {
             self.placed.insert(obs.key, (spot, obs.frame));
             return; // ya está ahí
+        }
+        if let Some(entry) = record {
+            self.remember(entry);
         }
         if obs.maximized {
             out.push(Effect::Normalize { win: obs.key });
@@ -702,6 +817,132 @@ impl World {
         // La última tecla gana: la colocación anterior de esta ventana se olvida.
         self.jobs.insert(obs.key, job);
         self.send_place(obs.key, rect, out);
+    }
+
+    /// Anota una entrada en el historial (una por gesto).
+    fn remember(&mut self, entry: Entry) {
+        if self.journal.back().is_some_and(|e| e.tag == entry.tag && e.win == entry.win) {
+            return;
+        }
+        if self.journal.len() == JOURNAL_MAX {
+            self.journal.pop_front();
+        }
+        self.journal.push_back(entry);
+    }
+
+    fn fresh_tag(&mut self) -> u64 {
+        self.next_gesture += 1;
+        self.next_gesture
+    }
+
+    /// F: maximizar (como Windows); si ya está maximizada, volver al tamaño
+    /// anterior (Windows lo recuerda).
+    fn full(&mut self, obs: Obs, what: String, key_us: u64, now_us: u64, out: &mut Vec<Effect>) {
+        if obs.minimized {
+            out.push(Effect::Log(format!("{what}: la ventana está minimizada.")));
+            return;
+        }
+        let tag = self.fresh_tag();
+        self.remember(Entry { win: obs.key, frame: obs.frame, maximized: obs.maximized, tag });
+        self.jobs.remove(&obs.key); // una colocación en curso ya no vale
+        self.placed.remove(&obs.key);
+        let since = now_us.saturating_sub(key_us) as f64 / 1000.0;
+        if obs.maximized {
+            out.push(Effect::Normalize { win: obs.key });
+            out.push(Effect::Log(format!(
+                "{what} → tamaño anterior ({}), {since:.1} ms desde la tecla",
+                obs.app
+            )));
+        } else {
+            out.push(Effect::Maximize { win: obs.key });
+            out.push(Effect::Log(format!(
+                "{what} → maximizada ({}), {since:.1} ms desde la tecla",
+                obs.app
+            )));
+        }
+    }
+
+    /// C: centrar sin cambiar el tamaño; repetir alterna 60 % → 80 % →
+    /// tamaño original, siempre centrada.
+    fn center(&mut self, obs: Obs, what: String, key_us: u64, now_us: u64, out: &mut Vec<Effect>) {
+        if obs.minimized {
+            out.push(Effect::Log(format!("{what}: la ventana está minimizada.")));
+            return;
+        }
+        let Some(m) = monitor_of(&obs.monitors, obs.frame) else { return };
+        let work = obs.monitors[m].work;
+        // Seguir el ciclo si la ventana está donde la dejó la C anterior.
+        let current = self
+            .centers
+            .get(&obs.key)
+            .filter(|c| !obs.maximized && edge_error(obs.frame, c.target) <= TOLERANCE_PX)
+            .copied();
+        let (original, step) = match current {
+            Some(c) => {
+                let next = match c.step {
+                    CenterStep::Original => CenterStep::P60,
+                    CenterStep::P60 => CenterStep::P80,
+                    CenterStep::P80 => CenterStep::Original,
+                };
+                (c.original, next)
+            }
+            None if obs.maximized => {
+                ((work.width() * 60 / 100, work.height() * 60 / 100), CenterStep::P60)
+            }
+            None => {
+                let size = (obs.frame.width(), obs.frame.height());
+                // Si ya está centrada con su tamaño, el primer paso es 60 %.
+                let same = centered(work, size.0, size.1);
+                let step = if edge_error(obs.frame, same) <= TOLERANCE_PX {
+                    CenterStep::P60
+                } else {
+                    CenterStep::Original
+                };
+                (size, step)
+            }
+        };
+        let (target, label) = match step {
+            CenterStep::Original => (centered(work, original.0, original.1), "centrada"),
+            CenterStep::P60 => (centered_percent(work, 60), "centrada al 60 %"),
+            CenterStep::P80 => (centered_percent(work, 80), "centrada al 80 %"),
+        };
+        self.centers.insert(obs.key, Centering { original, step, target });
+        let spot = Spot { monitor: obs.monitors[m], placement: Placement::Full };
+        let tag = self.fresh_tag();
+        self.record = Some(Entry { win: obs.key, frame: obs.frame, maximized: obs.maximized, tag });
+        let what = format!("{what} → {label} ({})", obs.app);
+        self.go(&obs, spot, target, what, key_us, now_us, out);
+    }
+
+    /// Z: toma la última entrada del historial y pide la ventana.
+    fn undo_next(&mut self, key_us: u64, out: &mut Vec<Effect>) {
+        match self.journal.pop_back() {
+            Some(entry) => {
+                let req = self.req();
+                self.pending.insert(req, Pending::Undo { key_us, entry });
+                out.push(Effect::Inspect { req, win: Some(entry.win) });
+            }
+            None => out.push(Effect::Log("Caps + Alt + Z: no hay nada para deshacer.".into())),
+        }
+    }
+
+    /// Z: deja la ventana como estaba antes de la entrada.
+    fn undo(&mut self, entry: Entry, obs: Obs, key_us: u64, now_us: u64, out: &mut Vec<Effect>) {
+        self.centers.remove(&obs.key);
+        let what = format!("Caps + Alt + Z → deshacer ({})", obs.app);
+        if entry.maximized {
+            self.jobs.remove(&obs.key);
+            self.placed.remove(&obs.key);
+            if !obs.maximized {
+                out.push(Effect::Maximize { win: obs.key });
+            }
+            let since = now_us.saturating_sub(key_us) as f64 / 1000.0;
+            out.push(Effect::Log(format!("{what}: maximizada, {since:.1} ms desde la tecla")));
+            return;
+        }
+        let Some(m) = monitor_of(&obs.monitors, entry.frame) else { return };
+        let spot = Spot { monitor: obs.monitors[m], placement: Placement::Full };
+        self.go(&obs, spot, entry.frame, what, key_us, now_us, out);
     }
 
     fn send_place(&mut self, win: WinKey, rect: Rect, out: &mut Vec<Effect>) {
@@ -945,7 +1186,8 @@ mod tests {
                         Effect::Quit => self.quit = true,
                         Effect::Inspect { .. }
                         | Effect::Place { .. }
-                        | Effect::Normalize { .. } => {
+                        | Effect::Normalize { .. }
+                        | Effect::Maximize { .. } => {
                             panic!("la capa de apps no coloca ventanas")
                         }
                     }

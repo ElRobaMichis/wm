@@ -161,6 +161,9 @@ impl Brain {
                 Effect::Normalize { win } => {
                     self.ops.submit(Op::Normalize(WindowId(win.hwnd)));
                 }
+                Effect::Maximize { win } => {
+                    self.ops.submit(Op::Maximize(WindowId(win.hwnd)));
+                }
                 Effect::Log(line) => self.log.line(line),
                 Effect::Quit => self.quit = true,
             }

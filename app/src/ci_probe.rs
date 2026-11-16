@@ -167,6 +167,7 @@ pub fn run(args: &[String]) -> ExitCode {
             "foco",
             "wm core",
             "capa de ventana",
+            "F, C y Z",
             "empujar",
             "hook + SendInput",
             "esconder",
@@ -454,7 +455,64 @@ fn arrange_checks(r: &mut Report, id: WindowId) {
     }
     let status = if all_ok { Status::Ok } else { Status::Fail };
     r.check("capa de ventana", status, parts.join("; "));
+    fcz_checks(r, id, monitors[m].work);
     push_checks(r, id, &monitors, m);
+}
+
+/// F (maximizar y volver), C (centrar) y Z (deshacer) con el core real. Parte
+/// de la esquina de abajo a la derecha y termina ahí.
+fn fcz_checks(r: &mut Report, id: WindowId, work: wm_model::Rect) {
+    use wm_model::place::{centered, edge_error};
+    use wm_model::{Placement, place};
+    const CAPS: u8 = 0x14;
+    const ALT: u8 = 0xA4;
+    let corner = place(work, Placement::BottomRight);
+    let center = centered(work, corner.width(), corner.height());
+    let maximized = move || wm_platform::hide::is_maximized(id);
+    let at = |target: wm_model::Rect| {
+        move || {
+            !wm_platform::hide::is_maximized(id)
+                && wm_platform::ghost::frame_bounds(id).is_some_and(|f| edge_error(f, target) <= 1)
+        }
+    };
+    type Done = Box<dyn Fn() -> bool>;
+    let steps: [(u8, &str, Done); 6] = [
+        (b'F', "F → maximizada", Box::new(maximized)),
+        (b'F', "F → vuelve", Box::new(at(corner))),
+        (b'C', "C → centrada", Box::new(at(center))),
+        (b'Z', "Z → deshace C", Box::new(at(corner))),
+        (b'Z', "Z → deshace F", Box::new(maximized)),
+        (b'Z', "Z → deshace F", Box::new(at(corner))),
+    ];
+    let mut parts = Vec::new();
+    let mut all_ok = true;
+    for (k, label, done) in steps {
+        let start = Instant::now();
+        session::send_keys(&[
+            (CAPS, true),
+            (ALT, true),
+            (k, true),
+            (k, false),
+            (ALT, false),
+            (CAPS, false),
+        ]);
+        let reached = loop {
+            if done() {
+                break Some(start.elapsed());
+            }
+            if start.elapsed() > Duration::from_secs(2) {
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        all_ok &= reached.is_some();
+        parts.push(match reached {
+            Some(d) => format!("{label} en {}", ms(d)),
+            None => format!("{label}: NO"),
+        });
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    r.check("F, C y Z", if all_ok { Status::Ok } else { Status::Fail }, parts.join("; "));
 }
 
 /// Con dos monitores o más: llevar la ventana a la mitad del lado que tiene

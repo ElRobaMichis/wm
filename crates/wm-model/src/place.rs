@@ -240,6 +240,19 @@ pub fn chord_name(dirs: u8) -> String {
         .join(" + ")
 }
 
+/// Un rectángulo de `w` × `h` centrado en `work` (achicado si no entra).
+pub fn centered(work: Rect, w: i32, h: i32) -> Rect {
+    let (w, h) = (w.min(work.width()), h.min(work.height()));
+    let left = work.left + (work.width() - w) / 2;
+    let top = work.top + (work.height() - h) / 2;
+    Rect::new(left, top, left + w, top + h)
+}
+
+/// `pct` % del ancho y del alto de `work`, centrado.
+pub fn centered_percent(work: Rect, pct: i32) -> Rect {
+    centered(work, work.width() * pct / 100, work.height() * pct / 100)
+}
+
 /// Nombre de una ubicación, para el log.
 pub fn placement_name(p: Placement) -> &'static str {
     match p {
@@ -661,6 +674,14 @@ mod tests {
         assert_eq!(chord(HELD_W | HELD_A | HELD_S | HELD_D), None);
         assert_eq!(chord_pushes(P::TopLeft), vec![Dir::Left, Dir::Up]);
         assert_eq!(chord_name(HELD_A | HELD_W), "W + A");
+    }
+
+    #[test]
+    fn centering_keeps_the_size_and_fits_in_the_area() {
+        let work = Rect::new(0, 0, 1920, 1040);
+        assert_eq!(centered(work, 800, 600), Rect::new(560, 220, 1360, 820));
+        assert_eq!(centered(work, 4000, 600).width(), 1920, "más grande que el área: se achica");
+        assert_eq!(centered_percent(work, 60), Rect::new(384, 208, 1536, 832));
     }
 
     #[test]
