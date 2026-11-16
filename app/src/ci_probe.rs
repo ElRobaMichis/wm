@@ -251,10 +251,16 @@ fn open_puppets(r: &mut Report) -> Vec<WindowId> {
 }
 
 fn focus(r: &mut Report, puppets: &[WindowId]) {
-    let (mut ok, mut neutral, mut tries) = (0, 0, 0);
+    // Solo cuentan los cambios de verdad: pedir el foco para la ventana que
+    // ya lo tiene "funciona" siempre y escondería el problema.
+    let (mut ok, mut neutral, mut tries, mut already) = (0, 0, 0, 0);
     let mut times = Vec::new();
     for _ in 0..3 {
         for &id in puppets {
+            if windows_list::foreground() == Some(id) {
+                already += 1;
+                continue;
+            }
             let a = windows_list::activate(id);
             tries += 1;
             if a.ok {
@@ -268,8 +274,16 @@ fn focus(r: &mut Report, puppets: &[WindowId]) {
     }
     times.sort();
     let p50 = times.get(times.len() / 2).map_or_else(|| "-".into(), |d| ms(*d));
-    let status = if ok == tries { Status::Ok } else { Status::Fail };
-    let detail = format!("{ok}/{tries} (con tecla neutra: {neutral}), p50 {p50}");
+    let status = if tries > 0 && ok == tries { Status::Ok } else { Status::Fail };
+    let fg = match windows_list::foreground() {
+        Some(id) if puppets.contains(&id) => "un títere",
+        Some(_) => "otra ventana",
+        None => "ninguna",
+    };
+    let detail = format!(
+        "{ok}/{tries} cambios (con tecla neutra: {neutral}; ya tenía el foco: \
+         {already}), p50 {p50}; al final, el foco lo tiene {fg}"
+    );
     r.check("foco", status, detail);
 }
 
