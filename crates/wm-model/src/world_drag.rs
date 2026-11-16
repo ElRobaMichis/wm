@@ -224,5 +224,8 @@ impl World {
             Ok(_) => {} // un clic quieto: nada que anotar
             Err(e) => out.push(Effect::Log(format!("{what}: {e}."))),
         }
+        if let Some(key_us) = self.undo_after_drag.take() {
+            self.undo_next(key_us, out);
+        }
     }
 }

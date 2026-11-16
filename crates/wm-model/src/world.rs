@@ -676,6 +676,8 @@ pub struct World {
     pointer: Option<world_drag::Pointer>,
     /// El arrastre en curso: ventana, cómo estaba antes y desde cuándo.
     dragging: Option<world_drag::Dragging>,
+    /// Z llegó mientras un arrastre terminaba: se hace al terminar.
+    undo_after_drag: Option<u64>,
 }
 
 /// Tamaños que una ventana no aceptó. Antes se marcaba la ventana entera y
@@ -1750,6 +1752,12 @@ impl World {
     }
 
     fn undo_next(&mut self, key_us: u64, out: &mut Vec<Effect>) {
+        // Un arrastre que todavía termina va a anotar su entrada: Z la espera
+        // (si no, deshacía la anterior; visto en la CI).
+        if self.dragging.is_some() && self.pointer.is_none() {
+            self.undo_after_drag = Some(key_us);
+            return;
+        }
         match self.journal.pop_back() {
             Some(Entry { win, desk: Some(to), .. }) => {
                 self.start_sync(crate::desks::Goal::UndoCarry { win, to }, key_us, out);

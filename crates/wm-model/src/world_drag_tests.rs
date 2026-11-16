@@ -71,6 +71,21 @@ fn drag_to_move_and_undo() {
 }
 
 #[test]
+fn z_right_after_releasing_waits_for_the_drag_to_finish() {
+    let mut w = World::new(Vec::new());
+    let frame = Rect::new(100, 100, 900, 700);
+    let req = inspect_req(&press(&mut w, Button::Left, (500, 120), 1_000_000));
+    w.step(Event::Grabbed { req, result: Ok(grab(frame, false)) }, 1_002_000);
+    release(&mut w, Button::Left, 1_500_000);
+    // Z antes de que llegue el fin del arrastre: espera.
+    let e = w.step(Event::Command(Command::Undo), 1_501_000);
+    assert!(e.is_empty(), "{e:?}");
+    let report = DragReport { moved: true, frame: Some(Rect::new(300, 200, 1100, 800)), ms: 500 };
+    let e = w.step(Event::DragDone { win: WIN, result: Ok(report) }, 1_510_000);
+    assert!(e.iter().any(|e| matches!(e, Effect::Inspect { win: Some(WIN), .. })), "{e:?}");
+}
+
+#[test]
 fn a_still_click_is_not_recorded() {
     let mut w = World::new(Vec::new());
     let req = inspect_req(&press(&mut w, Button::Left, (500, 120), 1_000_000));
