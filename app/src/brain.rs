@@ -416,7 +416,10 @@ impl Brain {
         // Salida limpia: los escritorios no sobreviven (el próximo arranque
         // empieza con todo en el 1). Tras un pánico quedan para el relanzado.
         if forget_desks {
-            self.ops.submit(Op::ForgetDesks);
+            // También se espera (antes salía sin esperar y en la CI a veces
+            // quedaba `wm.desk` puesto).
+            let t = self.ops.submit(Op::ForgetDesks);
+            self.waits.insert(t, Wait::RestoreAtExit);
         }
         let until = Instant::now() + limit;
         while self.waits.values().any(|w| matches!(w, Wait::RestoreAtExit)) {

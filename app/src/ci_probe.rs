@@ -803,6 +803,16 @@ fn desks_check(r: &mut Report, puppets: &[WindowId]) {
     wm_platform::tray::send_order_in("ci-probe", wm_platform::tray::Order::ShowAll);
     let t = wait_for(limit, || shown(a) && hide::desk_of(a) == Some(1));
     step("Mostrar todas", t, &mut parts, &mut ok);
+    if t.is_none() {
+        // Falló una vez en la CI sin repetirse: dejar el estado para entenderlo.
+        parts.push(format!(
+            "(estado: {:?}, wm.desk {:?}, marca {:?}, al frente {})",
+            hide::visibility(a),
+            hide::desk_of(a),
+            hide::hidden_with(a),
+            windows_list::foreground() == Some(a)
+        ));
+    }
 
     // Como el clic en la barra de tareas: activar una escondida salta a su
     // escritorio (Windows la destapa y avisa FOREGROUND).
