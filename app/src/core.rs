@@ -116,6 +116,7 @@ fn banner(log: &Log, bindings: &[AppBinding], config: Option<&PathBuf>, test_mod
     log.line("  Caps + Alt + W/A/S/D   esa mitad; repetir = al otro monitor");
     log.line("  Caps + Alt + dos juntas  esquina (W + A, S + D...)");
     log.line("  Caps + Alt + F / C / Z maximizar (y volver) / centrar (60 %, 80 %) / deshacer");
+    log.line("  Caps + Alt + G / V     agrandar / achicar (10 %, pegada a su borde)");
     log.line("  Caps + Esc      salir (también Ctrl+C)");
     if test_mode {
         log.line("  MODO PRUEBA     Caps + F10 = pánico a propósito (muestra todo y sale con 3)");

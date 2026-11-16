@@ -1244,3 +1244,121 @@ fn a_second_key_later_than_the_wait_is_logged() {
     let last = sim.logs.last().unwrap();
     assert!(last.contains("la segunda tecla llegó 120 ms después"), "{last}");
 }
+
+// ---- G/V: agrandar y achicar (hito 1f) ----
+
+#[test]
+fn g_widens_a_left_half_against_the_left_edge_and_v_narrows_it() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    let work = work();
+    sim.at(0, P::LeftHalf);
+    sim.key(&mut w, b'G');
+    assert_eq!(sim.win.frame, Rect::new(0, 0, 960 + 192, work.bottom), "{:?}", sim.logs);
+    assert!(sim.logs.last().unwrap().contains("más grande, 60 % de ancho"), "{:?}", sim.logs);
+    sim.key(&mut w, b'G'); // sigue anclada a la izquierda aunque ya no es una mitad
+    assert_eq!(sim.win.frame, Rect::new(0, 0, 960 + 2 * 192, work.bottom));
+    sim.key(&mut w, b'V');
+    sim.key(&mut w, b'V');
+    assert!(sim.is_at(0, P::LeftHalf), "{:?}", sim.logs);
+}
+
+#[test]
+fn g_on_a_right_half_grows_toward_the_left() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.at(0, P::RightHalf);
+    sim.key(&mut w, b'G');
+    assert_eq!(sim.win.frame, Rect::new(1920 - 1152, 0, 1920, work().bottom));
+}
+
+#[test]
+fn g_on_a_top_half_changes_only_the_height() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.at(0, P::TopHalf);
+    sim.key(&mut w, b'G');
+    assert_eq!(sim.win.frame, Rect::new(0, 0, 1920, 516 + 103));
+    assert!(sim.logs.last().unwrap().contains("% de alto"), "{:?}", sim.logs);
+}
+
+#[test]
+fn g_on_a_corner_grows_both_ways_out_of_the_corner() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.at(0, P::BottomRight);
+    sim.key(&mut w, b'G');
+    let work = work();
+    assert_eq!(
+        sim.win.frame,
+        Rect::new(work.right - 1152, work.bottom - (516 + 103), work.right, work.bottom)
+    );
+}
+
+#[test]
+fn g_on_a_free_window_grows_around_its_center_and_stays_on_screen() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.win.frame = Rect::new(20, 300, 820, 700); // cerca del borde izquierdo
+    sim.key(&mut w, b'G');
+    let f = sim.win.frame;
+    assert_eq!((f.width(), f.height()), (800 + 192, 400 + 103));
+    assert_eq!(f.left, 0, "corrida para que entre: {f:?}");
+    assert!((f.top + f.bottom - (300 + 700)).abs() <= 1, "centrada en alto: {f:?}");
+}
+
+#[test]
+fn g_and_v_stop_at_the_limits() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.at(0, P::LeftHalf);
+    for _ in 0..5 {
+        sim.key(&mut w, b'G');
+    }
+    assert_eq!(sim.win.frame.width(), 1920, "hasta el ancho completo");
+    let places = sim.places;
+    sim.key(&mut w, b'G');
+    assert_eq!(sim.places, places);
+    assert!(sim.logs.last().unwrap().contains("tamaño máximo"), "{:?}", sim.logs);
+    for _ in 0..10 {
+        sim.key(&mut w, b'V');
+    }
+    assert_eq!(sim.win.frame.width(), 1920 * 20 / 100, "no menos del 20 %");
+    assert_eq!(sim.win.frame.left, 0, "sigue pegada a la izquierda");
+    assert!(sim.logs.last().unwrap().contains("tamaño mínimo"), "{:?}", sim.logs);
+}
+
+#[test]
+fn v_on_a_maximized_window_gives_90_percent_centered() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.key(&mut w, b'F');
+    assert!(sim.win.maximized);
+    sim.key(&mut w, b'V');
+    assert!(!sim.win.maximized);
+    let f = sim.win.frame;
+    assert_eq!((f.width(), f.height()), (1920 - 192, 1032 - 103), "{:?}", sim.logs);
+    assert_eq!(f.left, 96);
+}
+
+#[test]
+fn after_g_a_goes_back_to_the_exact_half_and_z_undoes_g() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.at(0, P::LeftHalf);
+    sim.key(&mut w, b'G');
+    sim.key(&mut w, b'A'); // no empuja al otro monitor: vuelve a la mitad
+    assert!(sim.is_at(0, P::LeftHalf), "{:?}", sim.logs);
+    sim.key(&mut w, b'G');
+    sim.key(&mut w, b'Z');
+    assert!(sim.is_at(0, P::LeftHalf), "{:?}", sim.logs);
+}
+
+#[test]
+fn g_flies_like_any_other_size_change() {
+    let mut w = flying_world();
+    let mut sim = Sim::new();
+    sim.at(0, P::LeftHalf);
+    sim.key(&mut w, b'G');
+    assert_eq!((sim.flights, sim.places), (1, 0));
+}

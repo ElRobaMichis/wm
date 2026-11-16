@@ -27,7 +27,9 @@
 //!     con cloak durante el vuelo) y aterriza visible, a tiempo;
 //! 12. **vuelo + caída**: matar el core en pleno vuelo deja la ventana con
 //!     cloak, y `restore_all` (lo que hace el guardián al relanzar) la
-//!     devuelve.
+//!     devuelve;
+//! 13. **G y V** (hito 1f): desde la mitad izquierda, G la agranda un 10 %
+//!     del área pegada al borde y V la devuelve a la mitad.
 //!
 //! "Llegó" exige además que la ventana no esté escondida: durante un vuelo,
 //! el marco real ya está en el destino pero con cloak.
@@ -183,6 +185,7 @@ pub fn run(args: &[String]) -> ExitCode {
             "capa de ventana",
             "F, C y Z",
             "empujar",
+            "G y V",
             "ventanas difíciles",
             "colgada",
             "vuelo",
@@ -490,6 +493,36 @@ fn arrange_checks(r: &mut Report, id: WindowId) {
     fcz_checks(r, id, monitors[m].work);
     push_checks(r, id, &monitors, m);
     fly_check(r, id, monitors[m].work);
+    resize_check(r, id, monitors[m].work);
+}
+
+/// Hito 1f: desde la mitad izquierda, G la agranda un 10 % del área pegada
+/// al borde izquierdo y V la devuelve a la mitad.
+fn resize_check(r: &mut Report, id: WindowId, work: wm_model::Rect) {
+    let name = "G y V";
+    let half = place(work, Placement::LeftHalf);
+    let wider =
+        wm_model::place::anchor(half, work, half.width() + work.width() / 10, half.height());
+    std::thread::sleep(Duration::from_millis(300));
+    window_chord(b'A');
+    if wait_for(Duration::from_secs(2), || landed(id, half)).is_none() {
+        r.check(name, Status::Fail, "no llegó a la mitad izquierda".into());
+        return;
+    }
+    let mut parts = Vec::new();
+    let mut ok = true;
+    for (k, target, label) in [(b'G', wider, "G → 60 % de ancho"), (b'V', half, "V → la mitad")]
+    {
+        std::thread::sleep(Duration::from_millis(300));
+        window_chord(k);
+        let got = wait_for(Duration::from_secs(2), || landed(id, target));
+        ok &= got.is_some();
+        parts.push(match got {
+            Some(d) => format!("{label} en {}", ms(d)),
+            None => format!("{label}: NO"),
+        });
+    }
+    r.check(name, if ok { Status::Ok } else { Status::Fail }, parts.join("; "));
 }
 
 /// Hito 1e: mitad izquierda → derecha es del mismo tamaño, así que vuela.

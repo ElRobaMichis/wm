@@ -144,6 +144,21 @@ enum CenterStep {
     P80,
 }
 
+/// G/V (hito 1f): cuánto cambia cada tecla y el mínimo, en porcentaje del
+/// área de trabajo.
+const SIZE_STEP_PCT: i32 = 10;
+const SIZE_MIN_PCT: i32 = 20;
+
+/// El ancla de G/V de una ventana, válida mientras siga donde la dejó: el
+/// lugar contra cuyo borde exterior crece o se achica, y qué ejes cambian.
+#[derive(Debug, Clone, Copy)]
+struct Sizing {
+    anchor: Rect,
+    x: bool,
+    y: bool,
+    target: Rect,
+}
+
 /// El ciclo de C de una ventana, válido mientras siga donde la dejó.
 #[derive(Debug, Clone, Copy)]
 struct Centering {
@@ -420,6 +435,12 @@ enum Pending {
         key_us: u64,
         what: String,
     },
+    /// G/V: agrandar (`grow`) o achicar.
+    Resize {
+        key_us: u64,
+        what: String,
+        grow: bool,
+    },
     /// C: centrar.
     Center {
         key_us: u64,
@@ -464,6 +485,7 @@ pub struct World {
     /// Entrada a anotar si el próximo `go` mueve la ventana.
     record: Option<Entry>,
     centers: HashMap<WinKey, Centering>,
+    sizing: HashMap<WinKey, Sizing>,
     gesture: Option<Gesture>,
     deferred: Option<Deferred>,
     /// Dónde dejamos cada ventana y qué marco logró: mientras siga igual, la
@@ -602,6 +624,10 @@ impl World {
                     Ok(obs) => self.center(obs, what, key_us, now_us, &mut out),
                     Err(e) => out.push(Effect::Log(format!("{what}: {e}"))),
                 },
+                Some(Pending::Resize { key_us, what, grow }) => match result {
+                    Ok(obs) => self.resize(obs, grow, what, key_us, now_us, &mut out),
+                    Err(e) => out.push(Effect::Log(format!("{what}: {e}"))),
+                },
                 Some(Pending::Undo { key_us, entry }) => match result {
                     Ok(obs) => self.undo(entry, obs, key_us, now_us, &mut out),
                     // La ventana ya no existe: la entrada anterior, en la misma tecla.
@@ -672,7 +698,7 @@ impl World {
                     self.pending.insert(req, pending);
                     out.push(Effect::Inspect { req, win: None });
                 } else {
-                    self.keys = None; // F, C, Z no forman acordes con las direcciones
+                    self.keys = None; // F, C, Z, G, V no forman acordes con las direcciones
                     let key_us = now_us.saturating_sub(u64::from(age_ms) * 1000);
                     match letter {
                         b'F' => {
@@ -686,6 +712,12 @@ impl World {
                             out.push(Effect::Inspect { req, win: None });
                         }
                         b'Z' => self.undo_next(key_us, out),
+                        b'G' | b'V' => {
+                            let req = self.req();
+                            let grow = letter == b'G';
+                            self.pending.insert(req, Pending::Resize { key_us, what, grow });
+                            out.push(Effect::Inspect { req, win: None });
+                        }
                         _ => out.push(Effect::Log(format!("{what}: todavía no hace nada."))),
                     }
                 }
@@ -1074,6 +1106,89 @@ impl World {
         }
     }
 
+    /// G/V: agrandar o achicar un 10 % del área de trabajo, pegada al borde
+    /// exterior de donde está (plan-core.md, hito 1f). Una mitad izquierda o
+    /// derecha cambia el ancho; una de arriba o de abajo, el alto; una
+    /// esquina, los dos, contra la esquina; una ventana libre, los dos,
+    /// alrededor de su centro. Repetir sigue con la misma ancla aunque ya no
+    /// sea una mitad exacta. Maximizada cuenta como libre del tamaño del área.
+    fn resize(
+        &mut self,
+        obs: Obs,
+        grow: bool,
+        what: String,
+        key_us: u64,
+        now_us: u64,
+        out: &mut Vec<Effect>,
+    ) {
+        if obs.minimized {
+            out.push(Effect::Log(format!("{what}: la ventana está minimizada.")));
+            return;
+        }
+        let Some(m) = monitor_of(&obs.monitors, obs.frame) else { return };
+        let monitor = obs.monitors[m];
+        let work = monitor.work;
+        if !obs.maximized && obs.frame == monitor.bounds {
+            out.push(Effect::Log(format!("{what}: {} está en pantalla completa.", obs.app)));
+            return;
+        }
+        let (here, here_rect) = self.locate(&obs, m);
+        let here_rect = if obs.maximized { work } else { here_rect };
+        // Seguir con la misma ancla si la ventana está donde la dejó la
+        // tecla anterior; si no, el lugar donde está ahora.
+        let previous = self
+            .sizing
+            .get(&obs.key)
+            .filter(|s| !obs.maximized && edge_error(here_rect, s.target) <= TOLERANCE_PX)
+            .copied();
+        let (anchor_rect, x, y) = match previous {
+            Some(s) => (s.anchor, s.x, s.y),
+            None => match here.placement {
+                Placement::LeftHalf | Placement::RightHalf => {
+                    (place(work, here.placement), true, false)
+                }
+                Placement::TopHalf | Placement::BottomHalf => {
+                    (place(work, here.placement), false, true)
+                }
+                Placement::Full => (here_rect, true, true),
+                corner => (place(work, corner), true, true),
+            },
+        };
+        let size = |current: i32, total: i32, on: bool| {
+            if !on {
+                return current;
+            }
+            let step = total * SIZE_STEP_PCT / 100;
+            let next = if grow { current + step } else { current - step };
+            next.clamp(total * SIZE_MIN_PCT / 100, total)
+        };
+        let w = size(here_rect.width(), work.width(), x);
+        let h = size(here_rect.height(), work.height(), y);
+        if (w, h) == (here_rect.width(), here_rect.height()) {
+            let limit = if grow {
+                "ya está en el tamaño máximo"
+            } else {
+                "ya está en el tamaño mínimo"
+            };
+            out.push(Effect::Log(format!("{what}: {limit} ({}).", obs.app)));
+            return;
+        }
+        let target = fit_inside(anchor(anchor_rect, work, w, h), work);
+        self.sizing.insert(obs.key, Sizing { anchor: anchor_rect, x, y, target });
+        let pct = |a: i32, b: i32| (f64::from(a) * 100.0 / f64::from(b)).round() as i32;
+        let label = match (x, y) {
+            (true, false) => format!("{} % de ancho", pct(w, work.width())),
+            (false, true) => format!("{} % de alto", pct(h, work.height())),
+            _ => format!("{} % × {} %", pct(w, work.width()), pct(h, work.height())),
+        };
+        let verb = if grow { "más grande" } else { "más chica" };
+        let tag = self.fresh_tag();
+        self.record = Some(Entry { win: obs.key, frame: obs.frame, maximized: obs.maximized, tag });
+        let spot = Spot { monitor, placement: Placement::Full };
+        let what = format!("{what} → {verb}, {label} ({})", obs.app);
+        self.go(&obs, spot, target, what, key_us, now_us, out);
+    }
+
     /// C: centrar sin cambiar el tamaño; repetir alterna 60 % → 80 % →
     /// tamaño original, siempre centrada.
     fn center(&mut self, obs: Obs, what: String, key_us: u64, now_us: u64, out: &mut Vec<Effect>) {
@@ -1383,6 +1498,26 @@ impl World {
 /// identifica por su rectángulo).
 fn index_of(monitors: &[MonitorObs], m: MonitorObs) -> Option<usize> {
     monitors.iter().position(|x| x.bounds == m.bounds)
+}
+
+/// Corre `r` lo mínimo para que entre en `area` (sin cambiar el tamaño, si
+/// entra).
+fn fit_inside(r: Rect, area: Rect) -> Rect {
+    let dx = if r.left < area.left {
+        area.left - r.left
+    } else if r.right > area.right {
+        (area.right - r.right).max(area.left - r.left)
+    } else {
+        0
+    };
+    let dy = if r.top < area.top {
+        area.top - r.top
+    } else if r.bottom > area.bottom {
+        (area.bottom - r.bottom).max(area.top - r.top)
+    } else {
+        0
+    };
+    Rect::new(r.left + dx, r.top + dy, r.right + dx, r.bottom + dy)
 }
 
 fn is_corner(p: Placement) -> bool {

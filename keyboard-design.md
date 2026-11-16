@@ -272,7 +272,7 @@ Un modificador **exclusivo** del gestor, así no choca con nada. Por defecto es 
 
 | Atajo | Acción | Por qué |
 |---|---|---|
-| **Hyper + pulgar + G / V** | **Agrandar / achicar** la ventana un paso (por ejemplo, 10 %) | G = **G**rande / **G**row; V queda debajo. **A validar** |
+| **Hyper + pulgar + G / V** | **Agrandar / achicar** la ventana un paso de 10 %, pegada al borde exterior de donde está (hecho en el hito 1f, plan-core.md) | G = **G**rande / **G**row; V queda debajo. **A validar con la usuaria** |
 | **Hyper + pulgar + T** | **Tiling sí/no** para esta ventana (anclar o flotar) | Significado ("tile") |
 | **Hyper + pulgar + R** | **Restaurar** el layout guardado del escritorio actual | Significado |
 | **Hyper + pulgar + X** | **Cerrar** la ventana (no la app) | Símbolo ✕. **Desactivado por defecto** para evitar accidentes |
