@@ -628,7 +628,7 @@ impl World {
                 // Cualquier acción (también una descartada) suprime el mapa si
                 // todavía no se ve; Esc con el mapa visible solo lo cierra.
                 let mut m = Vec::new();
-                let consumed = self.map.on_action(action == HyperAction::Escape, &mut m);
+                let consumed = self.map.on_action(action == HyperAction::Escape, now_us, &mut m);
                 self.map_effects(m, &mut out);
                 if consumed {
                     return out;

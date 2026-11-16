@@ -9,15 +9,18 @@
 //! - Con el mapa visible, una acción no lo cierra (D7); Esc sí, y en ese caso
 //!   no sale del programa.
 //! - Se oculta al soltar Hyper, con cualquier reinicio del teclado y, como
-//!   tope, a los [`MAP_MAX_US`] (además pide reiniciar el teclado: si se perdió
-//!   "Caps arriba", Hyper no puede quedar trabado).
+//!   tope, a los [`MAP_MAX_US`] **sin actividad** (además pide reiniciar el
+//!   teclado: si se perdió "Caps arriba", Hyper no puede quedar trabado).
+//!   Cada acción o cambio de capa con el mapa visible renueva el plazo: en la
+//!   prueba del usuario, contar desde que apareció reiniciaba el teclado en
+//!   pleno uso (Caps mantenida acomodando ventanas más de 30 s).
 //!
 //! Invariante (prueba de propiedad en `world_map_tests`): mapa visible ⇒
 //! Hyper abajo; toda secuencia termina con el mapa oculto.
 
 use crate::keyboard::{Layer, MAP_DELAY_MS};
 
-/// Tope de un mapa visible.
+/// Tope de un mapa visible sin actividad.
 pub const MAP_MAX_US: u64 = 30_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -96,13 +99,14 @@ impl Map {
             self.reset(out);
             self.state = armed;
         } else if self.visible() {
+            self.state = MapState::Visible { until_us: now_us + MAP_MAX_US };
             out.push(MapOut::Layer(layer));
         }
     }
 
     /// Llegó una acción de Hyper. Devuelve `true` si el mapa la consumió (Esc
     /// con el mapa visible: lo cierra y no sale del programa).
-    pub fn on_action(&mut self, escape: bool, out: &mut Vec<MapOut>) -> bool {
+    pub fn on_action(&mut self, escape: bool, now_us: u64, out: &mut Vec<MapOut>) -> bool {
         match self.state {
             MapState::Armed { .. } => {
                 self.state = MapState::Suppressed;
@@ -112,6 +116,11 @@ impl Map {
                 self.state = MapState::Suppressed;
                 out.push(MapOut::Hide);
                 true
+            }
+            MapState::Visible { .. } => {
+                // Hyper sigue abajo de verdad: se renueva el tope.
+                self.state = MapState::Visible { until_us: now_us + MAP_MAX_US };
+                false
             }
             _ => false,
         }

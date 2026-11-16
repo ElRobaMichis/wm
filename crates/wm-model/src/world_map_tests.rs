@@ -204,6 +204,28 @@ fn the_map_gives_up_after_30_seconds_and_resets_the_keyboard() {
 }
 
 #[test]
+fn using_the_map_for_more_than_30_seconds_does_not_reset_the_keyboard() {
+    // Prueba del usuario: Caps mantenida más de 30 s acomodando ventanas con
+    // el mapa visible; el tope reiniciaba el teclado en pleno uso.
+    let mut r = Rig::new();
+    r.key(VK_CAPITAL, true);
+    r.wait(500);
+    assert!(r.visible());
+    for _ in 0..6 {
+        r.wait(10_000);
+        r.key(VK_LMENU, true);
+        r.key(b'A', true);
+        r.key(b'A', false);
+        r.key(VK_LMENU, false);
+    }
+    assert!(r.visible(), "60 s en uso: sigue visible");
+    assert_eq!(r.resets, 0);
+    r.wait(MAP_MAX_US / MS); // 30 s sin tocar nada: ahora sí
+    assert!(!r.visible());
+    assert_eq!(r.resets, 1);
+}
+
+#[test]
 fn a_repeated_layer_after_a_silent_reset_starts_a_new_press() {
     // El hook se reinició sin avisar (modo seguro, bloqueo) con el mapa
     // visible y Caps sigue físicamente apretada: la repetición automática
