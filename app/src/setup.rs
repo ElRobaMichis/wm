@@ -100,6 +100,10 @@ pub fn run_setup(quiet: bool, tag: Option<String>) -> ExitCode {
         return ExitCode::FAILURE;
     }
     log(&format!("instalando en {}", dir.display()));
+    // Por defecto, la versión del propio instalador (su release): así se
+    // puede instalar una pre-release para probarla, y después las
+    // actualizaciones siguen desde "latest".
+    let tag = tag.or_else(|| Some(format!("v{}", crate::update::current())));
     let prepared = crate::update::prepare_with(&dir, true, tag, true);
     let v = match prepared {
         Ok(crate::update::Prepared::Ready(v)) => v,
