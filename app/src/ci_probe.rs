@@ -192,6 +192,7 @@ pub fn run(args: &[String]) -> ExitCode {
             "colgada",
             "mapa",
             "bandeja",
+            "recarga",
             "vuelo",
             "vuelo + caída",
             "hook + SendInput",
@@ -520,6 +521,8 @@ fn spawn_core() -> Result<(std::process::Child, std::sync::mpsc::Receiver<String
         .arg("core")
         // Su propia instancia: el usuario puede tener un core abierto.
         .env("WM_INSTANCE", "ci-probe")
+        // Sus propias asignaciones: no toca el apps.txt del usuario.
+        .env("APPDATA", probe_appdata())
         .env_remove("WM_TEST")
         .env_remove("WM_ANIM")
         .stdin(Stdio::null())
@@ -551,6 +554,57 @@ fn spawn_core() -> Result<(std::process::Child, std::sync::mpsc::Receiver<String
     }
 }
 
+/// La carpeta de datos del core de la sonda (vacía al empezar).
+fn probe_appdata() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join("wm-ci-probe-appdata");
+    let apps = dir.join("wm").join("apps.txt");
+    let _ = std::fs::create_dir_all(apps.parent().expect("tiene carpeta"));
+    let _ = std::fs::remove_file(&apps);
+    dir
+}
+
+/// Hito 3c: guardar `apps.txt` como lo hacen los ajustes (temporal y
+/// renombrar) → el core lo recarga solo y `Caps` + la letra nueva funciona.
+fn reload_check(r: &mut Report, lines: &std::sync::mpsc::Receiver<String>, puppets: &[WindowId]) {
+    let name = "recarga";
+    let apps = std::env::temp_dir().join("wm-ci-probe-appdata").join("wm").join("apps.txt");
+    while lines.try_recv().is_ok() {}
+    let tmp = apps.with_extension("tmp");
+    let start = Instant::now();
+    let written = std::fs::write(
+        &tmp, "q = wm
+",
+    )
+    .and_then(|()| std::fs::rename(&tmp, &apps));
+    if let Err(e) = written {
+        r.check(name, Status::Fail, format!("no se pudo escribir {}: {e}", apps.display()));
+        return;
+    }
+    let reloaded = loop {
+        match lines.recv_timeout(Duration::from_millis(50)) {
+            Ok(l) if l.starts_with("apps.txt recargado") => break Some(start.elapsed()),
+            Ok(_) => {}
+            Err(_) if start.elapsed() > Duration::from_secs(2) => break None,
+            Err(_) => {}
+        }
+    };
+    // Q = wm: los títeres son wm.exe; desde uno, va a otro.
+    let from = puppets[0];
+    let _ = windows_list::activate(from);
+    std::thread::sleep(Duration::from_millis(150));
+    session::send_hyper_chord(b'Q');
+    let focused = wait_for(Duration::from_millis(600), || {
+        windows_list::foreground().is_some_and(|fg| fg != from && puppets.contains(&fg))
+    });
+    let ok = reloaded.is_some() && focused.is_some();
+    let detail = format!(
+        "apps.txt guardado (temporal + renombrar) → recargado {}; Caps + Q → {}",
+        reloaded.map_or_else(|| "NUNCA".into(), |d| format!("a los {}", ms(d))),
+        if focused.is_some() { "otro títere (wm)" } else { "NO cambió" },
+    );
+    r.check(name, if ok { Status::Ok } else { Status::Fail }, detail);
+}
+
 /// Llegó a `target` y se ve: durante un vuelo el marco real ya está en el
 /// destino, pero con cloak.
 fn landed(id: WindowId, target: wm_model::Rect) -> bool {
@@ -563,7 +617,7 @@ fn landed(id: WindowId, target: wm_model::Rect) -> bool {
 fn core(r: &mut Report, puppets: &[WindowId]) {
     let name = "wm core";
     let started = Instant::now();
-    let (mut child, _lines) = match spawn_core() {
+    let (mut child, lines) = match spawn_core() {
         Ok(x) => x,
         Err(e) => {
             r.check(name, Status::Fail, e);
@@ -597,6 +651,7 @@ fn core(r: &mut Report, puppets: &[WindowId]) {
 
     map_checks(r, child.id());
     tray_checks(r, puppets);
+    reload_check(r, &lines, puppets);
     hard_checks(r);
     hung_check(r);
 

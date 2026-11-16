@@ -53,6 +53,8 @@ pub mod tray;
 #[cfg(windows)]
 pub mod ui;
 #[cfg(windows)]
+pub mod watch;
+#[cfg(windows)]
 mod win;
 #[cfg(windows)]
 pub mod windows_list;

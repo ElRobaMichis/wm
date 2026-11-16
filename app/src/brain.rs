@@ -124,6 +124,8 @@ pub struct Brain {
     ui: Option<Ui>,
     /// Ícono y ventana `wm-ui` (hito 3b).
     tray: Tray,
+    /// Recarga de `apps.txt` (hito 3c).
+    watch: Option<wm_platform::watch::Watch>,
     /// El modelo pidió terminar.
     pub quit: bool,
 }
@@ -144,8 +146,21 @@ impl Brain {
                 .is_none_or(|v| v != "0")
                 .then(|| Ui::start(input::current_thread_id())),
             tray: Tray::start(input::current_thread_id()),
+            watch: wm_model::apps::bindings_path()
+                .and_then(|p| wm_platform::watch::Watch::start(input::current_thread_id(), p)),
             quit: false,
         }
+    }
+
+    /// `apps.txt` cambió (lo guardaron los ajustes o se editó a mano).
+    fn collect_watch(&mut self) {
+        let Some(text) = self.watch.as_mut().and_then(|w| w.drain()) else { return };
+        let (bindings, errors) = wm_model::apps::parse_bindings(&text);
+        for e in &errors {
+            self.log.line(format!("apps.txt: {e}"));
+        }
+        self.log.line(format!("apps.txt recargado: {} asignaciones.", bindings.len()));
+        self.feed(Event::Bindings(bindings));
     }
 
     /// Órdenes de la bandeja.
@@ -438,6 +453,7 @@ impl Brain {
     pub fn collect(&mut self) {
         wm_platform::ops::rearm_wake();
         self.collect_tray();
+        self.collect_watch();
         self.collect_anim();
         self.collect_ui();
         let mut events = self.ops.expire(Instant::now());
