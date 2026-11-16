@@ -34,6 +34,8 @@ pub struct Screen {
     pub bounds: Rect,
     pub primary: bool,
     pub refresh_hz: Option<u32>,
+    /// DPI efectivo del monitor (96 = 100 %).
+    pub dpi: u32,
     /// Raíz del árbol de visuales de este monitor (coordenadas relativas).
     pub root: ContainerVisual,
     _target: DesktopWindowTarget,
@@ -67,71 +69,28 @@ impl Overlays {
         };
         let queue = create_dispatcher_queue(options)?;
         let compositor = Compositor::new()?;
-        let interop: ICompositorDesktopInterop = compositor.cast()?;
-
-        // SAFETY: registro de clase propia; el procedimiento vive siempre.
-        let instance = unsafe { HINSTANCE(GetModuleHandleW(None)?.0) };
-        let class = WNDCLASSW {
-            lpfnWndProc: Some(proc),
-            hInstance: instance,
-            lpszClassName: w!("wm-overlay"),
-            ..Default::default()
-        };
-        // SAFETY: estructura local válida (si ya estaba registrada, falla sin efectos).
-        unsafe { RegisterClassW(&class) };
-
-        let mut screens = Vec::new();
-        for m in crate::monitors() {
-            let b = m.bounds;
-            // SAFETY: ventana propia; los parámetros son válidos.
-            let hwnd = unsafe {
-                CreateWindowExW(
-                    WS_EX_NOREDIRECTIONBITMAP
-                        | WS_EX_TOPMOST
-                        | WS_EX_TOOLWINDOW
-                        | WS_EX_NOACTIVATE
-                        | WS_EX_TRANSPARENT
-                        | WS_EX_LAYERED,
-                    w!("wm-overlay"),
-                    w!("wm overlay"),
-                    WS_POPUP,
-                    b.left,
-                    b.top,
-                    b.width(),
-                    // 1 px menos que el monitor: si la ventana lo cubre entero,
-                    // el shell cree que hay una app a pantalla completa y, por
-                    // ejemplo, silencia las notificaciones (spike 5).
-                    b.height() - 1,
-                    None,
-                    None,
-                    Some(instance),
-                    None,
-                )
-            }?;
-            // Una ventana layered no se muestra hasta fijarle atributos.
-            // SAFETY: ventana propia recién creada.
-            unsafe {
-                use windows::Win32::Foundation::COLORREF;
-                use windows::Win32::UI::WindowsAndMessaging::{
-                    LWA_ALPHA, SetLayeredWindowAttributes,
-                };
-                SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA)?;
-            }
-            // SAFETY: interfaz válida y ventana propia de este hilo.
-            let target = unsafe { interop.CreateDesktopWindowTarget(hwnd, true) }?;
-            let root = compositor.CreateContainerVisual()?;
-            root.SetSize(windows_numerics::Vector2 { X: b.width() as f32, Y: b.height() as f32 })?;
-            target.SetRoot(&root)?;
-            screens.push(Screen {
-                hwnd,
-                bounds: b,
-                primary: m.primary,
-                refresh_hz: m.refresh_hz,
-                root,
-                _target: target,
-            });
-        }
+        register_class()?;
+        let screens = create_screens(&compositor)?;
         Ok(Self { compositor, screens, _queue: queue })
+    }
+
+    /// ¿Las ventanas siguen correspondiendo a los monitores de ahora (mismos
+    /// rectángulos y escalas)?
+    pub fn is_current(&self) -> bool {
+        let now = crate::monitors();
+        now.len() == self.screens.len()
+            && now.iter().zip(&self.screens).all(|(m, s)| m.bounds == s.bounds && m.dpi == s.dpi)
+    }
+
+    /// Rearma las ventanas para los monitores de ahora (se conectó o
+    /// desconectó uno, o cambió la resolución o la escala). Mismo compositor.
+    pub fn rebuild_screens(&mut self) -> windows::core::Result<()> {
+        let new = create_screens(&self.compositor)?;
+        for s in std::mem::replace(&mut self.screens, new) {
+            // SAFETY: ventanas propias, creadas en este hilo.
+            let _ = unsafe { DestroyWindow(s.hwnd) };
+        }
+        Ok(())
     }
 
     pub fn compositor(&self) -> &Compositor {
@@ -192,6 +151,78 @@ impl Drop for Overlays {
             let _ = unsafe { DestroyWindow(s.hwnd) };
         }
     }
+}
+
+fn register_class() -> windows::core::Result<()> {
+    // SAFETY: registro de clase propia; el procedimiento vive siempre.
+    let instance = unsafe { HINSTANCE(GetModuleHandleW(None)?.0) };
+    let class = WNDCLASSW {
+        lpfnWndProc: Some(proc),
+        hInstance: instance,
+        lpszClassName: w!("wm-overlay"),
+        ..Default::default()
+    };
+    // SAFETY: estructura local válida (si ya estaba registrada, falla sin efectos).
+    unsafe { RegisterClassW(&class) };
+    Ok(())
+}
+
+/// Una ventana overlay oculta por monitor, con su raíz de Composition.
+fn create_screens(compositor: &Compositor) -> windows::core::Result<Vec<Screen>> {
+    let interop: ICompositorDesktopInterop = compositor.cast()?;
+    // SAFETY: módulo actual.
+    let instance = unsafe { HINSTANCE(GetModuleHandleW(None)?.0) };
+    let mut screens = Vec::new();
+    for m in crate::monitors() {
+        let b = m.bounds;
+        // SAFETY: ventana propia; los parámetros son válidos.
+        let hwnd = unsafe {
+            CreateWindowExW(
+                WS_EX_NOREDIRECTIONBITMAP
+                    | WS_EX_TOPMOST
+                    | WS_EX_TOOLWINDOW
+                    | WS_EX_NOACTIVATE
+                    | WS_EX_TRANSPARENT
+                    | WS_EX_LAYERED,
+                w!("wm-overlay"),
+                w!("wm overlay"),
+                WS_POPUP,
+                b.left,
+                b.top,
+                b.width(),
+                // 1 px menos que el monitor: si la ventana lo cubre entero,
+                // el shell cree que hay una app a pantalla completa y, por
+                // ejemplo, silencia las notificaciones (spike 5).
+                b.height() - 1,
+                None,
+                None,
+                Some(instance),
+                None,
+            )
+        }?;
+        // Una ventana layered no se muestra hasta fijarle atributos.
+        // SAFETY: ventana propia recién creada.
+        unsafe {
+            use windows::Win32::Foundation::COLORREF;
+            use windows::Win32::UI::WindowsAndMessaging::{LWA_ALPHA, SetLayeredWindowAttributes};
+            SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA)?;
+        }
+        // SAFETY: interfaz válida y ventana propia de este hilo.
+        let target = unsafe { interop.CreateDesktopWindowTarget(hwnd, true) }?;
+        let root = compositor.CreateContainerVisual()?;
+        root.SetSize(windows_numerics::Vector2 { X: b.width() as f32, Y: b.height() as f32 })?;
+        target.SetRoot(&root)?;
+        screens.push(Screen {
+            hwnd,
+            bounds: b,
+            primary: m.primary,
+            refresh_hz: m.refresh_hz,
+            dpi: m.dpi,
+            root,
+            _target: target,
+        });
+    }
+    Ok(screens)
 }
 
 /// `CreateDispatcherQueueController` resuelta en tiempo de ejecución, para

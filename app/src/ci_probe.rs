@@ -415,7 +415,56 @@ fn map_checks(r: &mut Report, core_pid: u32) {
         if shown && kept { "sigue visible" } else { "SE CERRÓ" }
     ));
 
+    // 5. Con una app a pantalla completa al frente (un títere sin borde que
+    // cubre su monitor), el mapa no aparece.
+    if let Some(full) = fullscreen_map_check(core_pid) {
+        ok &= full;
+        parts.push(format!("pantalla completa → {}", if full { "sin mapa" } else { "APARECIÓ" }));
+    }
+
     r.check(name, if ok { Status::Ok } else { Status::Fail }, parts.join("; "));
+}
+
+/// `Some(true)` si el mapa no apareció sobre una app a pantalla completa;
+/// `None` si no se pudo armar la prueba.
+fn fullscreen_map_check(core_pid: u32) -> Option<bool> {
+    use wm_platform::puppet::find_hard_puppet;
+    let exe = std::env::current_exe().ok()?;
+    let mut child = Command::new(&exe)
+        .args(["puppet-hard", "borderless"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut id = None;
+    let _ = wait_for(Duration::from_secs(3), || {
+        id = find_hard_puppet(child.id());
+        id.is_some()
+    });
+    let result = id.and_then(|id| {
+        let frame = wm_platform::ghost::frame_bounds(id)?;
+        let (cx, cy) = ((frame.left + frame.right) / 2, (frame.top + frame.bottom) / 2);
+        let m = wm_platform::monitors().into_iter().find(|m| {
+            let b = m.bounds;
+            cx >= b.left && cx < b.right && cy >= b.top && cy < b.bottom
+        })?;
+        let _ = windows_list::place_async(id, m.bounds);
+        let _ = windows_list::activate(id);
+        wait_for(Duration::from_secs(1), || {
+            wm_platform::ghost::frame_bounds(id) == Some(m.bounds)
+        })?;
+        std::thread::sleep(Duration::from_millis(200));
+        session::send_keys(&[(CAPS, true)]);
+        let appeared =
+            wait_for(Duration::from_millis(800), || wm_platform::ui::map_visible_in(core_pid))
+                .is_some();
+        session::send_keys(&[(CAPS, false)]);
+        Some(!appeared)
+    });
+    let _ = child.kill();
+    let _ = child.wait();
+    std::thread::sleep(Duration::from_millis(150));
+    result
 }
 
 /// Lanza `wm core` y espera su banner (plazo 5 s). Las líneas del core

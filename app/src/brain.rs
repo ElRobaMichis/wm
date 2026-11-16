@@ -153,6 +153,9 @@ impl Brain {
                 }
                 UiEvent::Shown { .. } => {}
                 UiEvent::Failed(e) => self.log.line(e),
+                UiEvent::Skipped(why) => {
+                    self.log.line(format!("Mapa de teclado no mostrado: {why}."))
+                }
             }
         }
     }

@@ -51,8 +51,15 @@ pub enum UiEvent {
         ms: f64,
         monitor: usize,
     },
+    /// No se mostró a propósito (por ejemplo, un juego o video a pantalla
+    /// completa en ese monitor).
+    Skipped(&'static str),
     Failed(String),
 }
+
+/// Duración del fundido de entrada (design.md §3.4 usa 140 ms; el mapa,
+/// algo menos, para que no parezca lento).
+const FADE: Duration = Duration::from_millis(120);
 
 enum Cmd {
     Show {
@@ -249,7 +256,10 @@ impl State {
         }
         match cmd {
             Cmd::Show { layer, views, at } => match self.show(layer, views) {
-                Ok(monitor) => UiEvent::Shown { ms: at.elapsed().as_secs_f64() * 1000.0, monitor },
+                Ok(None) => UiEvent::Skipped("hay una app a pantalla completa en ese monitor"),
+                Ok(Some(monitor)) => {
+                    UiEvent::Shown { ms: at.elapsed().as_secs_f64() * 1000.0, monitor }
+                }
                 Err(e) => {
                     self.hide();
                     UiEvent::Failed(format!("no se pudo mostrar el mapa: {e}"))
@@ -278,7 +288,17 @@ impl State {
         }
     }
 
-    fn show(&mut self, layer: Layer, views: Views) -> windows::core::Result<usize> {
+    /// `Ok(None)`: no se muestra (pantalla completa).
+    fn show(&mut self, layer: Layer, views: Views) -> windows::core::Result<Option<usize>> {
+        // Se conectó o desconectó un monitor, o cambió la escala: ventanas
+        // nuevas y contenido nuevo.
+        if !self.overlays.is_current() {
+            self.overlays.rebuild_screens()?;
+            if let Ok(mut w) = WINDOWS.lock() {
+                *w = self.overlays.screens().iter().map(|s| s.hwnd.0 as isize).collect();
+            }
+            self.built = None;
+        }
         let n = self.overlays.screens().len();
         if self.built.as_ref().is_none_or(|b| b.views != views) {
             // Contenido nuevo (cambiaron las asignaciones): se rearma.
@@ -288,13 +308,16 @@ impl State {
             self.built = Some(Built { views, screens: (0..n).map(|_| None).collect() });
         }
         let i = pick_monitor(&self.overlays);
+        if fullscreen_on(&self.overlays.screens()[i].bounds) {
+            return Ok(None);
+        }
         let built = self.built.as_mut().expect("recién armado");
         if built.screens[i].is_none() {
             let s = &self.overlays.screens()[i];
             let (w, h) = (s.bounds.width() as f32, s.bounds.height() as f32);
             let c = self.overlays.compositor();
-            let apps = overlay_text::build_view(c, &s.root, w, h, &built.views[0])?;
-            let window = overlay_text::build_view(c, &s.root, w, h, &built.views[1])?;
+            let apps = overlay_text::build_view(c, &s.root, w, h, s.dpi, &built.views[0])?;
+            let window = overlay_text::build_view(c, &s.root, w, h, s.dpi, &built.views[1])?;
             built.screens[i] = Some((apps, window));
         }
         // Pulsación nueva: ninguna tecla en `accent` todavía.
@@ -303,11 +326,30 @@ impl State {
             window.light(None)?;
         }
         self.set_layer(i, layer)?;
+        self.fade_in(i)?;
         self.overlays.show_only(i);
         SHOWN.store(self.overlays.screens()[i].hwnd.0 as isize, Ordering::Release);
         self.shown = Some(i);
         self.arm_timer();
-        Ok(i)
+        Ok(Some(i))
+    }
+
+    /// Fundido de entrada (lo anima DWM); instantáneo si el sistema pide
+    /// reducir animaciones. Ocultar es siempre instantáneo: nunca queda a
+    /// medio camino.
+    fn fade_in(&self, i: usize) -> windows::core::Result<()> {
+        let root = &self.overlays.screens()[i].root;
+        if windows_list::reduced_motion() {
+            return root.SetOpacity(1.0);
+        }
+        let c = self.overlays.compositor();
+        let anim = c.CreateScalarKeyFrameAnimation()?;
+        anim.InsertKeyFrame(0.0, 0.0)?;
+        anim.InsertKeyFrame(1.0, 1.0)?;
+        anim.SetDuration(windows::Foundation::TimeSpan {
+            Duration: (FADE.as_nanos() / 100) as i64,
+        })?;
+        root.StartAnimation(&windows::core::HSTRING::from("Opacity"), &anim)
     }
 
     /// (Re)arma el autocierre: un temporizador de hilo nuevo desde ahora.
@@ -338,6 +380,15 @@ impl State {
             self.timer = 0;
         }
     }
+}
+
+/// ¿La ventana al frente cubre todo `monitor` (un juego o un video a
+/// pantalla completa)? Ahí el mapa estorbaría.
+fn fullscreen_on(monitor: &Rect) -> bool {
+    windows_list::foreground()
+        .filter(|&id| !crate::hide::is_maximized(id))
+        .and_then(ghost::frame_bounds)
+        .is_some_and(|f| f == *monitor)
 }
 
 /// El monitor de la ventana al frente; si no hay, el del puntero; si no, el

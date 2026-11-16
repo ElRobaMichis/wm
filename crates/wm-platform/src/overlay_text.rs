@@ -498,14 +498,17 @@ pub fn build_view(
     parent: &ContainerVisual,
     area_w: f32,
     area_h: f32,
+    dpi: u32,
     view: &wm_model::mapview::MapView,
 ) -> windows::core::Result<MapVisual> {
     let (kw, kh) = map_size();
     let (w, h) = (kw + 2.0 * PAD, kh + FOOTER + 2.0 * PAD);
     let container = compositor.CreateContainerVisual()?;
     container.SetSize(Vector2 { X: w, Y: h })?;
-    // Si no entra en el 90 % del monitor, se achica entero.
-    let scale = (area_w * 0.9 / w).min(area_h * 0.9 / h).min(1.0);
+    // Tamaño según la escala del monitor (las medidas están a 96 DPI); si no
+    // entra en el 90 % del monitor, se achica entero.
+    let dpi_scale = dpi.max(96) as f32 / 96.0;
+    let scale = (area_w * 0.9 / w).min(area_h * 0.9 / h).min(dpi_scale);
     container.SetScale(Vector3 { X: scale, Y: scale, Z: 1.0 })?;
     let (sw, sh) = (w * scale, h * scale);
     container.SetOffset(Vector3 { X: (area_w - sw) / 2.0, Y: (area_h - sh) / 2.0, Z: 0.0 })?;

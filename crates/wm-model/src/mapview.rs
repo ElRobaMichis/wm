@@ -17,7 +17,8 @@ use crate::settings_demo::{APP_NAMES, APPS};
 /// Las filas del teclado (QWERTY).
 pub const ROWS: [&str; 3] = ["QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"];
 
-/// Largo máximo de una etiqueta (cabe en la tecla con Geist de 14 px).
+/// Largo máximo de una etiqueta (cabe en la tecla con Geist de 14 px; si
+/// igual no entra, el dibujo la achica).
 const LABEL_MAX: usize = 11;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,10 +49,11 @@ pub struct MapView {
 
 /// Qué hace cada tecla de la capa de ventana (`Caps` + Alt).
 const WINDOW_KEYS: [(char, &str); 9] = [
-    ('W', "arriba"),
-    ('A', "izquierda"),
-    ('S', "abajo"),
-    ('D', "derecha"),
+    // Geist tiene las flechas (U+2190–2193, verificado en su tabla cmap).
+    ('W', "↑ arriba"),
+    ('A', "← izquierda"),
+    ('S', "↓ abajo"),
+    ('D', "→ derecha"),
     ('F', "maximizar"),
     ('C', "centrar"),
     ('Z', "deshacer"),
@@ -167,7 +169,7 @@ mod tests {
     #[test]
     fn the_window_layer_says_what_each_key_does() {
         let v = map_view(Layer::Window, &[], &["brave"]);
-        assert_eq!(cell(&v, 'A').label, "izquierda");
+        assert_eq!(cell(&v, 'A').label, "← izquierda");
         assert_eq!(cell(&v, 'C').label, "centrar");
         assert_eq!(cell(&v, 'B').tone, Tone::Dim, "las apps no aparecen en la capa de ventana");
         let named = v.cells.iter().filter(|c| c.tone == Tone::Open).count();
