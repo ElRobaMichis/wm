@@ -39,12 +39,14 @@ pub mod probe;
 #[cfg(windows)]
 pub mod puppet;
 #[cfg(windows)]
+pub mod session;
+#[cfg(windows)]
 mod win;
 #[cfg(windows)]
 pub mod windows_list;
 
 #[cfg(windows)]
-pub use win::{dpi_awareness, monitors, os_build};
+pub use win::{dpi_awareness, monitors, os_build, os_edition};
 
 use wm_model::Rect;
 

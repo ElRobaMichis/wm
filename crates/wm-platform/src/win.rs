@@ -25,15 +25,31 @@ fn to_rect(r: RECT) -> Rect {
 
 /// Número de build de Windows (por ejemplo, "26100"), leído del registro.
 pub fn os_build() -> Option<String> {
-    let mut buf = [0u16; 32];
-    let mut len = size_of::<[u16; 32]>() as u32;
+    current_version("CurrentBuildNumber")
+}
+
+/// Tipo, edición y versión ("Server ServerDatacenter 24H2", "Client
+/// Professional 24H2"): en la CI, `windows-latest` es Windows Server.
+pub fn os_edition() -> Option<String> {
+    let parts: Vec<String> = ["InstallationType", "EditionID", "DisplayVersion"]
+        .into_iter()
+        .filter_map(current_version)
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(" "))
+}
+
+/// Un valor de texto de `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion`.
+fn current_version(name: &str) -> Option<String> {
+    let mut buf = [0u16; 64];
+    let mut len = size_of::<[u16; 64]>() as u32;
+    let name: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
     // SAFETY: `buf` y `len` son válidos durante la llamada y `len` refleja el
-    // tamaño en bytes del buffer, como exige RegGetValueW.
+    // tamaño en bytes del buffer, como exige RegGetValueW; `name` termina en NUL.
     let status = unsafe {
         RegGetValueW(
             HKEY_LOCAL_MACHINE,
             w!(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion"),
-            w!("CurrentBuildNumber"),
+            windows::core::PCWSTR(name.as_ptr()),
             RRF_RT_REG_SZ,
             None,
             Some(buf.as_mut_ptr().cast()),

@@ -3,10 +3,12 @@
 //! Implementados: `doctor`, `version`, `core` (prototipo del spike 1),
 //! `puppet`, `hide-test` y `restore` (spike 2), `guardian`, `hidden`,
 //! `hide-hold` y `crash-test` (spike 3), `hang-puppet` y `hang-probe`
-//! (spike 4). `settings` llega más adelante.
+//! (spike 4), `ci-probe` (spike 9) y `settings` (spike 8).
 
 use std::process::ExitCode;
 
+#[cfg(windows)]
+mod ci_probe;
 #[cfg(windows)]
 mod core;
 #[cfg(windows)]
@@ -30,6 +32,8 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(2).collect();
     let command = std::env::args().nth(1);
     match command.as_deref() {
+        #[cfg(windows)]
+        Some("ci-probe") => ci_probe::run(&args),
         #[cfg(windows)]
         Some("puppet") => hide_test::run_puppets(&args),
         #[cfg(windows)]

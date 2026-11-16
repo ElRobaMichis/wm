@@ -415,7 +415,7 @@ Defensa en capas, de adentro hacia afuera:
   - la entrada se inyecta con `SendInput`.
 - **Caos:** matar el core en momentos aleatorios durante cambios de workspace; matar Explorer; colgar el títere.
 - **Resistencia:** 24 h de operaciones aleatorias vigilando handles, objetos GDI/USER y bytes privados.
-- **CI:** GitHub Actions `windows-latest` y `windows-11-arm`. Si esos runners permiten hooks, DWM y cloaking es **[A VERIFICAR]** (spike 9).
+- **CI:** GitHub Actions `windows-latest` y `windows-11-arm`. Si esos runners permiten hooks, DWM y cloaking es **[A VERIFICAR]**: la sonda `wm ci-probe` y el job `ventanas` ya están; falta correrlos en GitHub (§13.11).
   - Tienen un solo monitor a 96 DPI, así que multi-monitor, DPI mixto y frecuencias van a **una máquina propia con dos pantallas** y a una lista de pruebas manual por versión.
 - **Instalación limpia:** Windows Sandbox o una VM sin Visual C++ Redistributable.
 
@@ -1116,11 +1116,35 @@ Planteo revisado con Fable 5.2; implementado y medido el 15/11/2026.
   - accesibilidad algo peor: rol "botón" en los interruptores y una lista virtualizada.
 - **La alternativa nativa** es mejor en tamaño, RAM y accesibilidad, y conserva un solo ejecutable, pero se ve como una app de Windows 7 en modo claro.
 
+**Probado por el usuario (15/11/2026):** teclas muertas (`´` + `e` = «é» en la búsqueda), `Tab`, flechas, saltar escribiendo una letra, `Ctrl+S` y `Esc`; el mapa de teclado con Geist "se ve muy bien".
+
 **Pendiente:**
-- la decisión del usuario;
-- IME japonés, teclas muertas y alto contraste en Slint;
+- IME japonés y alto contraste en Slint;
+- Narrador, escuchado por el usuario (con `wm-bench uia` ya se verificó qué expone);
 - la medición oficial de tamaño con MSVC en la CI;
-- el IPC con el core.
+- el IPC con el core (hoy los ajustes y el core comparten `apps.txt`, pero el core lo lee solo al arrancar).
+
+### 13.11 Estado del spike 9 (noviembre 2026)
+
+**Pregunta:** ¿hooks, `SendInput`, DWM y cloaking funcionan en los runners de GitHub Actions (x64 y ARM64), o qué va a una máquina propia?
+
+**Lo que se sabe de afuera** (observaciones de otros proyectos, no garantías del servicio):
+- **`windows-latest` (x64)** es Windows Server 2025 Datacenter. El job corre como `runneradmin`, **elevado y con UAC apagado**, en la sesión de consola (la 2), con Explorer y escritorio de 1024 × 768 a 96 DPI. `SendInput` de teclado, `SetForegroundWindow` y la captura de pantalla funcionan. El mouse por `SendInput` puede no llegar.
+- **`windows-11-arm`**: la sesión es interactiva (`WinSta0`, `UserInteractive`), pero **el proceso no puede tomar el primer plano**: `SetForegroundWindow` falla, y los mantenedores lo cerraron como "no planeado" ([actions/runner-images#14049](https://github.com/actions/runner-images/issues/14049)). A veces la imagen arranca en la configuración inicial de Windows en vez del escritorio ([#14677](https://github.com/actions/runner-images/issues/14677)). Es gratis solo para repositorios públicos.
+
+**Lo que se hizo:**
+- **`wm ci-probe [--summary ARCHIVO]`** (`app/src/ci_probe.rs`): abre sus títeres en otro proceso y prueba, cada cosa con plazo, foco (9 intentos, con la tecla neutra si hace falta), hook + `SendInput` (10 acordes Caps + Q inyectados sin nuestra marca tienen que llegar al brain sin dejar teclas trabadas), las cuatro formas de esconder mirando DWM, colocar por el marco visible (≤ 1 px) y crear los overlays de Composition con el mapa. Informa el entorno (edición de Windows, sesión, estación, escritorio de entrada, elevación, shell, monitores) sin títulos de ventanas, porque el resumen de la CI es público. Un vigía de 90 s y una guarda al salir (también ante un pánico) restauran todo y cierran los títeres.
+- **`wm_platform::session`**: los datos de la sesión, y `send_hyper_chord` para inyectar como si fuera el usuario.
+- **CI, job `ventanas`** (aparte de `build`, para que un error de formato no lo tape): en x64 y ARM64, captura de la pantalla al empezar, la sonda (tabla en el resumen del job), **`crash-test cloak 50`** con 10 títeres (el guardián del spike 3 en cada commit), `wm-bench snapshot` (overlays vistos con Desktop Duplication) y las capturas como artefactos. **x64 bloquea; ARM64 informa** (`continue-on-error`) hasta ver resultados.
+
+**Medido en la PC del usuario** (Windows 11 LTSC 24H2, sin elevar): 9/9 en 2,5 s; foco 9/9 sin tecla neutra (p50 2,6 ms); 10/10 acordes con callback p99 ≤ 170 µs; las cuatro formas de esconder en < 1 ms; marco con 0 px de error; overlay en 10 ms. `crash-test` en el formato de la CI: 0 ventanas perdidas.
+
+**Pendiente (bloquea el cierre del spike):**
+- **correr la CI de verdad:** el repositorio no tiene remoto todavía. Hace falta publicarlo en GitHub (para `windows-11-arm`, como repositorio público);
+- **`rustfmt`**: el paso `cargo fmt --check` del job `build` nunca corrió y el código no pasó por `rustfmt` (no está instalado acá); seguramente falle la primera vez;
+- **MSVC**: acá se compila con GNU; la CI usa MSVC (x64 y ARM64), sin probar todavía.
+
+**Lo que ya se sabe que va a una máquina propia:** varios monitores, DPI mixto, 144/240 Hz, reposo y bloqueo (los runners tienen una sola pantalla de 1024 × 768 a 96 DPI y no se pueden suspender), y, si se confirma #14049, todo lo que dependa del foco en ARM64.
 
 ---
 

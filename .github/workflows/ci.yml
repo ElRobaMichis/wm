@@ -1,5 +1,8 @@
-# CI del spike 0 (architecture.md §13): compila, prueba y verifica que el
-# ejecutable no dependa de ninguna DLL de runtime de C (VCRUNTIME, UCRT).
+# CI (architecture.md §10 y §13):
+# - `build` (spike 0): formato, lint, pruebas, release, y que `wm.exe` no
+#   dependa del runtime de C ni importe DLL de gráficos.
+# - `ventanas` (spike 9): pruebas con ventanas reales en el escritorio del
+#   runner (foco, hook, esconder, marco DWM, overlays, guardián).
 name: CI
 
 on:
@@ -60,3 +63,75 @@ jobs:
 
       - name: Doctor
         run: target\${{ matrix.target }}\release\wm.exe doctor
+
+  # Va aparte para que un error de formato o de lint no tape estos resultados.
+  ventanas:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            required: true
+          # Sesión interactiva, pero el proceso no puede tomar el primer plano
+          # (actions/runner-images#14049) y a veces arranca en la configuración
+          # inicial de Windows (#14677): informa, pero no bloquea.
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            required: false
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ !matrix.required }}
+    timeout-minutes: 30
+    env:
+      BIN: target\${{ matrix.target }}\release
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} -p wm -p wm-bench
+
+      - name: Captura al empezar
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force ci-artifacts | Out-Null
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          $bmp.Save("ci-artifacts\inicio.png")
+
+      - name: Sonda (wm ci-probe)
+        shell: pwsh
+        run: '& "$env:BIN\wm.exe" ci-probe --summary $env:GITHUB_STEP_SUMMARY'
+
+      - name: Guardián - 50 muertes del core (wm crash-test)
+        if: success() || failure()
+        shell: pwsh
+        run: |
+          $puppets = Start-Process "$env:BIN\wm.exe" -ArgumentList 'puppet', '10' -PassThru
+          Start-Sleep -Seconds 2
+          try {
+            & "$env:BIN\wm.exe" crash-test cloak 50
+            $code = $LASTEXITCODE
+          } finally {
+            Stop-Process -Id $puppets.Id -Force -ErrorAction SilentlyContinue
+          }
+          exit $code
+
+      - name: Overlays en pantalla (wm-bench snapshot, Desktop Duplication)
+        if: success() || failure()
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          & "$env:BIN\wm-bench.exe" snapshot
+          Move-Item "$env:BIN\overlay-*.bmp" ci-artifacts -ErrorAction SilentlyContinue
+
+      - uses: actions/upload-artifact@v4
+        if: success() || failure()
+        with:
+          name: ventanas-${{ matrix.runner }}
+          path: ci-artifacts
