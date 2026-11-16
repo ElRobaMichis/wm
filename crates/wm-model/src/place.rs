@@ -28,7 +28,8 @@ impl Dir {
         }
     }
 
-    fn bit(self) -> u8 {
+    /// Su bit en la máscara de direcciones mantenidas (`keyboard::HELD_*`).
+    pub fn bit(self) -> u8 {
         match self {
             Dir::Up => HELD_W,
             Dir::Left => HELD_A,
@@ -57,6 +58,48 @@ impl Dir {
             _ => None, // ninguna, o las dos opuestas a la vez: no es una esquina clara
         }
     }
+
+    pub fn opposite(self) -> Dir {
+        match self {
+            Dir::Up => Dir::Down,
+            Dir::Left => Dir::Right,
+            Dir::Down => Dir::Up,
+            Dir::Right => Dir::Left,
+        }
+    }
+
+    /// "a la izquierda", "arriba"… (para "no hay otro monitor …").
+    pub fn toward(self) -> &'static str {
+        match self {
+            Dir::Up => "arriba",
+            Dir::Left => "a la izquierda",
+            Dir::Down => "abajo",
+            Dir::Right => "a la derecha",
+        }
+    }
+
+    /// "de la izquierda", "de arriba"… (para "monitor …").
+    pub fn of_side(self) -> &'static str {
+        match self {
+            Dir::Up => "de arriba",
+            Dir::Left => "de la izquierda",
+            Dir::Down => "de abajo",
+            Dir::Right => "de la derecha",
+        }
+    }
+
+    /// La letra de la tecla (para el log de los acordes).
+    pub fn letter(self) -> char {
+        match self {
+            Dir::Up => 'W',
+            Dir::Left => 'A',
+            Dir::Down => 'S',
+            Dir::Right => 'D',
+        }
+    }
+
+    /// Las cuatro, en el orden de las teclas W, A, S, D.
+    pub const ALL: [Dir; 4] = [Dir::Up, Dir::Left, Dir::Down, Dir::Right];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -87,6 +130,114 @@ pub fn placement_for(dir: Dir, perp: Option<Dir>) -> Placement {
         (None, Some(Dir::Right)) => Placement::RightHalf,
         _ => Placement::Full, // inalcanzable: `dir` siempre está en un eje
     }
+}
+
+// ---------------------------------------------------------------------------
+// La capa de ventana como estados (plan-core.md §3.1, versión 2)
+// ---------------------------------------------------------------------------
+//
+// Una ubicación es un costado {izquierda, todo, derecha} y una altura
+// {arriba, todo, abajo}; `Full` (todo, todo) también representa una ventana
+// libre o maximizada. Las teclas actúan según dónde está la ventana, no según
+// la tecla anterior ni el tiempo:
+//
+// - **R1, una tecla sola** ([`step`]): A/D van a ese costado conservando la
+//   altura; W/S suben o bajan un escalón (abajo → toda → arriba; entre la
+//   mitad de abajo y la de arriba, directo). Contra el borde, pasa al monitor
+//   vecino entrando por el borde opuesto y conservando el otro eje.
+// - **R2, teclas juntas** ([`chord`]): nombran los bordes que toca la
+//   ventana, calculado desde donde estaba antes de la primera tecla, así que
+//   el orden en que caen los dedos da igual. Dos opuestas se anulan.
+
+/// Costado y altura de una ubicación (`None` = todo el ancho / alto).
+pub fn split(p: Placement) -> (Option<Dir>, Option<Dir>) {
+    use Placement as P;
+    match p {
+        P::Full => (None, None),
+        P::LeftHalf => (Some(Dir::Left), None),
+        P::RightHalf => (Some(Dir::Right), None),
+        P::TopHalf => (None, Some(Dir::Up)),
+        P::BottomHalf => (None, Some(Dir::Down)),
+        P::TopLeft => (Some(Dir::Left), Some(Dir::Up)),
+        P::TopRight => (Some(Dir::Right), Some(Dir::Up)),
+        P::BottomLeft => (Some(Dir::Left), Some(Dir::Down)),
+        P::BottomRight => (Some(Dir::Right), Some(Dir::Down)),
+    }
+}
+
+/// La ubicación con ese costado y esa altura.
+pub fn join(h: Option<Dir>, v: Option<Dir>) -> Placement {
+    use Placement as P;
+    match (h, v) {
+        (Some(Dir::Left), Some(Dir::Up)) => P::TopLeft,
+        (Some(Dir::Right), Some(Dir::Up)) => P::TopRight,
+        (Some(Dir::Left), Some(Dir::Down)) => P::BottomLeft,
+        (Some(Dir::Right), Some(Dir::Down)) => P::BottomRight,
+        (Some(Dir::Left), None) => P::LeftHalf,
+        (Some(Dir::Right), None) => P::RightHalf,
+        (None, Some(Dir::Up)) => P::TopHalf,
+        (None, Some(Dir::Down)) => P::BottomHalf,
+        _ => P::Full,
+    }
+}
+
+/// Qué hace una tecla sola.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Move {
+    /// A esta ubicación del mismo monitor.
+    Stay(Placement),
+    /// Al monitor vecino en `dir`, a la ubicación `enter`.
+    Push { dir: Dir, enter: Placement },
+}
+
+/// R1: una tecla sola desde la ubicación `slot` (`Full` = libre o maximizada).
+pub fn step(slot: Placement, key: Dir) -> Move {
+    let (h, v) = split(slot);
+    if key.vertical() {
+        if v == Some(key) {
+            Move::Push { dir: key, enter: join(h, Some(key.opposite())) }
+        } else if v == Some(key.opposite()) {
+            // Un escalón: de la esquina a la mitad del costado; entre la mitad
+            // de arriba y la de abajo, directo (sin pasar por "toda").
+            Move::Stay(if h.is_some() { join(h, None) } else { join(None, Some(key)) })
+        } else {
+            Move::Stay(join(h, Some(key)))
+        }
+    } else if h == Some(key) {
+        Move::Push { dir: key, enter: join(Some(key.opposite()), v) }
+    } else {
+        Move::Stay(join(Some(key), v))
+    }
+}
+
+/// R2: la ubicación que nombran las teclas `dirs` (máscara de `HELD_*`)
+/// apretadas juntas. Dos opuestas se anulan; sin nada que nombrar, `None`.
+pub fn chord(dirs: u8) -> Option<Placement> {
+    let pick = |a: Dir, b: Dir| match (dirs & a.bit() != 0, dirs & b.bit() != 0) {
+        (true, false) => Some(a),
+        (false, true) => Some(b),
+        _ => None,
+    };
+    let (h, v) = (pick(Dir::Left, Dir::Right), pick(Dir::Up, Dir::Down));
+    (h.is_some() || v.is_some()).then(|| join(h, v))
+}
+
+/// Si un acorde nombra la ubicación donde ya estaba la ventana, empuja: estas
+/// son las direcciones a probar, en orden (primero el costado, después la
+/// altura).
+pub fn chord_pushes(target: Placement) -> Vec<Dir> {
+    let (h, v) = split(target);
+    h.into_iter().chain(v).collect()
+}
+
+/// El acorde escrito con sus teclas en orden fijo ("W + A").
+pub fn chord_name(dirs: u8) -> String {
+    Dir::ALL
+        .into_iter()
+        .filter(|d| dirs & d.bit() != 0)
+        .map(|d| d.letter().to_string())
+        .collect::<Vec<_>>()
+        .join(" + ")
 }
 
 /// Nombre de una ubicación, para el log.
@@ -362,6 +513,154 @@ mod tests {
             !on_side(Placement::TopHalf, Dir::Left),
             "la de arriba no está pegada a un costado"
         );
+    }
+
+    use Placement as P;
+
+    /// Todas las ubicaciones: libre (Full) y las ocho.
+    const ALL: [Placement; 9] = [
+        P::Full,
+        P::LeftHalf,
+        P::RightHalf,
+        P::TopHalf,
+        P::BottomHalf,
+        P::TopLeft,
+        P::TopRight,
+        P::BottomLeft,
+        P::BottomRight,
+    ];
+
+    #[test]
+    fn split_and_join_are_inverse() {
+        for p in ALL {
+            let (h, v) = split(p);
+            assert_eq!(join(h, v), p);
+        }
+    }
+
+    #[test]
+    fn the_whole_single_key_table() {
+        let push = |dir, enter| Move::Push { dir, enter };
+        use Dir::{Down as S, Left as A, Right as D, Up as W};
+        use Move::Stay;
+        // (desde, [A, D, W, S]) — plan-core.md §3.1.
+        let table: [(Placement, [Move; 4]); 9] = [
+            (
+                P::Full,
+                [Stay(P::LeftHalf), Stay(P::RightHalf), Stay(P::TopHalf), Stay(P::BottomHalf)],
+            ),
+            (
+                P::LeftHalf,
+                [push(A, P::RightHalf), Stay(P::RightHalf), Stay(P::TopLeft), Stay(P::BottomLeft)],
+            ),
+            (
+                P::RightHalf,
+                [Stay(P::LeftHalf), push(D, P::LeftHalf), Stay(P::TopRight), Stay(P::BottomRight)],
+            ),
+            (
+                P::TopHalf,
+                [Stay(P::TopLeft), Stay(P::TopRight), push(W, P::BottomHalf), Stay(P::BottomHalf)],
+            ),
+            (
+                P::BottomHalf,
+                [Stay(P::BottomLeft), Stay(P::BottomRight), Stay(P::TopHalf), push(S, P::TopHalf)],
+            ),
+            (
+                P::TopLeft,
+                [
+                    push(A, P::TopRight),
+                    Stay(P::TopRight),
+                    push(W, P::BottomLeft),
+                    Stay(P::LeftHalf),
+                ],
+            ),
+            (
+                P::TopRight,
+                [
+                    Stay(P::TopLeft),
+                    push(D, P::TopLeft),
+                    push(W, P::BottomRight),
+                    Stay(P::RightHalf),
+                ],
+            ),
+            (
+                P::BottomLeft,
+                [
+                    push(A, P::BottomRight),
+                    Stay(P::BottomRight),
+                    Stay(P::LeftHalf),
+                    push(S, P::TopLeft),
+                ],
+            ),
+            (
+                P::BottomRight,
+                [
+                    Stay(P::BottomLeft),
+                    push(D, P::BottomLeft),
+                    Stay(P::RightHalf),
+                    push(S, P::TopRight),
+                ],
+            ),
+        ];
+        for (from, moves) in table {
+            for (key, want) in [A, D, W, S].into_iter().zip(moves) {
+                assert_eq!(step(from, key), want, "{from:?} + {key:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_and_d_never_change_the_height() {
+        for p in ALL {
+            for key in [Dir::Left, Dir::Right] {
+                let to = match step(p, key) {
+                    Move::Stay(q) | Move::Push { enter: q, .. } => q,
+                };
+                assert_eq!(split(to).1, split(p).1, "{p:?} + {key:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_push_comes_back_with_the_opposite_key() {
+        for p in ALL {
+            for key in Dir::ALL {
+                if let Move::Push { dir, enter } = step(p, key) {
+                    assert_eq!(
+                        step(enter, dir.opposite()),
+                        Move::Push { dir: dir.opposite(), enter: p },
+                        "{p:?} + {key:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn single_keys_reach_every_slot_from_a_free_window() {
+        let mut seen = std::collections::HashSet::from([P::Full]);
+        let mut frontier = vec![P::Full];
+        while let Some(p) = frontier.pop() {
+            for key in Dir::ALL {
+                if let Move::Stay(q) = step(p, key)
+                    && seen.insert(q)
+                {
+                    frontier.push(q);
+                }
+            }
+        }
+        assert_eq!(seen.len(), 9, "desde una ventana libre se llega a las 8 ubicaciones");
+    }
+
+    #[test]
+    fn chords_name_borders_and_opposites_cancel() {
+        assert_eq!(chord(HELD_W | HELD_A), Some(P::TopLeft));
+        assert_eq!(chord(HELD_S | HELD_D), Some(P::BottomRight));
+        assert_eq!(chord(HELD_A | HELD_D), None, "opuestas se anulan");
+        assert_eq!(chord(HELD_W | HELD_A | HELD_D), Some(P::TopHalf));
+        assert_eq!(chord(HELD_W | HELD_A | HELD_S | HELD_D), None);
+        assert_eq!(chord_pushes(P::TopLeft), vec![Dir::Left, Dir::Up]);
+        assert_eq!(chord_name(HELD_A | HELD_W), "W + A");
     }
 
     #[test]

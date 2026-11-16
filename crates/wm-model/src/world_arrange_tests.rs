@@ -1,9 +1,13 @@
-//! Pruebas de la capa de ventana de [`World`] (hitos 1a y 1b) con una
-//! plataforma simulada: ventanas con bordes invisibles que crecen con la
-//! escala, tamaño mínimo, maximizadas, apps que tardan en moverse y que se
-//! reescalan al cruzar a un monitor con otro DPI.
+//! Pruebas de la capa de ventana de [`World`] (hitos 1a y 1b, semántica por
+//! estado de plan-core.md §3.1) con una plataforma simulada: ventanas con
+//! bordes invisibles que crecen con la escala, tamaño mínimo, maximizadas,
+//! apps que tardan en moverse y que se reescalan al cruzar a un monitor con
+//! otro DPI. La simulación entrega los eventos en orden de llegada, y puede
+//! recibir varias teclas antes de que Windows responda a la primera.
 
-use crate::keyboard::{HELD_A, HELD_W, HyperAction};
+use std::collections::VecDeque;
+
+use crate::keyboard::{HELD_A, HELD_D, HELD_S, HELD_W, HyperAction};
 use crate::place::{MonitorObs, monitor_of};
 use crate::world::{Effect, Event, Obs, WinKey, World};
 use crate::{Placement, Rect, place};
@@ -137,22 +141,29 @@ impl Sim {
         }
     }
 
+    /// Corre `event` y todo lo que desencadena, hasta que no quede nada.
     fn run(&mut self, w: &mut World, event: Event) {
-        let mut queue = vec![event];
+        self.run_many(w, vec![event]);
+    }
+
+    /// Como `run`, pero con varios eventos que llegan a la vez (antes de que
+    /// Windows responda al primero): teclas "juntas".
+    fn run_many(&mut self, w: &mut World, events: Vec<Event>) {
+        let mut queue: VecDeque<Event> = events.into();
         loop {
-            while let Some(e) = queue.pop() {
+            while let Some(e) = queue.pop_front() {
                 self.settle();
                 for effect in w.step(e, self.now) {
                     match effect {
                         Effect::Inspect { req, win } => {
                             assert!(win.is_none() || win == Some(self.win.key));
-                            queue.push(Event::Inspected { req, result: Ok(self.obs()) });
+                            queue.push_back(Event::Inspected { req, result: Ok(self.obs()) });
                         }
                         Effect::Place { req, win, rect } => {
                             assert_eq!(win, self.win.key);
                             self.places += 1;
                             self.queued.push((self.now + self.win.lag_ms * MS, rect));
-                            queue.push(Event::Placed { req, result: Ok(()) });
+                            queue.push_back(Event::Placed { req, result: Ok(()) });
                         }
                         Effect::Normalize { win } => {
                             assert_eq!(win, self.win.key);
@@ -167,11 +178,59 @@ impl Sim {
             match w.deadline() {
                 Some(t) => {
                     self.now = self.now.max(t);
-                    queue.push(Event::Tick);
+                    queue.push_back(Event::Tick);
                 }
                 None => break,
             }
         }
+    }
+
+    /// Una tecla sola y soltar el pulgar (el gesto termina).
+    fn key(&mut self, w: &mut World, letter: u8) {
+        self.run(w, arrange(letter, bit(letter)));
+        self.run(w, Event::Layer(Layer::Apps));
+        self.run(w, Event::Layer(Layer::Window));
+    }
+
+    /// Un acorde: las teclas en ese orden, cada una con las anteriores todavía
+    /// apretadas. `together`: llegan todas antes de que Windows responda.
+    fn chord(&mut self, w: &mut World, letters: &[u8], together: bool) {
+        let mut held = 0;
+        let events: Vec<Event> = letters
+            .iter()
+            .map(|&l| {
+                held |= bit(l);
+                arrange(l, held)
+            })
+            .collect();
+        if together {
+            self.run_many(w, events);
+        } else {
+            for e in events {
+                self.run(w, e);
+                self.now += 30 * MS;
+            }
+        }
+        self.run(w, Event::Layer(Layer::Apps));
+        self.run(w, Event::Layer(Layer::Window));
+    }
+
+    fn at(&mut self, m: usize, p: Placement) {
+        self.win.frame = place(self.monitors[m].work, p);
+    }
+
+    fn is_at(&self, m: usize, p: Placement) -> bool {
+        self.win.frame == place(self.monitors[m].work, p)
+    }
+}
+
+fn bit(letter: u8) -> u8 {
+    match letter {
+        b'W' => HELD_W,
+        b'A' => HELD_A,
+        b'S' => HELD_S,
+        b'D' => HELD_D,
+        _ => 0,
     }
 }
 
@@ -183,12 +242,17 @@ fn work() -> Rect {
     monitor(0).work
 }
 
+use crate::keyboard::Layer;
+use Placement as P;
+
+// ---- Una tecla sola ----
+
 #[test]
 fn left_half_lands_exactly_and_the_brain_goes_back_to_sleep() {
     let mut w = World::new(Vec::new());
     let mut sim = Sim::new();
     sim.run(&mut w, arrange(b'A', HELD_A));
-    assert_eq!(sim.win.frame, place(work(), Placement::LeftHalf));
+    assert_eq!(sim.win.frame, place(work(), P::LeftHalf));
     assert_eq!(sim.places, 1);
     assert!(sim.logs[0].contains("mitad izquierda (brave): 0 px en 1 pasada"), "{:?}", sim.logs);
     assert_eq!(w.deadline(), None, "sin plazos pendientes: 0 % de CPU");
@@ -201,48 +265,32 @@ fn the_window_stays_on_its_monitor() {
     let mut w = World::new(Vec::new());
     let mut sim = Sim::new();
     sim.win.frame = Rect::new(2200, 100, 3000, 700); // en el monitor de la derecha
-    sim.run(&mut w, arrange(b'D', 0)); // D sola
-    assert_eq!(sim.win.frame, place(monitor(1920).work, Placement::RightHalf));
+    sim.key(&mut w, b'D');
+    assert!(sim.is_at(1, P::RightHalf));
 }
 
 #[test]
-fn both_keys_held_make_a_corner() {
-    let mut w = World::new(Vec::new());
-    let mut sim = Sim::new();
-    sim.run(&mut w, arrange(b'A', HELD_W | HELD_A));
-    assert_eq!(sim.win.frame, place(work(), Placement::TopLeft));
+fn a_corner_by_state_no_matter_how_long_after() {
+    // Sin plazo: "W y, cuando sea, A" da la esquina por dónde está la ventana.
+    for gap_ms in [100, 5_000] {
+        let mut w = World::new(Vec::new());
+        let mut sim = Sim::new();
+        sim.key(&mut w, b'W');
+        assert!(sim.is_at(0, P::TopHalf));
+        sim.now += gap_ms * MS;
+        sim.key(&mut w, b'A');
+        assert!(sim.is_at(0, P::TopLeft), "a los {gap_ms} ms: {:?}", sim.logs);
+    }
 }
 
 #[test]
-fn a_perpendicular_key_within_a_second_makes_a_corner() {
+fn if_the_window_was_moved_by_hand_it_counts_from_where_it_is() {
     let mut w = World::new(Vec::new());
     let mut sim = Sim::new();
-    sim.run(&mut w, arrange(b'W', HELD_W));
-    assert_eq!(sim.win.frame, place(work(), Placement::TopHalf));
-    sim.now += 300 * MS;
-    sim.run(&mut w, arrange(b'A', HELD_A));
-    assert_eq!(sim.win.frame, place(work(), Placement::TopLeft));
-}
-
-#[test]
-fn after_a_second_it_is_a_new_half_not_a_corner() {
-    let mut w = World::new(Vec::new());
-    let mut sim = Sim::new();
-    sim.run(&mut w, arrange(b'W', HELD_W));
-    sim.now += 1_500 * MS;
-    sim.run(&mut w, arrange(b'A', HELD_A));
-    assert_eq!(sim.win.frame, place(work(), Placement::LeftHalf));
-}
-
-#[test]
-fn if_the_window_was_moved_in_between_it_is_not_a_corner() {
-    let mut w = World::new(Vec::new());
-    let mut sim = Sim::new();
-    sim.run(&mut w, arrange(b'W', HELD_W));
+    sim.key(&mut w, b'W');
     sim.win.frame = Rect::new(500, 300, 900, 700); // el usuario la movió con el mouse
-    sim.now += 200 * MS;
-    sim.run(&mut w, arrange(b'A', HELD_A));
-    assert_eq!(sim.win.frame, place(work(), Placement::LeftHalf));
+    sim.key(&mut w, b'A');
+    assert!(sim.is_at(0, P::LeftHalf), "libre + A = mitad izquierda");
 }
 
 #[test]
@@ -251,9 +299,9 @@ fn maximized_windows_are_restored_first() {
     let mut sim = Sim::new();
     sim.win.maximized = true;
     sim.win.frame = work();
-    sim.run(&mut w, arrange(b'D', 0));
+    sim.key(&mut w, b'D');
     assert!(sim.normalized);
-    assert_eq!(sim.win.frame, place(work(), Placement::RightHalf));
+    assert!(sim.is_at(0, P::RightHalf));
 }
 
 #[test]
@@ -262,7 +310,7 @@ fn slow_apps_are_checked_until_they_arrive() {
     let mut sim = Sim::new();
     sim.win.lag_ms = 100; // llega entre el chequeo de 50 y el de 120 ms
     sim.run(&mut w, arrange(b'A', HELD_A));
-    assert_eq!(sim.win.frame, place(work(), Placement::LeftHalf));
+    assert!(sim.is_at(0, P::LeftHalf));
     assert_eq!(sim.places, 1, "no hizo falta una segunda pasada");
     assert!(sim.logs[0].contains("0 px en 1 pasada"));
 }
@@ -280,83 +328,14 @@ fn minimum_size_is_accepted_after_a_second_pass() {
 }
 
 #[test]
-fn pushing_past_the_last_monitor_does_nothing() {
+fn a_window_that_could_not_shrink_still_counts_as_where_we_left_it() {
     let mut w = World::new(Vec::new());
     let mut sim = Sim::new();
-    sim.win.frame = place(work(), Placement::LeftHalf); // monitor de más a la izquierda
-    sim.run(&mut w, arrange(b'A', HELD_A));
-    assert_eq!(sim.places, 0);
-    assert!(sim.logs[0].contains("no hay otro monitor a la izquierda"), "{:?}", sim.logs);
-}
-
-#[test]
-fn repeating_a_direction_pushes_to_the_next_monitor() {
-    let mut w = World::new(Vec::new());
-    let mut sim = Sim::new();
-    sim.run(&mut w, arrange(b'D', 0)); // mitad derecha del monitor 0
-    sim.run(&mut w, arrange(b'D', 0)); // empuja: mitad izquierda del monitor 1
-    assert_eq!(sim.win.frame, place(monitor(1920).work, Placement::LeftHalf));
-    assert!(sim.logs[1].contains("monitor de la derecha, mitad izquierda"), "{:?}", sim.logs);
-    sim.run(&mut w, arrange(b'A', 0)); // vuelve: mitad derecha del monitor 0
-    assert_eq!(sim.win.frame, place(work(), Placement::RightHalf));
-}
-
-#[test]
-fn after_a_push_the_same_key_moves_within_the_monitor() {
-    // El caso que encontró el usuario: empujar y volver, y otra vez A tiene
-    // que llevar a la mitad izquierda del mismo monitor, no "no hay otro".
-    let mut w = World::new(Vec::new());
-    let mut sim = Sim::new();
-    sim.win.frame = place(monitor(1920).work, Placement::LeftHalf); // monitor 1
-    sim.run(&mut w, arrange(b'A', 0)); // empuja: mitad derecha del monitor 0
-    assert_eq!(sim.win.frame, place(work(), Placement::RightHalf));
-    sim.run(&mut w, arrange(b'A', 0)); // dentro del monitor 0: mitad izquierda
-    assert_eq!(sim.win.frame, place(work(), Placement::LeftHalf), "{:?}", sim.logs);
-    sim.run(&mut w, arrange(b'A', 0)); // ahora sí, pegada al borde y sin vecino
-    assert!(sim.logs.last().unwrap().contains("no hay otro monitor a la izquierda"));
-}
-
-#[test]
-fn from_the_opposite_corner_a_direction_goes_to_that_half() {
-    let mut w = World::new(Vec::new());
-    let mut sim = Sim::new();
-    sim.win.frame = place(work(), Placement::TopRight);
-    sim.run(&mut w, arrange(b'A', 0));
-    assert_eq!(sim.win.frame, place(work(), Placement::LeftHalf));
-}
-
-#[test]
-fn a_half_placed_by_hand_is_also_pushed() {
-    let mut w = World::new(Vec::new());
-    let mut sim = Sim::new();
-    sim.win.frame = place(work(), Placement::RightHalf); // la puso el usuario
-    sim.run(&mut w, arrange(b'D', 0));
-    assert_eq!(sim.win.frame, place(monitor(1920).work, Placement::LeftHalf));
-}
-
-#[test]
-fn repeating_on_a_corner_keeps_the_other_component() {
-    let mut w = World::new(Vec::new());
-    let mut sim = Sim::new();
-    sim.win.frame = Rect::new(2200, 100, 3000, 700); // monitor 1
-    sim.run(&mut w, arrange(b'A', HELD_W | HELD_A)); // esquina arriba a la izquierda
-    assert_eq!(sim.win.frame, place(monitor(1920).work, Placement::TopLeft));
-    sim.now += 2_000 * MS; // pasado el tiempo de combinación: igual es "repetir"
-    sim.run(&mut w, arrange(b'A', HELD_A));
-    assert_eq!(sim.win.frame, place(work(), Placement::TopRight), "{:?}", sim.logs);
-}
-
-#[test]
-fn crossing_to_a_higher_dpi_waits_for_the_rescale() {
-    let mut w = World::new(Vec::new());
-    let mut sim = Sim::new();
-    sim.monitors[1].dpi = 144; // el de la derecha a 150 %
-    sim.win.frame = place(work(), Placement::RightHalf);
-    sim.run(&mut w, arrange(b'D', 0));
-    assert_eq!(sim.win.dpi, 144);
-    assert_eq!(sim.win.frame, place(monitor(1920).work, Placement::LeftHalf));
-    assert_eq!(sim.places, 1, "los bordes ya iban escalados: una sola pasada");
-    assert!(sim.logs[0].contains("0 px en 1 pasada"), "{:?}", sim.logs);
+    sim.win.min_width = 1200;
+    sim.key(&mut w, b'A'); // "mitad izquierda", aunque quedó más ancha
+    sim.win.min_width = 0;
+    sim.key(&mut w, b'W'); // desde la mitad izquierda: esquina, no "libre + W"
+    assert!(sim.is_at(0, P::TopLeft), "{:?}", sim.logs);
 }
 
 #[test]
@@ -370,7 +349,7 @@ fn full_screen_windows_are_left_alone() {
 }
 
 #[test]
-fn the_last_key_wins() {
+fn the_last_key_wins_and_counts_from_where_the_first_was_going() {
     let mut w = World::new(Vec::new());
     let mut sim = Sim::new();
     sim.win.lag_ms = 30;
@@ -379,9 +358,9 @@ fn the_last_key_wins() {
     let Effect::Inspect { req, .. } = effects[0] else { panic!("{effects:?}") };
     let effects = w.step(Event::Inspected { req, result: Ok(sim.obs()) }, sim.now);
     assert!(matches!(effects[0], Effect::Place { .. }));
-    sim.run(&mut w, arrange(b'D', 0));
+    sim.run(&mut w, arrange(b'W', HELD_W));
     assert_eq!(w.placing(), 0);
-    assert_eq!(sim.win.frame, place(work(), Placement::RightHalf));
+    assert!(sim.is_at(0, P::TopLeft), "A va a la izquierda; W desde ahí = esquina");
     assert_eq!(sim.logs.len(), 1, "solo se informa la última: {:?}", sim.logs);
 }
 
@@ -399,4 +378,195 @@ fn a_window_that_disappears_ends_the_job() {
         w.step(Event::Inspected { req, result: Err("la ventana ya no existe".into()) }, t);
     assert!(matches!(&effects[0], Effect::Log(l) if l.contains("ya no existe")));
     assert_eq!(w.deadline(), None);
+}
+
+// ---- Empujar al monitor vecino ----
+
+#[test]
+fn pushing_past_the_last_monitor_does_nothing() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.at(0, P::LeftHalf); // monitor de más a la izquierda
+    sim.key(&mut w, b'A');
+    assert_eq!(sim.places, 0);
+    assert!(sim.logs[0].contains("no hay otro monitor a la izquierda"), "{:?}", sim.logs);
+}
+
+#[test]
+fn repeating_a_direction_pushes_to_the_next_monitor_and_back() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.key(&mut w, b'D'); // mitad derecha del monitor 0
+    sim.key(&mut w, b'D'); // empuja: mitad izquierda del monitor 1
+    assert!(sim.is_at(1, P::LeftHalf));
+    assert!(sim.logs[1].contains("monitor de la derecha, mitad izquierda"), "{:?}", sim.logs);
+    sim.key(&mut w, b'A'); // vuelve: mitad derecha del monitor 0
+    assert!(sim.is_at(0, P::RightHalf));
+    sim.key(&mut w, b'A'); // dentro del monitor 0
+    assert!(sim.is_at(0, P::LeftHalf));
+}
+
+#[test]
+fn crossing_to_a_higher_dpi_waits_for_the_rescale() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.monitors[1].dpi = 144; // el de la derecha a 150 %
+    sim.at(0, P::RightHalf);
+    sim.key(&mut w, b'D');
+    assert_eq!(sim.win.dpi, 144);
+    assert!(sim.is_at(1, P::LeftHalf));
+    assert_eq!(sim.places, 1, "los bordes ya iban escalados: una sola pasada");
+    assert!(sim.logs[0].contains("0 px en 1 pasada"), "{:?}", sim.logs);
+}
+
+// ---- Los casos que encontró el usuario ----
+
+#[test]
+fn user_case_1_a_corner_moves_as_a_corner() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.at(0, P::TopRight);
+    sim.key(&mut w, b'D');
+    assert!(sim.is_at(1, P::TopLeft), "{:?}", sim.logs);
+    sim.key(&mut w, b'D');
+    assert!(sim.is_at(1, P::TopRight), "una esquina sigue siendo esquina: {:?}", sim.logs);
+    sim.key(&mut w, b'D');
+    assert!(sim.is_at(1, P::TopRight));
+    assert!(sim.logs.last().unwrap().contains("no hay otro monitor a la derecha"));
+    sim.key(&mut w, b'A');
+    sim.key(&mut w, b'A');
+    assert!(sim.is_at(0, P::TopRight), "{:?}", sim.logs);
+}
+
+#[test]
+fn user_case_2_a_chord_does_not_depend_on_which_finger_lands_first() {
+    for order in [*b"WA", *b"AW"] {
+        for together in [true, false] {
+            let mut w = World::new(Vec::new());
+            let mut sim = Sim::new();
+            sim.at(1, P::TopLeft);
+            sim.chord(&mut w, &order, together);
+            assert!(
+                sim.is_at(0, P::TopRight),
+                "orden {:?}, juntas {together}: {:?}",
+                order.map(|c| c as char),
+                sim.logs
+            );
+        }
+    }
+}
+
+#[test]
+fn user_case_3_a_pushed_half_plus_w_is_the_top_corner_of_that_side() {
+    for gap_ms in [100, 5_000] {
+        let mut w = World::new(Vec::new());
+        let mut sim = Sim::new();
+        sim.at(0, P::RightHalf);
+        sim.key(&mut w, b'D'); // mitad izquierda del monitor 1
+        sim.now += gap_ms * MS;
+        sim.key(&mut w, b'W');
+        assert!(sim.is_at(1, P::TopLeft), "a los {gap_ms} ms: {:?}", sim.logs);
+        assert!(!sim.logs.iter().any(|l| l.contains("no hay otro monitor")), "{:?}", sim.logs);
+    }
+}
+
+#[test]
+fn a_single_w_against_the_top_says_so_but_not_inside_a_chord() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.at(1, P::TopLeft);
+    sim.key(&mut w, b'W');
+    assert!(sim.logs.last().unwrap().contains("no hay otro monitor arriba"), "{:?}", sim.logs);
+    let before = sim.logs.len();
+    sim.chord(&mut w, b"WA", true); // W primero dentro de un acorde
+    assert!(sim.is_at(0, P::TopRight));
+    assert!(!sim.logs[before..].iter().any(|l| l.contains("arriba.")), "{:?}", sim.logs);
+}
+
+#[test]
+fn opposite_keys_together_cancel() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.at(0, P::TopLeft);
+    sim.chord(&mut w, b"AD", true);
+    assert!(sim.is_at(0, P::TopLeft), "A + D no hace nada: {:?}", sim.logs);
+}
+
+#[test]
+fn a_chord_on_its_own_corner_without_neighbor_stays() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.at(0, P::TopLeft); // monitor de la izquierda, sin nada arriba
+    sim.chord(&mut w, b"WA", true);
+    assert!(sim.is_at(0, P::TopLeft));
+}
+
+// ---- Propiedad: el orden de los dedos no importa ----
+
+#[test]
+fn every_chord_gives_the_same_result_in_every_order() {
+    let origins = [
+        None, // libre
+        Some(P::LeftHalf),
+        Some(P::RightHalf),
+        Some(P::TopHalf),
+        Some(P::BottomHalf),
+        Some(P::TopLeft),
+        Some(P::TopRight),
+        Some(P::BottomLeft),
+        Some(P::BottomRight),
+    ];
+    let chords: [&[u8]; 10] =
+        [b"WA", b"WD", b"SA", b"SD", b"AD", b"WS", b"WAD", b"SAD", b"AWS", b"DWS"];
+    for m in 0..2 {
+        for origin in origins {
+            for keys in chords {
+                for lag in [0, 100] {
+                    let mut results = Vec::new();
+                    for order in permutations(keys) {
+                        for together in [true, false] {
+                            let mut w = World::new(Vec::new());
+                            let mut sim = Sim::new();
+                            sim.win.lag_ms = lag;
+                            match origin {
+                                Some(p) => sim.at(m, p),
+                                None => {
+                                    let x = sim.monitors[m].work.left + 300;
+                                    sim.win.frame = Rect::new(x, 200, x + 800, 800);
+                                }
+                            }
+                            sim.chord(&mut w, &order, together);
+                            results.push((order.clone(), together, sim.win.frame));
+                        }
+                    }
+                    let first = results[0].2;
+                    for (order, together, frame) in &results {
+                        assert_eq!(
+                            *frame,
+                            first,
+                            "monitor {m}, origen {origin:?}, acorde {:?}, demora {lag}: orden {:?} juntas {together}",
+                            String::from_utf8_lossy(keys),
+                            String::from_utf8_lossy(order),
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn permutations(keys: &[u8]) -> Vec<Vec<u8>> {
+    if keys.len() <= 1 {
+        return vec![keys.to_vec()];
+    }
+    let mut out = Vec::new();
+    for i in 0..keys.len() {
+        let mut rest = keys.to_vec();
+        let k = rest.remove(i);
+        for mut tail in permutations(&rest) {
+            tail.insert(0, k);
+            out.push(tail);
+        }
+    }
+    out
 }

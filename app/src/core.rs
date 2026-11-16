@@ -113,7 +113,8 @@ fn banner(log: &Log, bindings: &[AppBinding], config: Option<&PathBuf>, test_mod
     log.line("wm core activo.");
     log.line("  Caps + letra    ir a la app con esa inicial (repetir = siguiente ventana)");
     log.line("  Caps (toque)    Bloq Mayús normal");
-    log.line("  Caps + Alt + W/A/S/D   mitades; dos juntas (o seguidas) = esquina");
+    log.line("  Caps + Alt + W/A/S/D   mitades y esquinas según dónde está la ventana;");
+    log.line("                         contra el borde, al otro monitor");
     log.line("  Caps + Esc      salir (también Ctrl+C)");
     if test_mode {
         log.line("  MODO PRUEBA     Caps + F10 = pánico a propósito (muestra todo y sale con 3)");

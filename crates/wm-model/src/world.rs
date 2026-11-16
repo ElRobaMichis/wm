@@ -7,8 +7,16 @@
 //! Windows, con una plataforma de mentira.
 //!
 //! Hecho: la capa de apps (`Caps` + letra), la capa del teclado y, de la capa
-//! de ventana, mitades y esquinas (hito 1a). Los escritorios llegan en el
-//! hito 4.
+//! de ventana, mitades, esquinas y empujar al monitor vecino (hitos 1a y 1b).
+//! Los escritorios llegan en el hito 4.
+//!
+//! **Capa de ventana** (plan-core.md §3.1, versión 2): cada tecla actúa según
+//! **dónde está la ventana** ([`crate::place::step`]), no según la tecla
+//! anterior ni el tiempo. Dos o más teclas juntas forman un **gesto**: el
+//! destino se calcula desde donde estaba antes de la primera
+//! ([`crate::place::chord`]), así que el orden en que caen los dedos da
+//! igual. Empujar al monitor vecino con una tecla sola espera 50 ms por si
+//! llega una segunda tecla (sin eso, la ventana iría y volvería).
 //!
 //! **Colocar una ventana** (plan-core.md §2.5): leer la ventana al frente
 //! (`Inspect`), pedir el rectángulo (`Place`) y verificar con plazos (+16,
@@ -22,10 +30,10 @@ use std::collections::HashMap;
 use crate::apps::{AppBinding, Target, resolve};
 use crate::keyboard::{HyperAction, Layer};
 use crate::place::{
-    Dir, MonitorObs, edge_error, mirror, monitor_of, neighbor, on_side, outer_for, placement_for,
-    placement_name, slot_of,
+    Dir, MonitorObs, Move, chord, chord_name, chord_pushes, edge_error, mirror, monitor_of,
+    neighbor, outer_for, placement_name, slot_of, step,
 };
-use crate::{Rect, place};
+use crate::{Placement, Rect, place};
 
 /// Una ventana observada con `Inspect` (siempre viene de Windows).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,9 +55,10 @@ pub struct Obs {
 /// Chequeos después de pedir una ubicación, en ms desde el pedido.
 const CHECKS_MS: [u64; 5] = [16, 50, 120, 250, 600];
 
-/// Una segunda tecla perpendicular dentro de este plazo forma una esquina
-/// (keyboard-design.md §14.5).
-const COMBO_US: u64 = 1_000_000;
+/// Espera antes de empujar al monitor vecino con una tecla sola, por si es
+/// la primera de un acorde. No cambia ningún resultado: solo evita ver un
+/// paso intermedio.
+const CHORD_WAIT_US: u64 = 50_000;
 
 /// Error aceptado por borde.
 const TOLERANCE_PX: i32 = 1;
@@ -75,15 +84,40 @@ struct Job {
     /// DPI del monitor de destino: al cruzar a uno con otra escala, la
     /// ventana tiene que informarlo antes de juzgar dónde quedó.
     want_dpi: u32,
+    /// Adónde va (para que la tecla siguiente cuente desde ahí).
+    spot: Spot,
 }
 
-/// La última dirección aplicada, para formar esquinas en secuencia.
+/// Dónde está (o va) una ventana: un monitor y una ubicación en él (`Full`
+/// = libre o maximizada).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Spot {
+    monitor: MonitorObs,
+    placement: Placement,
+}
+
+/// Dos o más teclas de dirección juntas sobre la misma ventana.
 #[derive(Debug, Clone, Copy)]
-struct Combo {
+struct Gesture {
     win: WinKey,
+    /// Dónde estaba antes de la primera tecla.
+    origin: Spot,
+    origin_rect: Rect,
+    /// Teclas del gesto (`HELD_*`).
+    seen: u8,
+}
+
+/// Un empuje de una tecla sola, demorado por si llega una segunda tecla.
+#[derive(Debug, Clone)]
+struct Deferred {
+    due_us: u64,
+    obs: Obs,
+    what: String,
+    key_us: u64,
+    /// `Some`: al monitor vecino; `None`: no hay vecino (solo se informa).
+    to: Option<Spot>,
     dir: Dir,
-    at_us: u64,
-    target: Rect,
+    from: Placement,
 }
 
 /// Identificador de un pedido del modelo a la plataforma.
@@ -250,7 +284,12 @@ pub struct World {
     activations: Activations,
     jobs: HashMap<WinKey, Job>,
     next_job: u64,
-    combo: Option<Combo>,
+    gesture: Option<Gesture>,
+    deferred: Option<Deferred>,
+    /// Dónde dejamos cada ventana y qué marco logró: mientras siga igual, la
+    /// próxima tecla cuenta desde esa ubicación aunque la app no haya podido
+    /// achicarse del todo (tamaño mínimo).
+    placed: HashMap<WinKey, (Spot, Rect)>,
 }
 
 impl World {
@@ -283,7 +322,8 @@ impl World {
     /// Cuándo hay que despertar al modelo con [`Event::Tick`] (µs del mismo
     /// reloj que `step`). `None`: nada pendiente, el brain duerme.
     pub fn deadline(&self) -> Option<u64> {
-        self.jobs.values().filter(|j| !j.inspecting).map(next_check_us).min()
+        let jobs = self.jobs.values().filter(|j| !j.inspecting).map(next_check_us);
+        jobs.chain(self.deferred.as_ref().map(|d| d.due_us)).min()
     }
 
     fn req(&mut self) -> Req {
@@ -306,8 +346,16 @@ impl World {
                     self.action(action, held, age_ms, now_us, &mut out);
                 }
             }
-            Event::Layer(layer) => self.layer = layer,
-            Event::KeyboardReset => self.layer = Layer::Off,
+            Event::Layer(layer) => {
+                self.layer = layer;
+                if layer != Layer::Window {
+                    self.end_gesture(now_us, &mut out);
+                }
+            }
+            Event::KeyboardReset => {
+                self.layer = Layer::Off;
+                self.end_gesture(now_us, &mut out);
+            }
             Event::Bindings(b) => self.bindings = b,
             Event::Windows { req, result } => {
                 let Some(Pending::Scan { letter, key_us }) = self.pending.remove(&req) else {
@@ -413,7 +461,7 @@ impl World {
         }
     }
 
-    /// Mitades y esquinas: la ventana al frente ya observada.
+    /// Capa de ventana: la ventana al frente ya observada (plan-core.md §3.1).
     #[allow(clippy::too_many_arguments)]
     fn arrange(
         &mut self,
@@ -433,58 +481,180 @@ impl World {
             out.push(Effect::Log(format!("{what}: no hay monitores.")));
             return;
         };
-        let monitor = obs.monitors[m];
-        if !obs.maximized && obs.frame == monitor.bounds {
+        if !obs.maximized && obs.frame == obs.monitors[m].bounds {
             out.push(Effect::Log(format!("{what}: {} está en pantalla completa.", obs.app)));
             return;
         }
-        let still = |c: &Combo| c.win == obs.key && edge_error(obs.frame, c.target) <= TOLERANCE_PX;
-        let perp = dir.held_perpendicular(held).or_else(|| {
-            self.combo
-                .filter(|c| {
-                    c.dir.perpendicular(dir)
-                        && still(c)
-                        && now_us.saturating_sub(c.at_us) <= COMBO_US
-                })
-                .map(|c| c.dir)
-        });
-        let mut placement = placement_for(dir, perp);
-        let mut target = place(monitor.work, placement);
-        let mut to_dpi = monitor.dpi;
-        let mut where_ = placement_name(placement).to_owned();
-        // Empujar al monitor vecino (keyboard-design.md §14.4) solo si la
-        // ventana ya está pegada al borde de ese lado: "A siempre lleva a la
-        // izquierda", así que desde la mitad derecha primero va a la mitad
-        // izquierda del mismo monitor, como `Win + ←`. Una esquina pegada a
-        // ese borde cruza conservando la otra componente.
-        let slot = if obs.maximized { None } else { slot_of(monitor.work, obs.frame) };
-        let push = slot.filter(|&s| match perp {
-            None => on_side(s, dir),
-            Some(_) => s == placement, // la esquina pedida es donde ya está
-        });
-        if let Some(slot) = push {
-            let Some(n) = neighbor(&obs.monitors, m, dir) else {
-                self.jobs.remove(&obs.key);
-                self.combo = Some(Combo { win: obs.key, dir, at_us: now_us, target: obs.frame });
-                out.push(Effect::Log(format!(
-                    "{what} → {} ({}): no hay otro monitor a la {}.",
-                    placement_name(slot),
-                    obs.app,
-                    dir.name()
-                )));
-                return;
-            };
-            placement = mirror(slot, dir);
-            target = place(obs.monitors[n].work, placement);
-            to_dpi = obs.monitors[n].dpi;
-            where_ = format!("monitor de la {}, {}", dir.name(), placement_name(placement));
+        let bit = dir.bit();
+        // ¿Sigue un gesto? La misma ventana, una tecla nueva y todas las del
+        // gesto todavía apretadas (sin ninguna suelta en el medio).
+        let continues =
+            self.gesture.filter(|g| g.win == obs.key && g.seen & bit == 0 && held == g.seen | bit);
+        if let Some(mut g) = continues {
+            g.seen |= bit;
+            self.gesture = Some(g);
+            if self.deferred.as_ref().is_some_and(|d| d.obs.key == obs.key) {
+                self.deferred = None; // el empuje de la primera tecla queda sin efecto
+            }
+            let what = format!("Caps + Alt + {}", chord_name(g.seen));
+            self.chord(g, what, key_us, &obs, now_us, out);
+            return;
         }
-        self.combo = Some(Combo { win: obs.key, dir, at_us: now_us, target });
-        let what = format!("{what} → {where_} ({})", obs.app);
+
+        // Empieza un gesto: primero lo que haya quedado pendiente.
+        if let Some(d) = self.deferred.take() {
+            self.run_deferred(d, now_us, out);
+        }
+        let (here, here_rect) = self.locate(&obs, m);
+        self.gesture =
+            Some(Gesture { win: obs.key, origin: here, origin_rect: here_rect, seen: bit });
+        match step(here.placement, dir) {
+            Move::Stay(p) => {
+                let to = Spot { monitor: here.monitor, placement: p };
+                let what = format!("{what} → {} ({})", placement_name(p), obs.app);
+                self.go(&obs, to, place(to.monitor.work, p), what, key_us, now_us, out);
+            }
+            Move::Push { dir: push, enter } => {
+                let n = index_of(&obs.monitors, here.monitor)
+                    .and_then(|i| neighbor(&obs.monitors, i, push));
+                let to = n.map(|n| Spot { monitor: obs.monitors[n], placement: enter });
+                self.deferred = Some(Deferred {
+                    due_us: now_us + CHORD_WAIT_US,
+                    obs,
+                    what,
+                    key_us,
+                    to,
+                    dir: push,
+                    from: here.placement,
+                });
+            }
+        }
+    }
+
+    /// Dos o más teclas juntas: la ubicación que nombran, calculada desde el
+    /// origen del gesto. Si es donde ya estaba, empuja (primero de costado).
+    fn chord(
+        &mut self,
+        g: Gesture,
+        what: String,
+        key_us: u64,
+        obs: &Obs,
+        now_us: u64,
+        out: &mut Vec<Effect>,
+    ) {
+        let Some(target) = chord(g.seen) else {
+            // Teclas opuestas: no nombran nada; vuelve a donde estaba.
+            let what = format!("{what} → se anulan ({})", obs.app);
+            self.go(obs, g.origin, g.origin_rect, what, key_us, now_us, out);
+            return;
+        };
+        if target != g.origin.placement {
+            let to = Spot { monitor: g.origin.monitor, placement: target };
+            let what = format!("{what} → {} ({})", placement_name(target), obs.app);
+            self.go(obs, to, place(to.monitor.work, target), what, key_us, now_us, out);
+            return;
+        }
+        let from = index_of(&obs.monitors, g.origin.monitor);
+        for push in chord_pushes(target) {
+            if let Some(n) = from.and_then(|i| neighbor(&obs.monitors, i, push)) {
+                let p = mirror(target, push);
+                let to = Spot { monitor: obs.monitors[n], placement: p };
+                let what = format!(
+                    "{what} → monitor {}, {} ({})",
+                    push.of_side(),
+                    placement_name(p),
+                    obs.app
+                );
+                self.go(obs, to, place(to.monitor.work, p), what, key_us, now_us, out);
+                return;
+            }
+        }
+        let what = format!("{what} → {} ({})", placement_name(target), obs.app);
+        out.push(Effect::Log(format!("{what}: no hay otro monitor de ese lado.")));
+        self.go(obs, g.origin, g.origin_rect, what, key_us, now_us, out);
+    }
+
+    /// Termina el gesto (se soltó el pulgar o Caps) y ejecuta lo pendiente.
+    fn end_gesture(&mut self, now_us: u64, out: &mut Vec<Effect>) {
+        self.gesture = None;
+        if let Some(d) = self.deferred.take() {
+            self.run_deferred(d, now_us, out);
+        }
+    }
+
+    fn run_deferred(&mut self, d: Deferred, now_us: u64, out: &mut Vec<Effect>) {
+        match d.to {
+            Some(to) => {
+                let what = format!(
+                    "{} → monitor {}, {} ({})",
+                    d.what,
+                    d.dir.of_side(),
+                    placement_name(to.placement),
+                    d.obs.app
+                );
+                let rect = place(to.monitor.work, to.placement);
+                self.go(&d.obs, to, rect, what, d.key_us, now_us, out);
+            }
+            None => out.push(Effect::Log(format!(
+                "{} → {} ({}): no hay otro monitor {}.",
+                d.what,
+                placement_name(d.from),
+                d.obs.app,
+                d.dir.toward()
+            ))),
+        }
+    }
+
+    /// Dónde está la ventana para decidir la próxima tecla: adonde va (si hay
+    /// una colocación en curso), donde la dejamos (si no se movió), o lo que
+    /// se ve en el monitor (mitad, esquina, o libre).
+    fn locate(&self, obs: &Obs, m: usize) -> (Spot, Rect) {
+        let monitor = obs.monitors[m];
+        if let Some(j) = self.jobs.get(&obs.key) {
+            return (j.spot, j.target);
+        }
+        if let Some((spot, achieved)) = self.placed.get(&obs.key)
+            && edge_error(obs.frame, *achieved) <= TOLERANCE_PX
+            && index_of(&obs.monitors, spot.monitor).is_some()
+            && !obs.maximized
+        {
+            return (*spot, *achieved);
+        }
+        let placement = if obs.maximized {
+            Placement::Full
+        } else {
+            slot_of(monitor.work, obs.frame).unwrap_or(Placement::Full)
+        };
+        (Spot { monitor, placement }, obs.frame)
+    }
+
+    /// Lleva la ventana a `target` (el marco visible), salvo que ya esté ahí o
+    /// ya vaya hacia ahí.
+    #[allow(clippy::too_many_arguments)]
+    fn go(
+        &mut self,
+        obs: &Obs,
+        spot: Spot,
+        target: Rect,
+        what: String,
+        key_us: u64,
+        now_us: u64,
+        out: &mut Vec<Effect>,
+    ) {
+        if self.jobs.get(&obs.key).is_some_and(|j| j.target == target) {
+            return; // ya va hacia ahí
+        }
+        if !obs.maximized
+            && edge_error(obs.frame, target) <= TOLERANCE_PX
+            && !self.jobs.contains_key(&obs.key)
+        {
+            self.placed.insert(obs.key, (spot, obs.frame));
+            return; // ya está ahí
+        }
         if obs.maximized {
             out.push(Effect::Normalize { win: obs.key });
         }
-        let rect = outer_for(obs.frame, obs.outer, target, obs.dpi, to_dpi);
+        let rect = outer_for(obs.frame, obs.outer, target, obs.dpi, spot.monitor.dpi);
         self.next_job += 1;
         let job = Job {
             id: self.next_job,
@@ -497,7 +667,8 @@ impl World {
             inspecting: false,
             last_frame: None,
             from_frame: obs.frame,
-            want_dpi: to_dpi,
+            want_dpi: spot.monitor.dpi,
+            spot,
         };
         // La última tecla gana: la colocación anterior de esta ventana se olvida.
         self.jobs.insert(obs.key, job);
@@ -513,6 +684,10 @@ impl World {
 
     /// Lanza los chequeos vencidos.
     fn tick(&mut self, now_us: u64, out: &mut Vec<Effect>) {
+        if self.deferred.as_ref().is_some_and(|d| d.due_us <= now_us) {
+            let d = self.deferred.take().expect("recién visto");
+            self.run_deferred(d, now_us, out);
+        }
         let due: Vec<(WinKey, u64)> = self
             .jobs
             .iter()
@@ -560,7 +735,9 @@ impl World {
             let passes = if j.pass == 1 { "1 pasada" } else { "2 pasadas" };
             let line =
                 format!("{}: {error} px en {passes}, {:.1} ms desde la tecla", j.what, since(j));
+            let spot = j.spot;
             self.jobs.remove(&win);
+            self.placed.insert(win, (spot, obs.frame));
             out.push(Effect::Log(line));
             return;
         }
@@ -590,7 +767,9 @@ impl World {
             j.what,
             since(j)
         );
+        let spot = j.spot;
         self.jobs.remove(&win);
+        self.placed.insert(win, (spot, obs.frame));
         out.push(Effect::Log(line));
     }
 
@@ -628,6 +807,12 @@ impl World {
             }
         }
     }
+}
+
+/// Índice actual de un monitor (los índices no valen entre observaciones: se
+/// identifica por su rectángulo).
+fn index_of(monitors: &[MonitorObs], m: MonitorObs) -> Option<usize> {
+    monitors.iter().position(|x| x.bounds == m.bounds)
 }
 
 fn next_check_us(j: &Job) -> u64 {

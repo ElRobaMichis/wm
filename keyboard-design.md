@@ -670,7 +670,7 @@ Hay dos expectativas que chocan:
 
 - Además de apretar dos teclas a la vez (W+A, §6.2), aceptar la **secuencia**: D y enseguida W = cuarto superior derecho.
 - Es lo que pidió un usuario de Raycast y lo que hace Swish con gestos (izquierda y después arriba = esquina superior izquierda).
-- **Ventana de tiempo:** ~1 s desde el movimiento anterior **(a probar)**.
+- ~~**Ventana de tiempo:** ~1 s desde el movimiento anterior **(a probar)**.~~ **Probado y reemplazado (15/11/2026):** el plazo hacía que el resultado dependiera del tiempo y del orden de los dedos. Ahora **cada tecla actúa según dónde está la ventana**, sin plazo: D y, cuando sea, W da la esquina; una esquina + A/D sigue siendo esquina; W/S suben o bajan un escalón como `Win + ↑/↓`. Las teclas juntas siguen funcionando y su resultado no depende del orden. Ver `plan-core.md` §3.1 (versión 2).
 
 ### 14.6 Importar los atajos que el usuario ya tiene
 
