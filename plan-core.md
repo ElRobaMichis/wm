@@ -192,6 +192,10 @@ Latencia esperada: dos saltos de carril, como `Caps + letra` hoy (1,9-4,4 ms de 
 >
 > **Decisiones del usuario (15/11/2026, por recomendación):** el acorde sobre su propia esquina empuja; las teclas opuestas juntas se anulan (para no sumar comandos); W/S en escalera, como Windows; espera de 50 ms solo al empujar con una tecla sola. **Costo aceptado:** desde un costado, la mitad de arriba o de abajo ya no se alcanza con una tecla sola (queda para F y después W).
 >
+> **Carrera encontrada por la CI (corregida):** soltar Alt (aviso inmediato del hook) podía procesarse entre la respuesta de la primera tecla de un acorde y la de la segunda, y la segunda se tomaba como sola. Ahora si una tecla continúa el gesto se decide al llegar la tecla, en el mismo orden que los cambios de capa; prueba que reproduce ese orden.
+>
+> **Probado por el usuario (15/11/2026) con dos monitores:** los tres casos funcionan (una esquina se mueve como esquina; W + A da siempre lo mismo; mitad empujada + W = esquina de ese lado). Comentario: se había acostumbrado a que esquina + D, tarde, diera la mitad derecha; ahora siempre da la esquina (de ↖ a la mitad derecha: S y D). "Es cosa de acostumbrarse."
+>
 > **Pruebas:** la tabla completa como datos; A/D nunca cambian la altura; todo empuje vuelve con la tecla opuesta; desde una ventana libre se llega a las 8 ubicaciones; los tres casos del usuario; y la propiedad **"el orden de los dedos no importa"**: 2 monitores × 9 orígenes × 10 acordes × todas las permutaciones × juntas o separadas × app rápida o lenta, mismo resultado. Con el core real (`ci-probe`): mitades y esquinas en 1,3-3,4 ms; empujar en 58-67 ms (con la espera).
 
 
