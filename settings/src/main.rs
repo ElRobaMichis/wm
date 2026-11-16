@@ -3,8 +3,11 @@
 //! `comctl32`... en forma estática, y `wm.exe` (guardián y core) no debe
 //! cargarlas.
 //!
-//! Misma pantalla y mismos datos (`wm_model::settings_demo`) que la versión
-//! nativa (`wm settings`), para comparar solo el toolkit. Opciones:
+//! Las asignaciones son las de verdad: se leen de `%APPDATA%\wm\apps.txt`
+//! (el archivo que usa el core) y Guardar lo reescribe en forma atómica,
+//! conservando comentarios y rutas (`wm_model::apps::update_bindings`). Las
+//! apps para elegir son las de `wm_model::settings_demo::APPS` más las del
+//! archivo que no estén ahí. Opciones:
 //! - `--lang es|en`: idioma (por defecto, español);
 //! - `--bench x,y`: ventana en esa posición, con una marca magenta arriba a
 //!   la izquierda, y `SHOWN` por stdout (lo usa `wm-bench settings`);
@@ -13,10 +16,13 @@
 #![windows_subsystem = "windows"]
 
 use std::cell::RefCell;
+use std::collections::HashMap;
+use std::path::Path;
 use std::rc::Rc;
 
 use slint::{ModelRc, SharedString, VecModel};
-use wm_model::settings_demo::{self, APP_NAMES, APPS};
+use wm_model::apps::{AppBinding, bindings_path, parse_bindings, update_bindings};
+use wm_model::settings_demo::{APP_NAMES, APPS};
 
 slint::include_modules!();
 
@@ -25,7 +31,50 @@ fn arg(name: &str) -> Option<String> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1).cloned())
 }
 
+/// Apps que se pueden elegir: ejecutable (sin `.exe`) y nombre visible.
+struct Catalog {
+    exe: Vec<String>,
+    name: Vec<String>,
+}
+
+impl Catalog {
+    /// Las conocidas y, al final, las del archivo que no están entre ellas.
+    fn new(bindings: &[AppBinding]) -> Self {
+        let mut exe: Vec<String> = APPS.iter().map(|a| (*a).to_owned()).collect();
+        let mut name: Vec<String> = APP_NAMES.iter().map(|a| (*a).to_owned()).collect();
+        for b in bindings {
+            if !exe.contains(&b.app) {
+                exe.push(b.app.clone());
+                name.push(b.app.clone());
+            }
+        }
+        Self { exe, name }
+    }
+
+    fn index(&self, app: &str) -> Option<usize> {
+        self.exe.iter().position(|e| e == app)
+    }
+
+    /// ¿La fila coincide con la búsqueda (letra exacta o parte del nombre)?
+    fn matches(&self, letter: char, app: Option<usize>, query: &str) -> bool {
+        let q = query.trim().to_lowercase();
+        if q.is_empty() {
+            return true;
+        }
+        let letter_hit = q.len() == 1 && q.starts_with(letter.to_ascii_lowercase());
+        letter_hit
+            || app.is_some_and(|a| {
+                self.exe[a].contains(&q) || self.name[a].to_lowercase().contains(&q)
+            })
+    }
+}
+
 struct State {
+    catalog: Catalog,
+    /// Texto del archivo al abrir: Guardar escribe sobre él.
+    file_text: String,
+    /// Ruta para abrir cada app, si el archivo la tenía.
+    launch: HashMap<String, String>,
     assigned: Vec<(char, Option<usize>)>,
     original: Vec<(char, Option<usize>)>,
     /// Índices (en `assigned`) de las filas visibles con la búsqueda actual.
@@ -43,8 +92,8 @@ fn refresh(ui: &SettingsWindow, st: &State) {
             let (l, a) = st.assigned[i];
             LetterItem {
                 letter: SharedString::from(l.to_string()),
-                name: a.map_or_else(SharedString::new, |a| SharedString::from(APP_NAMES[a])),
-                exe: a.map_or_else(SharedString::new, |a| format!("{}.exe", APPS[a]).into()),
+                name: a.map_or_else(SharedString::new, |a| st.catalog.name[a].as_str().into()),
+                exe: a.map_or_else(SharedString::new, |a| format!("{}.exe", st.catalog.exe[a]).into()),
                 assigned: a.is_some(),
             }
         })
@@ -57,6 +106,26 @@ fn refresh(ui: &SettingsWindow, st: &State) {
     ui.set_choice(app.map_or(0, |a| a as i32 + 1));
     ui.set_assigned(st.assigned.iter().filter(|(_, a)| a.is_some()).count() as i32);
     ui.set_dirty(st.assigned != st.original);
+}
+
+/// Escribe las asignaciones en `path`: primero a un temporal y después lo
+/// renombra encima, así nunca queda un archivo a medias.
+fn save(path: &Path, st: &State) -> std::io::Result<()> {
+    let bindings: Vec<AppBinding> = st
+        .assigned
+        .iter()
+        .filter_map(|&(letter, app)| {
+            let app = st.catalog.exe[app?].clone();
+            Some(AppBinding { letter: letter as u8, launch: st.launch.get(&app).cloned(), app })
+        })
+        .collect();
+    let text = update_bindings(&st.file_text, &bindings);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("txt.tmp");
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(&tmp, path)
 }
 
 fn main() -> Result<(), slint::PlatformError> {
@@ -78,12 +147,30 @@ fn main() -> Result<(), slint::PlatformError> {
     if let Err(e) = slint::select_bundled_translation(&lang) {
         eprintln!("No se pudo elegir el idioma «{lang}»: {e:?}");
     }
+    let path = bindings_path();
+    let file_text =
+        path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+    let (bindings, _errors) = parse_bindings(&file_text);
+    let catalog = Catalog::new(&bindings);
+    let launch: HashMap<String, String> = bindings
+        .iter()
+        .filter_map(|b| Some((b.app.clone(), b.launch.clone()?)))
+        .collect();
+    let initial: Vec<(char, Option<usize>)> = (b'A'..=b'Z')
+        .map(|l| {
+            let app = bindings.iter().find(|b| b.letter == l).and_then(|b| catalog.index(&b.app));
+            (l as char, app)
+        })
+        .collect();
+
     let mut choices = vec![ui.get_none_text()];
-    choices.extend(APP_NAMES.iter().map(|a| SharedString::from(*a)));
+    choices.extend(catalog.name.iter().map(|a| SharedString::from(a.as_str())));
     ui.set_apps(ModelRc::new(VecModel::from(choices)));
 
-    let initial = settings_demo::initial();
     let st = Rc::new(RefCell::new(State {
+        catalog,
+        file_text,
+        launch,
         assigned: initial.clone(),
         original: initial,
         visible: (0..26).collect(),
@@ -102,7 +189,7 @@ fn main() -> Result<(), slint::PlatformError> {
         st.visible = (0..26)
             .filter(|&i| {
                 let (l, a) = st.assigned[i];
-                settings_demo::matches(l, a, &q)
+                st.catalog.matches(l, a, &q)
             })
             .collect();
         if let Some(&first) = st.visible.first() {
@@ -142,10 +229,19 @@ fn main() -> Result<(), slint::PlatformError> {
         refresh(&ui, &st);
     });
     let weak = ui.as_weak();
+    let s = st.clone();
     ui.on_save(move || {
-        // El spike no guarda: el formato de configuración llega con el core.
-        if let Some(ui) = weak.upgrade() {
-            let _ = ui.hide();
+        let Some(ui) = weak.upgrade() else { return };
+        let Some(path) = path.as_deref() else {
+            eprintln!("Sin %APPDATA%: no hay dónde guardar.");
+            return;
+        };
+        // Si falla, la ventana queda abierta con los cambios.
+        match save(path, &s.borrow()) {
+            Ok(()) => {
+                let _ = ui.hide();
+            }
+            Err(e) => eprintln!("No se pudo guardar {}: {e}", path.display()),
         }
     });
     let weak = ui.as_weak();

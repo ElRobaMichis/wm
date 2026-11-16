@@ -1060,6 +1060,10 @@ Planteo revisado con Fable 5.2; implementado y medido el 15/11/2026.
 - no se usan los widgets `fluent` estándar;
 - tipografía **Geist** (OFL, `assets/fonts/geist`), incluida en el binario: +254 KB, sin cambios medibles en arranque ni memoria (elegida frente a Inter y Segoe UI Variable, design.md §3.1). `wm.exe` también la usa en el mapa de teclado, cargada desde memoria en DirectWrite: +255 KB (0,92 → 1,18 MB) y el mismo primer cuadro (p50 10,9 ms).
 
+**Guardar es real** (después de la prueba del usuario, 15/11/2026): los ajustes leen y escriben `%APPDATA%\wm\apps.txt`, el mismo archivo que usa el core (`wm_model::apps::bindings_path`). Se escribe a un temporal que se renombra encima, conservando comentarios, líneas con errores y rutas de lanzamiento (`update_bindings`, con pruebas). Las tres opciones todavía no se guardan: el core aún no las tiene.
+
+**Error de los componentes, corregido:** en `Button`, `Select` y `ToggleRow`, el `FocusScope` hermano tapaba al `TouchArea` y se quedaba con el primer clic para tomar el foco (`focus-on-click`), así que hacían falta dos clics. Ahora el `TouchArea` da el foco él mismo (`focus-on-click: false`). Además, la lista del desplegable se abre hacia donde haya lugar y ya no se corta en el borde de la ventana.
+
 **Con el diseño propio:**
 - mismo arranque (p50 113 ms) y memoria (5,4 MB);
 - todos los controles con nombre;

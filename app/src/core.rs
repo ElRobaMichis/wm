@@ -17,7 +17,7 @@ use std::process::ExitCode;
 use std::sync::mpsc::{self, Sender};
 use std::time::{Duration, Instant};
 
-use wm_model::apps::{AppBinding, Target, parse_bindings, resolve};
+use wm_model::apps::{AppBinding, Target, bindings_path, parse_bindings, resolve};
 use wm_model::keyboard::HyperAction;
 use wm_platform::clock;
 use wm_platform::input::{self, InputEvent, LatencyStats, ReinstallReason, Wake};
@@ -95,7 +95,7 @@ struct Core {
 }
 
 pub fn run() -> ExitCode {
-    let config = config_path();
+    let config = bindings_path();
     let bindings = load_bindings(config.as_ref());
     let test_mode = std::env::var_os("WM_TEST").is_some_and(|v| v == "1");
     let (log, log_thread) = Log::start();
@@ -373,7 +373,7 @@ fn latency(label: &str, s: &LatencyStats) -> String {
 /// `wm apps`: muestra las ventanas abiertas y a qué apunta cada letra, sin
 /// mover el foco ni instalar hooks.
 pub fn list_apps() -> ExitCode {
-    let config = config_path();
+    let config = bindings_path();
     let bindings = load_bindings(config.as_ref());
     let started = Instant::now();
     let windows = windows_list::user_windows();
@@ -400,10 +400,6 @@ pub fn list_apps() -> ExitCode {
         }
     }
     ExitCode::SUCCESS
-}
-
-fn config_path() -> Option<PathBuf> {
-    std::env::var_os("APPDATA").map(|dir| PathBuf::from(dir).join("wm").join("apps.txt"))
 }
 
 fn load_bindings(path: Option<&PathBuf>) -> Vec<AppBinding> {

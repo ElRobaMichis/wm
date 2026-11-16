@@ -203,6 +203,7 @@ export component SettingsWindow inherits Window {
                 Select {
                     horizontal-stretch: 1;
                     model: root.apps;
+                    window-height: root.height;
                     label: @tr("App for “{}”", root.selected-letter);
                     current <=> root.choice;
                     selected(index) => {

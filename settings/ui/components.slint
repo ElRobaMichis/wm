@@ -307,6 +307,9 @@ export component ToggleRow {
     }
 
     fs := FocusScope {
+        // El TouchArea de arriba da el foco: si el FocusScope lo tomara solo,
+        // se quedaría con el primer clic y el control no respondería.
+        focus-on-click: false;
         key-pressed(event) => {
             if (event.text == " " || event.text == Key.Return) {
                 root.flip();
@@ -373,6 +376,9 @@ export component Button {
         }
     }
     fs := FocusScope {
+        // El TouchArea de arriba da el foco: si el FocusScope lo tomara solo,
+        // se quedaría con el primer clic y el control no respondería.
+        focus-on-click: false;
         enabled: root.enabled;
         key-pressed(event) => {
             if (event.text == " " || event.text == Key.Return) {
@@ -393,11 +399,22 @@ export component Button {
 
 // Desplegable: el valor y una flecha; abre una tarjeta flotante (la única
 // sombra de la pantalla). Con flechas arriba/abajo cambia sin abrir.
+// La tarjeta se abre hacia donde haya más lugar y nunca pasa el borde de la
+// ventana (si no, se cortaba abajo).
 export component Select {
     in property <[string]> model;
     in property <string> label;
     in-out property <int> current;
+    // Alto de la ventana: para saber cuánto lugar hay abajo y arriba.
+    in property <length> window-height: 100000px;
     callback selected(int);
+
+    private property <length> gap: Theme.s1;
+    private property <length> space-below: root.window-height - root.absolute-position.y - root.height - root.gap - Theme.s2;
+    private property <length> space-above: root.absolute-position.y - root.gap - Theme.s2;
+    private property <length> wanted: min(320px, root.model.length * 32px + 2 * Theme.card-pad);
+    private property <bool> open-up: root.space-below < root.wanted && root.space-above > root.space-below;
+    private property <length> popup-height: min(root.wanted, root.open-up ? root.space-above : root.space-below);
 
     function choose(i: int) {
         root.current = i;
@@ -454,6 +471,9 @@ export component Select {
         }
     }
     fs := FocusScope {
+        // El TouchArea de arriba da el foco: si el FocusScope lo tomara solo,
+        // se quedaría con el primer clic y el control no respondería.
+        focus-on-click: false;
         key-pressed(event) => {
             if (event.text == Key.DownArrow) {
                 root.choose(min(root.current + 1, root.model.length - 1));
@@ -480,9 +500,9 @@ export component Select {
 
     popup := PopupWindow {
         x: 0;
-        y: root.height + Theme.s1;
+        y: root.open-up ? -root.popup-height - root.gap : root.height + root.gap;
         width: root.width;
-        height: min(320px, root.model.length * 32px + 2 * Theme.card-pad);
+        height: root.popup-height;
         Rectangle {
             border-radius: Theme.r-card;
             background: Theme.surface;

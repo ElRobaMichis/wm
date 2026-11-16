@@ -56,6 +56,76 @@ pub fn parse_bindings(text: &str) -> (Vec<AppBinding>, Vec<String>) {
     (bindings, errors)
 }
 
+/// Archivo de asignaciones: `%APPDATA%\wm\apps.txt` (`None` sin `APPDATA`).
+/// Lo lee el core y lo escribe la ventana de ajustes.
+pub fn bindings_path() -> Option<std::path::PathBuf> {
+    std::env::var_os("APPDATA").map(|dir| std::path::PathBuf::from(dir).join("wm").join("apps.txt"))
+}
+
+const HEADER: &str = "\
+# Caps + letra: la app de cada letra. Lo escribe la ventana de ajustes;
+# también se puede editar a mano (los comentarios se conservan).
+# letra = app (el ejecutable, sin .exe) | ruta para abrirla si está cerrada (opcional)
+";
+
+/// Letra de una línea de asignación (`None` si es comentario, está en blanco
+/// o no empieza con "letra =").
+fn binding_letter(raw: &str) -> Option<u8> {
+    let line = raw.trim();
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+    let (key, _) = line.split_once('=')?;
+    match key.trim().as_bytes() {
+        [c] if c.is_ascii_alphabetic() => Some(c.to_ascii_uppercase()),
+        _ => None,
+    }
+}
+
+fn format_binding(b: &AppBinding) -> String {
+    let letter = b.letter.to_ascii_lowercase() as char;
+    match &b.launch {
+        Some(path) => format!("{letter} = {} | {path}\n", b.app),
+        None => format!("{letter} = {}\n", b.app),
+    }
+}
+
+/// Escribe `bindings` sobre el texto de un archivo de asignaciones (vacío si
+/// todavía no existe). Conserva comentarios, líneas en blanco y líneas con
+/// errores; cambia cada asignación en su lugar, borra las letras que ya no
+/// están (y las repetidas) y agrega las nuevas al final, en orden.
+pub fn update_bindings(text: &str, bindings: &[AppBinding]) -> String {
+    let mut out = String::new();
+    if text.trim().is_empty() {
+        out.push_str(HEADER);
+    }
+    let mut written = [false; 26];
+    for raw in text.lines() {
+        let Some(letter) = binding_letter(raw) else {
+            if !text.trim().is_empty() {
+                out.push_str(raw);
+                out.push('\n');
+            }
+            continue;
+        };
+        let slot = &mut written[usize::from(letter - b'A')];
+        if *slot {
+            continue;
+        }
+        if let Some(b) = bindings.iter().find(|b| b.letter == letter) {
+            out.push_str(&format_binding(b));
+            *slot = true;
+        }
+    }
+    let mut rest: Vec<&AppBinding> =
+        bindings.iter().filter(|b| !written[usize::from(b.letter - b'A')]).collect();
+    rest.sort_by_key(|b| b.letter);
+    for b in rest {
+        out.push_str(&format_binding(b));
+    }
+    out
+}
+
 /// Qué hacer al apretar Hyper + letra.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target<W> {
@@ -177,5 +247,43 @@ mod tests {
     #[test]
     fn nothing_for_unknown_letter() {
         assert_eq!(resolve(b'Q', &[], &WINDOWS, None), Target::Nothing);
+    }
+
+    fn bind(letter: u8, app: &str, launch: Option<&str>) -> AppBinding {
+        AppBinding { letter, app: app.into(), launch: launch.map(Into::into) }
+    }
+
+    #[test]
+    fn new_file_gets_header_and_sorted_bindings() {
+        let text = update_bindings("", &[bind(b'R', "brave", None), bind(b'C', "chrome", None)]);
+        assert!(text.starts_with("# Caps + letra"));
+        assert!(text.ends_with("c = chrome\nr = brave\n"));
+        let (b, errors) = parse_bindings(&text);
+        assert!(errors.is_empty());
+        assert_eq!(b, vec![bind(b'C', "chrome", None), bind(b'R', "brave", None)]);
+    }
+
+    #[test]
+    fn update_keeps_comments_and_changes_in_place() {
+        let old = "# mías\nc = chrome\n\n# trabajo\nt = windowsterminal | C:\\wt.exe\nz\nc = edge\n";
+        let new = [bind(b'C', "code", None), bind(b'T', "windowsterminal", Some("C:\\wt.exe"))];
+        let text = update_bindings(old, &new);
+        assert_eq!(
+            text,
+            "# mías\nc = code\n\n# trabajo\nt = windowsterminal | C:\\wt.exe\nz\n"
+        );
+    }
+
+    #[test]
+    fn update_removes_freed_letters_and_appends_new_ones() {
+        let old = "c = chrome\ns = spotify\n";
+        let text = update_bindings(old, &[bind(b'S', "spotify", None), bind(b'B', "brave", None)]);
+        assert_eq!(text, "s = spotify\nb = brave\n");
+    }
+
+    #[test]
+    fn crlf_files_round_trip() {
+        let text = update_bindings("# x\r\nc = chrome\r\n", &[bind(b'C', "chrome", None)]);
+        assert_eq!(text, "# x\nc = chrome\n");
     }
 }
