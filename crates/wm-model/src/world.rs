@@ -494,9 +494,45 @@ pub struct World {
     placed: HashMap<WinKey, (Spot, Rect)>,
     /// Se puede animar (lo habilita el brain cuando el carril está listo).
     fly: bool,
-    /// Ventanas que no tomaron el tamaño pedido (tamaño mínimo o fijo): sus
-    /// cambios de tamaño van sin animación.
-    stubborn: std::collections::HashSet<WinKey>,
+    /// Lo que se sabe del tamaño mínimo o máximo de cada ventana (de las
+    /// veces que no tomó el tamaño pedido): un cambio de tamaño que no
+    /// respeta esos límites va sin animación.
+    limits: HashMap<WinKey, Limits>,
+}
+
+/// Tamaños que una ventana no aceptó. Antes se marcaba la ventana entera y
+/// después de un solo V hasta el límite (Brave no baja de 502 px) ningún
+/// cambio de tamaño se animaba más (prueba del usuario, 16/11/2026).
+#[derive(Debug, Clone, Copy, Default)]
+struct Limits {
+    min_w: Option<i32>,
+    min_h: Option<i32>,
+    max_w: Option<i32>,
+    max_h: Option<i32>,
+}
+
+impl Limits {
+    /// Pidió `asked` y quedó en `got`: en cada eje, si quedó más grande, ese
+    /// es su mínimo; si quedó más chica, su máximo.
+    fn learn(&mut self, got: Rect, asked: Rect) {
+        let axis = |got: i32, asked: i32, min: &mut Option<i32>, max: &mut Option<i32>| {
+            if got > asked + TOLERANCE_PX {
+                *min = Some(got);
+            } else if got < asked - TOLERANCE_PX {
+                *max = Some(got);
+            }
+        };
+        axis(got.width(), asked.width(), &mut self.min_w, &mut self.max_w);
+        axis(got.height(), asked.height(), &mut self.min_h, &mut self.max_h);
+    }
+
+    /// ¿Puede tomar el tamaño de `r`, por lo que se sabe?
+    fn allows(&self, r: Rect) -> bool {
+        let ok = |v: i32, min: Option<i32>, max: Option<i32>| {
+            min.is_none_or(|m| v >= m - TOLERANCE_PX) && max.is_none_or(|m| v <= m + TOLERANCE_PX)
+        };
+        ok(r.width(), self.min_w, self.max_w) && ok(r.height(), self.min_h, self.max_h)
+    }
 }
 
 impl World {
@@ -1003,16 +1039,16 @@ impl World {
 
     /// Se anima si la ventana está normal, al frente, en la misma escala y lo
     /// bastante lejos. Cambiar de tamaño también vuela (el carril recorta la
-    /// miniatura, mini-spike 6b, architecture.md §13.8b), salvo en una
-    /// ventana que ya mostró que no toma el tamaño pedido: terminaría en otro
-    /// lado y daría un salto al final.
+    /// miniatura, mini-spike 6b, architecture.md §13.8b), salvo a un tamaño
+    /// que la ventana ya mostró que no toma (mínimo o fijo): terminaría en
+    /// otro lado y daría un salto al final.
     fn may_fly(&self, obs: &Obs, spot: Spot, target: Rect) -> bool {
         let resize = target.width() != obs.frame.width() || target.height() != obs.frame.height();
         self.fly
             && obs.no_fly.is_none()
             && !obs.maximized
             && !obs.minimized
-            && !(resize && self.stubborn.contains(&obs.key))
+            && !(resize && self.limits.get(&obs.key).is_some_and(|l| !l.allows(target)))
             && obs.dpi == spot.monitor.dpi
             && travel(obs.frame, target) >= FLY_MIN_PX
     }
@@ -1375,7 +1411,7 @@ impl World {
             // lugar): no hay nada que hacer, y la app no está colgada.
             let (w, h) = (obs.frame.width(), obs.frame.height());
             if edge_error(obs.frame, anchor(j.target, j.spot.monitor.work, w, h)) <= TOLERANCE_PX {
-                self.stubborn.insert(win);
+                self.limits.entry(win).or_default().learn(obs.frame, j.target);
                 let line = format!(
                     "{}: la app no se achica ({w}×{h}); ya estaba pegada al borde, {:.1} ms",
                     j.what,
@@ -1420,7 +1456,7 @@ impl World {
         let resized = (w - j.target.width()).abs() > TOLERANCE_PX
             || (h - j.target.height()).abs() > TOLERANCE_PX;
         if resized && stable {
-            self.stubborn.insert(win);
+            self.limits.entry(win).or_default().learn(obs.frame, j.target);
         }
         if resized && !j.anchored && stable {
             let anchored = anchor(j.target, j.spot.monitor.work, w, h);

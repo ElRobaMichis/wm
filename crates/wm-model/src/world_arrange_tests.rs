@@ -1362,3 +1362,30 @@ fn g_flies_like_any_other_size_change() {
     sim.key(&mut w, b'G');
     assert_eq!((sim.flights, sim.places), (1, 0));
 }
+
+#[test]
+fn hitting_the_minimum_with_v_does_not_stop_other_animations() {
+    // Prueba del usuario: Brave no baja de 502 px; después de V hasta el
+    // límite, centrar, G, A y W + A dejaban de animarse.
+    let mut w = flying_world();
+    let mut sim = Sim::new();
+    sim.win.min_width = 502;
+    sim.at(0, P::RightHalf);
+    for _ in 0..4 {
+        sim.key(&mut w, b'V'); // 40 %, 30 %, 20 % (no llega: 502 px), otra vez
+    }
+    assert_eq!(sim.win.frame.width(), 502, "{:?}", sim.logs);
+    let flights = sim.flights;
+    sim.key(&mut w, b'G'); // 502 → más ancha: dentro de lo que acepta
+    sim.key(&mut w, b'A');
+    sim.chord(&mut w, b"WA", true);
+    sim.key(&mut w, b'C');
+    assert!(sim.flights >= flights + 4, "se siguen animando: {:?}", sim.logs);
+    // Lo que sí no acepta (más angosta que 502) va sin animación.
+    let flights = sim.flights;
+    sim.at(0, P::RightHalf);
+    for _ in 0..3 {
+        sim.key(&mut w, b'V');
+    }
+    assert!(sim.flights < flights + 3, "{:?}", sim.logs);
+}
