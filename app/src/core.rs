@@ -139,7 +139,9 @@ fn banner(log: &Log, bindings: &[AppBinding], config: Option<&PathBuf>, test_mod
     log.line("  Caps + Alt + dos juntas  esquina (W + A, S + D...)");
     log.line("  Caps + Alt + F / C / Z maximizar (y volver) / centrar (60 %, 80 %) / deshacer");
     log.line("  Caps + Alt + G / V     agrandar / achicar (10 %, pegada a su borde)");
-    log.line("  Bandeja         clic derecho en el ícono: ajustes, pausar, deshacer, salir");
+    log.line("  Caps + 1 / 2 / 3 / 4   ir a ese escritorio");
+    log.line("  Caps + Alt + 1-4       llevar la ventana a ese escritorio (Z deshace)");
+    log.line("  Bandeja         clic derecho: ajustes, pausar, deshacer, mostrar todas, salir");
     if test_mode {
         log.line("  Caps + Esc      salir (modo prueba; también Ctrl+C)");
     }

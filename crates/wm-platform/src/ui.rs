@@ -255,12 +255,17 @@ impl State {
             self.arm_timer();
         }
         match cmd {
-            Cmd::Show { layer, views, at } => match self.show(layer, views) {
-                Ok(None) => UiEvent::Skipped("hay una app a pantalla completa en ese monitor"),
-                Ok(Some(monitor)) => {
+            Cmd::Show { layer, views, at } => match (self.shown, self.show(layer, views)) {
+                (_, Ok(None)) => UiEvent::Skipped("hay una app a pantalla completa en ese monitor"),
+                // Ya estaba visible ahí: solo se actualizó (tras cambiar de
+                // escritorio); no es una aparición nueva para el log.
+                (Some(before), Ok(Some(monitor))) if before == monitor => {
+                    UiEvent::Shown { ms: 0.0, monitor }
+                }
+                (_, Ok(Some(monitor))) => {
                     UiEvent::Shown { ms: at.elapsed().as_secs_f64() * 1000.0, monitor }
                 }
-                Err(e) => {
+                (_, Err(e)) => {
                     self.hide();
                     UiEvent::Failed(format!("no se pudo mostrar el mapa: {e}"))
                 }
