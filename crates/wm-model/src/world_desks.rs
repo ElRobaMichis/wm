@@ -317,6 +317,9 @@ impl World {
             && let Some(FocusTo::Win(k)) = s.plan.as_ref().map(|p| p.focus)
         {
             self.desks.note_foreground(k);
+            if self.options.mouse_follows_focus {
+                out.push(Effect::MovePointer { win: k });
+            }
         }
         if !ok && !s.shell_tried {
             // Nunca dejar el teclado sobre una ventana que se va a esconder.

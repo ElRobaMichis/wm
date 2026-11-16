@@ -512,7 +512,7 @@ Auditoría del 16/11/2026 (`keyboard-design.md`, `design.md`, `architecture.md`,
 **Ubicado en un hito:** arranque automático (3a), Pausar y Deshacer en la bandeja y aviso de "atajos no disponibles" con una ventana de administrador (3b), mouse (5), ocultar el selector de perfil y actualizar el README (antes de la sesión U).
 
 **A decidir antes de las 1–2 semanas de uso real** (no bloquean la sesión 1):
-- **Avisos en pantalla** cuando una tecla no hace nada (no hay otro monitor, la app no responde, pantalla completa): hoy quedan solo en el log. Para una persona no técnica, que no pase nada parece una falla (`architecture.md` §5.5, `design.md` §5). Recomendación: un aviso discreto en el mapa o la bandeja; decidir con la sesión 1.
+- ~~**Avisos en pantalla**~~ hecho en v0.1.1: una píldora abajo al centro del monitor de la ventana al frente, 2,2 s, con fundidos (`wm_model::notices` traduce las líneas del log de las acciones que no hicieron nada; `ui.rs`); se apaga con "Avisos en pantalla" en los ajustes. Antes: **avisos en pantalla** cuando una tecla no hace nada (no hay otro monitor, la app no responde, pantalla completa): hoy quedan solo en el log. Para una persona no técnica, que no pase nada parece una falla (`architecture.md` §5.5, `design.md` §5). Recomendación: un aviso discreto en el mapa o la bandeja; decidir con la sesión 1.
 - **Registro local de uso** con su permiso (`keyboard-design.md` §12.3): `wm.log` cubre una parte, pero rota por tamaño.
 - **Instalación:** cómo se le actualiza y se desinstala; la firma del ejecutable va después de v1 (`architecture.md` §12.3–12.4, §9.7).
 

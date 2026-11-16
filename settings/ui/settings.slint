@@ -37,6 +37,7 @@ export component SettingsWindow inherits Window {
     in-out property <bool> focus-border: true;
     in-out property <bool> mouse-follows: false;
     in-out property <bool> animations: true;
+    in-out property <bool> notices: true;
     in property <string> selected-letter;
     // Textos que arma el código en Rust, traducidos acá.
     out property <string> free-text: @tr("Free");
@@ -46,6 +47,12 @@ export component SettingsWindow inherits Window {
     callback select(int);
     callback choose(int);
     callback save();
+    // Cambió una opción (para habilitar Guardar).
+    callback options-changed();
+    changed focus-border => { root.options-changed(); }
+    changed mouse-follows => { root.options-changed(); }
+    changed animations => { root.options-changed(); }
+    changed notices => { root.options-changed(); }
     callback cancel();
     pure callback find-letter(string) -> int;
 
@@ -218,8 +225,8 @@ export component SettingsWindow inherits Window {
                 }
             }
 
-            // Opciones que todavía no se guardan (funciones-ocultas.md §2-§4).
-            if root.show-unfinished: VerticalLayout {
+            // Opciones (settings.txt; funciones-ocultas.md §2-§4).
+            VerticalLayout {
             Rectangle { height: Theme.s6; }
 
             SectionLabel {
@@ -247,6 +254,11 @@ export component SettingsWindow inherits Window {
                         text: @tr("Animate windows");
                         detail: @tr("Short movements, no bounce.");
                         checked <=> root.animations;
+                    }
+                    ToggleRow {
+                        text: @tr("On-screen notices");
+                        detail: @tr("A short message when a key can't do anything.");
+                        checked <=> root.notices;
                     }
                 }
             }

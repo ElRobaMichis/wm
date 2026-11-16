@@ -2,6 +2,8 @@
 
 Qué se escondió de la interfaz antes de que la usuaria de prueba use `wm`, por qué, con qué requisito se relaciona y qué falta para volver a mostrarlo. Escrito el 16/11/2026, a pedido del usuario, **para que no se olvide**: cada ítem es trabajo pendiente, no algo descartado.
 
+> **Actualización (16/11/2026, v0.1.1):** ya existe el archivo de opciones (`%APPDATA%\wm\settings.txt`, `wm_model::options`, recargado solo por `wm-watch`) y **volvieron a los ajustes las tres opciones de §2–§4**, que ahora funcionan: borde de foco (`DWMWA_BORDER_COLOR`, solo Windows 11), el puntero sigue al foco (al ir a una app con `Caps` + letra o al cambiar de escritorio) y animar ventanas. Se sumó una cuarta, **"Avisos en pantalla"** (plan-core.md §10). **Sigue escondido solo el perfil (§1).** Lo que queda pendiente de cada una está anotado abajo.
+
 **Regla:** en la primera versión no se muestra nada que no haga lo que dice. Una persona no técnica que toca un interruptor y no pasa nada concluye que el programa está roto (`plan-core.md` §10: "que no pase nada parece una falla"). Por eso estas opciones se esconden, no se dejan "para probar".
 
 **Cómo verlas igual:** `wm-settings.exe --show-unfinished`. Están detrás de la propiedad `show-unfinished` de `settings/ui/settings.slint` (por defecto `false`); el código y las traducciones siguen ahí. Para volver a mostrar una sola, sacarla del bloque `if root.show-unfinished`.
@@ -33,8 +35,8 @@ La versión nativa de los ajustes (`wm settings`, `wm-platform::native_settings`
   - `findings.md` §17: *"El borde de foco es una función, no un adorno"* (los tutoriales de AeroSpace instalan JankyBorders para saber qué ventana tiene el foco);
   - `keyboard-design.md` §14.7 y `design.md` §5: prendido por defecto, 2 px en `accent` (`design.md`: "nunca otro color");
   - `architecture.md` §3 y §7.3: overlay con `CompositionSpriteShape`; `plan-core.md` §10, "Después de v1": con `DWMWA_BORDER_COLOR` cuesta poco.
-- **Para hacerlo:**
-  - lo barato y documentado: `DwmSetWindowAttribute(DWMWA_BORDER_COLOR)` sobre la ventana al frente y devolverle el color por defecto a la anterior (solo Windows 11; el `EVENT_SYSTEM_FOREGROUND` ya llega al brain desde el hito 4b.2);
+- **Hecho en v0.1.1** (lo barato). **Queda:**
+  - ~~lo barato y documentado: `DwmSetWindowAttribute(DWMWA_BORDER_COLOR)` sobre la ventana al frente y devolverle el color por defecto a la anterior (solo Windows 11; el `EVENT_SYSTEM_FOREGROUND` ya llega al brain desde el hito 4b.2)~~;
   - lo completo: un overlay propio que siga a la ventana (necesita `EVENT_OBJECT_LOCATIONCHANGE` acotado al proceso de esa ventana, `architecture.md` §4.3);
   - guardar la opción y respetarla en el core;
   - probar con ventanas sin borde, maximizadas y a pantalla completa.

@@ -159,6 +159,10 @@ pub struct Brain {
     winevents: wm_platform::winevents::WinEvents,
     /// Carril `wm-drag` (hito 5): se crea con el primer clic con Caps.
     drag: Option<wm_platform::drag::Drag>,
+    /// Opciones de `settings.txt` (borde de foco: lo aplica el brain).
+    options: wm_model::options::Options,
+    /// La ventana con el borde de foco pintado.
+    border: Option<WindowId>,
 }
 
 impl Brain {
@@ -177,26 +181,100 @@ impl Brain {
                 .is_none_or(|v| v != "0")
                 .then(|| Ui::start(input::current_thread_id())),
             tray: Tray::start(input::current_thread_id()),
-            watch: wm_model::apps::bindings_path()
-                .and_then(|p| wm_platform::watch::Watch::start(input::current_thread_id(), p)),
+            watch: wm_model::apps::bindings_path().zip(wm_model::options::options_path()).and_then(
+                |(apps, options)| {
+                    wm_platform::watch::Watch::start(
+                        input::current_thread_id(),
+                        vec![apps, options],
+                    )
+                },
+            ),
             quit: false,
             apply_update: false,
             hide_method: wm_platform::hide::HideMethod::ShellCloak,
             relaunched: false,
             winevents: wm_platform::winevents::WinEvents::start(input::current_thread_id()),
             drag: None,
+            options: wm_model::options::Options::default(),
+            border: None,
         }
     }
 
-    /// `apps.txt` cambió (lo guardaron los ajustes o se editó a mano).
+    /// `apps.txt` o `settings.txt` cambió (lo guardaron los ajustes o se
+    /// editó a mano).
     fn collect_watch(&mut self) {
-        let Some(text) = self.watch.as_mut().and_then(|w| w.drain()) else { return };
-        let (bindings, errors) = wm_model::apps::parse_bindings(&text);
-        for e in &errors {
-            self.log.line(format!("apps.txt: {e}"));
+        let changes = self.watch.as_mut().map(|w| w.drain()).unwrap_or_default();
+        let options_path = wm_model::options::options_path();
+        for (path, text) in changes {
+            if Some(&path) == options_path.as_ref() {
+                self.set_options(wm_model::options::Options::parse(&text), true);
+                continue;
+            }
+            let (bindings, errors) = wm_model::apps::parse_bindings(&text);
+            for e in &errors {
+                self.log.line(format!("apps.txt: {e}"));
+            }
+            self.log.line(format!("apps.txt recargado: {} asignaciones.", bindings.len()));
+            self.feed(Event::Bindings(bindings));
         }
-        self.log.line(format!("apps.txt recargado: {} asignaciones.", bindings.len()));
-        self.feed(Event::Bindings(bindings));
+    }
+
+    /// Lee `settings.txt` al arrancar.
+    pub fn load_options(&mut self) {
+        let o = wm_model::options::options_path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .map(|t| wm_model::options::Options::parse(&t))
+            .unwrap_or_default();
+        self.set_options(o, false);
+    }
+
+    fn set_options(&mut self, o: wm_model::options::Options, reloaded: bool) {
+        if reloaded {
+            let b = |v: bool| if v { "sí" } else { "no" };
+            self.log.line(format!(
+                "Opciones recargadas: animaciones {}, puntero sigue al foco {}, borde de foco {}, avisos {}.",
+                b(o.animate),
+                b(o.mouse_follows_focus),
+                b(o.focus_border),
+                b(o.notices)
+            ));
+        }
+        self.options = o;
+        if o.focus_border {
+            if self.border.is_none() {
+                self.paint_border(windows_list::foreground().map(windows_list::root_owner));
+            }
+        } else if let Some(old) = self.border.take() {
+            windows_list::set_border(old, None);
+        }
+        self.feed(Event::Options(o));
+    }
+
+    /// Borde de foco (2 px `accent`, design.md §5) en la ventana al frente;
+    /// la anterior vuelve al borde de Windows.
+    fn paint_border(&mut self, fg: Option<WindowId>) {
+        if !self.options.focus_border {
+            return;
+        }
+        let fg = fg.filter(|&id| windows_list::is_user(id));
+        if fg == self.border {
+            return;
+        }
+        if let Some(old) = self.border.take() {
+            windows_list::set_border(old, None);
+        }
+        if let Some(id) = fg {
+            // `accent` #5B8CFF como COLORREF (0x00BBGGRR).
+            windows_list::set_border(id, Some(0x00FF_8C5B));
+            self.border = Some(id);
+        }
+    }
+
+    /// Al salir: la ventana con borde vuelve al de Windows.
+    pub fn clear_border(&mut self) {
+        if let Some(old) = self.border.take() {
+            windows_list::set_border(old, None);
+        }
     }
 
     /// Respuestas del carril `wm-drag` (y su vigilante).
@@ -223,6 +301,7 @@ impl Brain {
         for e in self.winevents.drain() {
             match e {
                 WinEvent::Foreground(id) => {
+                    self.paint_border(Some(windows_list::root_owner(id)));
                     let k = key(windows_list::root_owner(id));
                     if k.pid != 0 {
                         self.feed(Event::Foreground(k));
@@ -554,6 +633,12 @@ impl Brain {
                         }
                     }
                 }
+                Effect::Notice(text) => {
+                    if let Some(ui) = self.ui.as_mut() {
+                        ui.notice(text);
+                    }
+                }
+                Effect::MovePointer { win } => windows_list::pointer_to(WindowId(win.hwnd)),
                 Effect::DragStop { .. } => {
                     if let Some(d) = self.drag.as_mut() {
                         d.end();
@@ -575,6 +660,7 @@ impl Brain {
     /// Salida (limpia o tras un pánico): mostrar todo, esperando como mucho
     /// `limit`.
     pub fn restore_at_exit(&mut self, limit: Duration, forget_desks: bool) {
+        self.clear_border();
         if let Some(anim) = self.anim.as_mut() {
             anim.land_all();
         }

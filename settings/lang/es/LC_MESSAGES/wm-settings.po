@@ -92,3 +92,9 @@ msgstr "(ninguna)"
 
 msgid "Search an app or a letter…"
 msgstr "Buscar app o letra…"
+
+msgid "On-screen notices"
+msgstr "Avisos en pantalla"
+
+msgid "A short message when a key can't do anything."
+msgstr "Un mensaje corto cuando una tecla no puede hacer nada."

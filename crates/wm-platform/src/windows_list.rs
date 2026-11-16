@@ -137,6 +137,65 @@ fn is_user_window(h: HWND) -> bool {
     }
 }
 
+/// ¿Es una ventana "de usuario" (las del Alt+Tab)?
+pub fn is_user(id: WindowId) -> bool {
+    is_user_window(id.hwnd())
+}
+
+/// "Borde de foco": color del borde de la ventana (`DWMWA_BORDER_COLOR`,
+/// Windows 11; en Windows 10 falla sin efecto). `None`: el de Windows.
+pub fn set_border(id: WindowId, color: Option<u32>) {
+    use windows::Win32::Graphics::Dwm::{DWMWA_BORDER_COLOR, DwmSetWindowAttribute};
+    const DWMWA_COLOR_DEFAULT: u32 = 0xFFFF_FFFF;
+    let value = color.unwrap_or(DWMWA_COLOR_DEFAULT);
+    // SAFETY: un u32 local; atributo documentado (no envía mensajes a la app).
+    let _ = unsafe {
+        DwmSetWindowAttribute(
+            id.hwnd(),
+            DWMWA_BORDER_COLOR,
+            &value as *const u32 as *const c_void,
+            size_of::<u32>() as u32,
+        )
+    };
+}
+
+/// El color del borde (`DWMWA_BORDER_COLOR`), si Windows lo informa.
+pub fn border_color(id: WindowId) -> Option<u32> {
+    use windows::Win32::Graphics::Dwm::{DWMWA_BORDER_COLOR, DwmGetWindowAttribute};
+    let mut v = 0u32;
+    // SAFETY: variable local con su tamaño.
+    unsafe {
+        DwmGetWindowAttribute(
+            id.hwnd(),
+            DWMWA_BORDER_COLOR,
+            &mut v as *mut u32 as *mut c_void,
+            size_of::<u32>() as u32,
+        )
+    }
+    .ok()
+    .map(|()| v)
+}
+
+/// "El puntero sigue al foco": lleva el puntero al centro de la ventana, si
+/// no está ya adentro.
+pub fn pointer_to(id: WindowId) {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, SetCursorPos};
+    let Some(f) = crate::ghost::frame_bounds(id) else { return };
+    let mut p = POINT::default();
+    // SAFETY: variable local.
+    if unsafe { GetCursorPos(&mut p) }.is_ok()
+        && p.x >= f.left
+        && p.x < f.right
+        && p.y >= f.top
+        && p.y < f.bottom
+    {
+        return;
+    }
+    // SAFETY: sin precondiciones.
+    let _ = unsafe { SetCursorPos((f.left + f.right) / 2, (f.top + f.bottom) / 2) };
+}
+
 /// El dueño raíz (`GA_ROOTOWNER`): para un diálogo, su ventana principal.
 pub fn root_owner(id: WindowId) -> WindowId {
     use windows::Win32::UI::WindowsAndMessaging::{GA_ROOTOWNER, GetAncestor};

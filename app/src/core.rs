@@ -74,6 +74,7 @@ pub fn run() -> ExitCode {
     }
     let mut brain = Brain::new(world, ops, log.clone(), test_mode);
     brain.relaunched = std::env::var("WM_RELAUNCH").ok().is_some_and(|n| n != "0" && !n.is_empty());
+    brain.load_options();
     brain.restore_at_start();
 
     input::quit_on_console_close(brain_thread);

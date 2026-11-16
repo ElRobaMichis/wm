@@ -586,6 +586,9 @@ fn probe_appdata() -> std::path::PathBuf {
     let apps = dir.join("wm").join("apps.txt");
     let _ = std::fs::create_dir_all(apps.parent().expect("tiene carpeta"));
     let _ = std::fs::remove_file(&apps);
+    // Sin avisos para los chequeos del mapa (un aviso usa la misma ventana
+    // overlay); "opciones y avisos" los vuelve a prender.
+    let _ = std::fs::write(apps.with_file_name("settings.txt"), "avisos = no\n");
     dir
 }
 
@@ -629,6 +632,95 @@ fn reload_check(r: &mut Report, lines: &std::sync::mpsc::Receiver<String>, puppe
         if focused.is_some() { "otro títere (wm)" } else { "NO cambió" },
     );
     r.check(name, if ok { Status::Ok } else { Status::Fail }, detail);
+}
+
+/// Opciones (`settings.txt`): se recargan solas; "el puntero sigue al foco"
+/// lleva el puntero a la ventana; el borde de foco pinta la del frente; un
+/// aviso aparece en pantalla cuando una tecla no hace nada y se va solo.
+fn options_check(
+    r: &mut Report,
+    lines: &std::sync::mpsc::Receiver<String>,
+    puppets: &[WindowId],
+    core_pid: u32,
+) {
+    let name = "opciones y avisos";
+    let file = std::env::temp_dir().join("wm-ci-probe-appdata").join("wm").join("settings.txt");
+    while lines.try_recv().is_ok() {}
+    let tmp = file.with_extension("tmp");
+    let written = std::fs::write(&tmp, "puntero_sigue_al_foco = sí\navisos = sí\n")
+        .and_then(|()| std::fs::rename(&tmp, &file));
+    if let Err(e) = written {
+        return r.check(name, Status::Fail, format!("no se pudo escribir {}: {e}", file.display()));
+    }
+    let start = Instant::now();
+    let reloaded = loop {
+        match lines.recv_timeout(Duration::from_millis(50)) {
+            Ok(l) if l.starts_with("Opciones recargadas") => break Some(start.elapsed()),
+            Ok(_) => {}
+            Err(_) if start.elapsed() > Duration::from_secs(2) => break None,
+            Err(_) => {}
+        }
+    };
+    // Puntero lejos; Caps + Q (q = wm, de la recarga) va a otro títere y el
+    // puntero tiene que quedar adentro.
+    let from = puppets[0];
+    let _ = windows_list::activate(from);
+    std::thread::sleep(Duration::from_millis(150));
+    let monitors = wm_platform::monitors();
+    let primary = monitors.iter().find(|m| m.primary).map(|m| m.bounds);
+    if let Some(b) = primary {
+        session::set_cursor(b.right - 5, b.bottom - 5);
+    }
+    session::send_hyper_chord(b'Q');
+    let inside = |id: WindowId| {
+        let Some(f) = wm_platform::ghost::frame_bounds(id) else { return false };
+        session::cursor()
+            .is_some_and(|(x, y)| x >= f.left && x < f.right && y >= f.top && y < f.bottom)
+    };
+    let followed = wait_for(Duration::from_millis(800), || {
+        windows_list::foreground()
+            .is_some_and(|fg| fg != from && puppets.contains(&fg) && inside(fg))
+    });
+    let border = windows_list::foreground().and_then(windows_list::border_color);
+    let border_ok = border.is_none_or(|c| c == 0x00FF_8C5B);
+    // Una letra sin ninguna app: aviso en pantalla.
+    let used: Vec<char> = windows_list::user_windows()
+        .iter()
+        .filter_map(|w| w.app.chars().next())
+        .map(|c| c.to_ascii_uppercase())
+        .collect();
+    let free = (b'A'..=b'Z').map(char::from).find(|c| *c != 'Q' && !used.contains(c));
+    let notice = free.map(|c| {
+        session::send_hyper_chord(c as u8);
+        let shown =
+            wait_for(Duration::from_millis(800), || wm_platform::ui::map_visible_in(core_pid));
+        let gone = shown.and_then(|_| {
+            wait_for(Duration::from_secs(4), || !wm_platform::ui::map_visible_in(core_pid))
+        });
+        (c, shown, gone)
+    });
+    let notice_ok = notice.is_none_or(|(_, s, g)| s.is_some() && g.is_some());
+    let ok = reloaded.is_some() && followed.is_some() && border_ok && notice_ok;
+    let detail = format!(
+        "settings.txt recargado {}; puntero a la ventana enfocada: {}; borde de foco: {}; aviso: {}",
+        reloaded.map_or_else(|| "NUNCA".into(), |d| format!("a los {}", ms(d))),
+        if followed.is_some() { "sí" } else { "NO" },
+        match border {
+            Some(0x00FF_8C5B) => "accent".to_owned(),
+            Some(c) => format!("{c:#08x} (NO)"),
+            None => "Windows no lo informa".to_owned(),
+        },
+        match notice {
+            None => "sin letra libre para probarlo".to_owned(),
+            Some((c, s, g)) => format!(
+                "Caps + {c} → {} y se fue {}",
+                s.map_or_else(|| "NO apareció".into(), |d| format!("apareció a los {}", ms(d))),
+                g.map_or_else(|| "NUNCA".into(), |d| format!("{} después", ms(d)))
+            ),
+        }
+    );
+    r.check(name, if ok { Status::Ok } else { Status::Fail }, detail);
+    let _ = std::fs::remove_file(&file);
 }
 
 /// Llegó a `target` y se ve: durante un vuelo el marco real ya está en el
@@ -678,6 +770,7 @@ fn core(r: &mut Report, puppets: &[WindowId]) {
     map_checks(r, child.id());
     tray_checks(r, puppets);
     reload_check(r, &lines, puppets);
+    options_check(r, &lines, puppets, child.id());
     hard_checks(r);
     hung_check(r);
     desks_check(r, puppets);

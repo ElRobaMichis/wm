@@ -573,6 +573,63 @@ pub fn build_view(
     })
 }
 
+/// Un aviso corto (una tecla no hizo nada): una píldora con el texto, abajo
+/// al centro de un área de `area_w` × `area_h`, a la escala del monitor.
+/// Aparece con un fundido, se queda y se va sola (lo anima DWM): no hace
+/// falta que nadie la esconda para que deje de verse.
+pub fn build_toast(
+    compositor: &Compositor,
+    parent: &ContainerVisual,
+    area_w: f32,
+    area_h: f32,
+    dpi: u32,
+    text: &str,
+    total: std::time::Duration,
+) -> windows::core::Result<ContainerVisual> {
+    const EM: f32 = 16.0;
+    const PAD_X: f32 = 18.0;
+    const H: f32 = 40.0;
+    let geist = Geist::load()?;
+    let d2d: ID2D1Factory = d2d_factory()?;
+    let regular = font(&geist, &geist.regular)?;
+    let (g, tw) = text_geometry(&d2d, &regular, text, EM)?;
+    let (w, h) = (tw + 2.0 * PAD_X, H);
+    let container = compositor.CreateContainerVisual()?;
+    container.SetSize(Vector2 { X: w, Y: h })?;
+    let scale = (dpi.max(96) as f32 / 96.0).min(area_w * 0.9 / w);
+    container.SetScale(Vector3 { X: scale, Y: scale, Z: 1.0 })?;
+    let (sw, sh) = (w * scale, h * scale);
+    container.SetOffset(Vector3 { X: (area_w - sw) / 2.0, Y: area_h * 0.88 - sh, Z: 0.0 })?;
+
+    let visual = compositor.CreateShapeVisual()?;
+    visual.SetSize(Vector2 { X: w, Y: h })?;
+    let shapes = visual.Shapes()?;
+    let rect = compositor.CreateRoundedRectangleGeometry()?;
+    rect.SetSize(Vector2 { X: w, Y: h })?;
+    rect.SetCornerRadius(Vector2 { X: h / 2.0, Y: h / 2.0 })?;
+    let bg = compositor.CreateSpriteShapeWithGeometry(&rect)?;
+    bg.SetFillBrush(&compositor.CreateColorBrushWithColor(tokens::PANEL)?)?;
+    bg.SetStrokeBrush(&compositor.CreateColorBrushWithColor(tokens::BORDER)?)?;
+    bg.SetStrokeThickness(1.0)?;
+    shapes.Append(&bg)?;
+    let text_brush = compositor.CreateColorBrushWithColor(tokens::TEXT)?;
+    // Centrado vertical aproximado: la caja de Geist a 16 px mide ~19 px.
+    shape_text(compositor, &shapes, g, &text_brush, PAD_X, (h - EM * 1.2) / 2.0)?;
+    container.Children()?.InsertAtTop(&visual)?;
+
+    // Opacidad: entra en 120 ms, se queda, sale en 300 ms.
+    let total_ms = total.as_millis().max(800) as f32;
+    let anim = compositor.CreateScalarKeyFrameAnimation()?;
+    anim.InsertKeyFrame(0.0, 0.0)?;
+    anim.InsertKeyFrame(120.0 / total_ms, 1.0)?;
+    anim.InsertKeyFrame(1.0 - 300.0 / total_ms, 1.0)?;
+    anim.InsertKeyFrame(1.0, 0.0)?;
+    anim.SetDuration(windows::Foundation::TimeSpan { Duration: (total.as_nanos() / 100) as i64 })?;
+    container.StartAnimation(&windows::core::HSTRING::from("Opacity"), &anim)?;
+    parent.Children()?.InsertAtTop(&container)?;
+    Ok(container)
+}
+
 // ---------------------------------------------------------------------------
 // Caminos 2 y 3: D2D en una superficie de Composition
 // ---------------------------------------------------------------------------

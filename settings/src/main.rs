@@ -24,6 +24,7 @@ use std::rc::Rc;
 
 use slint::{ModelRc, SharedString, VecModel};
 use wm_model::apps::{AppBinding, bindings_path, parse_bindings, update_bindings};
+use wm_model::options::{Options, options_path};
 use wm_model::settings_demo::{APP_NAMES, APPS};
 
 slint::include_modules!();
@@ -84,6 +85,8 @@ struct State {
     /// Letra elegida (índice en `assigned`).
     current: usize,
     query: String,
+    /// Opciones al abrir (`settings.txt`).
+    options: Options,
 }
 
 fn refresh(ui: &SettingsWindow, st: &State) {
@@ -109,7 +112,27 @@ fn refresh(ui: &SettingsWindow, st: &State) {
     ui.set_selected_letter(SharedString::from(letter.to_string()));
     ui.set_choice(app.map_or(0, |a| a as i32 + 1));
     ui.set_assigned(st.assigned.iter().filter(|(_, a)| a.is_some()).count() as i32);
-    ui.set_dirty(st.assigned != st.original);
+    ui.set_dirty(st.assigned != st.original || options_of(ui) != st.options);
+}
+
+fn options_of(ui: &SettingsWindow) -> Options {
+    Options {
+        animate: ui.get_animations(),
+        mouse_follows_focus: ui.get_mouse_follows(),
+        focus_border: ui.get_focus_border(),
+        notices: ui.get_notices(),
+    }
+}
+
+/// Escribe `settings.txt` (temporal + renombrar, como `apps.txt`).
+fn save_options(o: &Options) -> std::io::Result<()> {
+    let Some(path) = options_path() else { return Ok(()) };
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("txt.tmp");
+    std::fs::write(&tmp, o.format())?;
+    std::fs::rename(&tmp, path)
 }
 
 /// Escribe las asignaciones en `path`: primero a un temporal y después lo
@@ -168,6 +191,14 @@ fn main() -> Result<(), slint::PlatformError> {
     choices.extend(catalog.name.iter().map(|a| SharedString::from(a.as_str())));
     ui.set_apps(ModelRc::new(VecModel::from(choices)));
 
+    let options = options_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|t| Options::parse(&t))
+        .unwrap_or_default();
+    ui.set_animations(options.animate);
+    ui.set_mouse_follows(options.mouse_follows_focus);
+    ui.set_focus_border(options.focus_border);
+    ui.set_notices(options.notices);
     let st = Rc::new(RefCell::new(State {
         catalog,
         file_text,
@@ -177,8 +208,17 @@ fn main() -> Result<(), slint::PlatformError> {
         visible: (0..26).collect(),
         current: 0,
         query: String::new(),
+        options,
     }));
     refresh(&ui, &st.borrow());
+
+    let weak = ui.as_weak();
+    let s = st.clone();
+    ui.on_options_changed(move || {
+        if let Some(ui) = weak.upgrade() {
+            refresh(&ui, &s.borrow());
+        }
+    });
 
     let weak = ui.as_weak();
     let s = st.clone();
@@ -238,6 +278,13 @@ fn main() -> Result<(), slint::PlatformError> {
             return;
         };
         // Si falla, la ventana queda abierta con los cambios.
+        let opts = options_of(&ui);
+        if opts != s.borrow().options
+            && let Err(e) = save_options(&opts)
+        {
+            eprintln!("No se pudieron guardar las opciones: {e}");
+            return;
+        }
         match save(path, &s.borrow()) {
             Ok(()) => {
                 let _ = ui.hide();

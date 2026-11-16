@@ -71,7 +71,12 @@ enum Cmd {
     /// Pintar esta tecla en `accent` (la recién usada).
     Light(char),
     Hide,
+    /// Un aviso corto en pantalla.
+    Notice(String),
 }
+
+/// Cuánto dura un aviso en pantalla (con los fundidos).
+const NOTICE: Duration = Duration::from_millis(2200);
 
 /// Las ventanas del mapa, para esconderlas si el hilo se traba.
 static WINDOWS: Mutex<Vec<isize>> = Mutex::new(Vec::new());
@@ -153,6 +158,11 @@ impl Ui {
         self.send(Cmd::Light(letter));
     }
 
+    /// Un aviso corto en pantalla (en el monitor de la ventana al frente).
+    pub fn notice(&mut self, text: String) {
+        self.send(Cmd::Notice(text));
+    }
+
     pub fn next_deadline(&self) -> Option<Instant> {
         self.waiting
     }
@@ -206,6 +216,9 @@ struct State {
     built: Option<Built>,
     shown: Option<usize>,
     timer: usize,
+    /// El aviso en pantalla: monitor, visual y su temporizador.
+    toast: Option<(usize, windows::UI::Composition::ContainerVisual)>,
+    toast_timer: usize,
 }
 
 fn run(brain: u32, cmds: Receiver<Cmd>, events: Sender<UiEvent>, abandoned: Arc<AtomicBool>) {
@@ -222,7 +235,8 @@ fn run(brain: u32, cmds: Receiver<Cmd>, events: Sender<UiEvent>, abandoned: Arc<
         *w = overlays.screens().iter().map(|s| s.hwnd.0 as isize).collect();
     }
     reply(UiEvent::Ready(Ok(())));
-    let mut st = State { overlays, built: None, shown: None, timer: 0 };
+    let mut st =
+        State { overlays, built: None, shown: None, timer: 0, toast: None, toast_timer: 0 };
     let mut msg = MSG::default();
     // SAFETY: bucle de mensajes estándar (Composition usa esta cola).
     while unsafe { GetMessageW(&mut msg, None, 0, 0) }.as_bool() {
@@ -233,6 +247,12 @@ fn run(brain: u32, cmds: Receiver<Cmd>, events: Sender<UiEvent>, abandoned: Arc<
             while let Ok(cmd) = cmds.try_recv() {
                 reply(st.run(cmd));
             }
+        } else if msg.hwnd.is_invalid()
+            && msg.message == WM_TIMER
+            && msg.wParam.0 == st.toast_timer
+            && st.toast_timer != 0
+        {
+            st.end_toast();
         } else if msg.hwnd.is_invalid() && msg.message == WM_TIMER {
             // El brain no ocultó el mapa a tiempo: se oculta solo.
             st.hide();
@@ -290,6 +310,12 @@ impl State {
                 self.hide();
                 UiEvent::Shown { ms: 0.0, monitor: usize::MAX }
             }
+            Cmd::Notice(text) => {
+                if let Err(e) = self.notice(&text) {
+                    return UiEvent::Failed(format!("no se pudo mostrar el aviso: {e}"));
+                }
+                UiEvent::Shown { ms: 0.0, monitor: usize::MAX }
+            }
         }
     }
 
@@ -307,6 +333,7 @@ impl State {
         let n = self.overlays.screens().len();
         if self.built.as_ref().is_none_or(|b| b.views != views) {
             // Contenido nuevo (cambiaron las asignaciones): se rearma.
+            self.end_toast();
             for s in self.overlays.screens() {
                 s.root.Children()?.RemoveAll()?;
             }
@@ -381,10 +408,71 @@ impl State {
         window.container.SetIsVisible(layer == Layer::Window)
     }
 
+    /// Un aviso: reemplaza al anterior. No en un monitor con pantalla
+    /// completa (un juego o un video).
+    fn notice(&mut self, text: &str) -> windows::core::Result<()> {
+        if !self.overlays.is_current() {
+            // Monitores cambiados: lo rearma el próximo mapa; el aviso se omite.
+            return Ok(());
+        }
+        self.end_toast();
+        let i = pick_monitor(&self.overlays);
+        if fullscreen_on(&self.overlays.screens()[i].bounds) {
+            return Ok(());
+        }
+        let s = &self.overlays.screens()[i];
+        let (w, h) = (s.bounds.width() as f32, s.bounds.height() as f32);
+        let visual = overlay_text::build_toast(
+            self.overlays.compositor(),
+            &s.root,
+            w,
+            h,
+            s.dpi,
+            text,
+            NOTICE,
+        )?;
+        if self.shown != Some(i) {
+            // La ventana no tiene el mapa: el fundido del mapa la pudo dejar
+            // transparente.
+            s.root.SetOpacity(1.0)?;
+            self.overlays.show_also(i);
+        }
+        self.toast = Some((i, visual));
+        // SAFETY: temporizador de hilo (sin ventana).
+        self.toast_timer = unsafe { SetTimer(None, 0, NOTICE.as_millis() as u32 + 100, None) };
+        Ok(())
+    }
+
+    /// Quita el aviso (y esconde su ventana si el mapa no está ahí).
+    fn end_toast(&mut self) {
+        if self.toast_timer != 0 {
+            // SAFETY: temporizador propio.
+            let _ = unsafe { KillTimer(None, self.toast_timer) };
+            self.toast_timer = 0;
+        }
+        if let Some((i, visual)) = self.toast.take() {
+            if let Some(s) = self.overlays.screens().get(i)
+                && let Ok(children) = s.root.Children()
+            {
+                let _ = children.Remove(&visual);
+            }
+            if self.shown != Some(i) {
+                self.overlays.hide_one(i);
+            }
+        }
+    }
+
     fn hide(&mut self) {
         SHOWN.store(0, Ordering::Release);
         self.overlays.hide();
         self.shown = None;
+        // Un aviso en curso sigue (su ventana vuelve a mostrarse).
+        if let Some((i, _)) = &self.toast {
+            if let Some(s) = self.overlays.screens().get(*i) {
+                let _ = s.root.SetOpacity(1.0);
+            }
+            self.overlays.show_also(*i);
+        }
         if self.timer != 0 {
             // SAFETY: temporizador propio de este hilo.
             let _ = unsafe { KillTimer(None, self.timer) };

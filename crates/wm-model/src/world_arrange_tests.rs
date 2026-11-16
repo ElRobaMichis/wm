@@ -75,6 +75,8 @@ struct Sim {
     /// cruzar a un monitor con otra escala.
     dpi_queue: Vec<(u64, u32)>,
     logs: Vec<String>,
+    /// Avisos en pantalla (hito de opciones).
+    notices: Vec<String>,
     places: usize,
     normalized: bool,
     flight: Option<Flight>,
@@ -113,6 +115,7 @@ impl Sim {
             queued: Vec::new(),
             dpi_queue: Vec::new(),
             logs: Vec::new(),
+            notices: Vec::new(),
             places: 0,
             normalized: false,
             flight: None,
@@ -253,6 +256,8 @@ impl Sim {
                             }
                         }
                         Effect::Log(line) => self.logs.push(line),
+                        Effect::Notice(text) => self.notices.push(text),
+                        Effect::MovePointer { .. } => {}
                         other => panic!("efecto inesperado: {other:?}"),
                     }
                 }
@@ -511,6 +516,7 @@ fn full_screen_windows_are_left_alone() {
     sim.run(&mut w, arrange(b'A', HELD_A));
     assert_eq!(sim.places, 0);
     assert!(sim.logs[0].contains("pantalla completa"));
+    assert_eq!(sim.notices.last().map(String::as_str), Some("Brave está en pantalla completa"));
 }
 
 #[test]

@@ -385,6 +385,8 @@ pub enum Event {
         req: Req,
         result: Result<Grab, String>,
     },
+    /// Opciones nuevas (`settings.txt`, al arrancar y al guardarse).
+    Options(crate::options::Options),
     /// Hito 5: terminó un arrastre.
     DragDone {
         win: WinKey,
@@ -527,6 +529,13 @@ pub enum Effect {
     DragStop {
         win: WinKey,
     },
+    /// Un aviso corto en pantalla (una tecla no hizo nada).
+    Notice(String),
+    /// "El puntero sigue al foco": llevar el puntero al centro de la ventana
+    /// (si no está ya adentro).
+    MovePointer {
+        win: WinKey,
+    },
 }
 
 /// Antigüedad máxima de una acción para ejecutarla: una que llega tarde (el
@@ -553,6 +562,7 @@ enum Pending {
         app: String,
         title: String,
         key_us: u64,
+        win: WinKey,
     },
     Launch {
         letter: u8,
@@ -678,6 +688,8 @@ pub struct World {
     dragging: Option<world_drag::Dragging>,
     /// Z llegó mientras un arrastre terminaba: se hace al terminar.
     undo_after_drag: Option<u64>,
+    /// Opciones de `settings.txt`.
+    options: crate::options::Options,
 }
 
 /// Tamaños que una ventana no aceptó. Antes se marcaba la ventana entera y
@@ -849,6 +861,20 @@ impl World {
     /// Procesa un evento. `now_us`: reloj monótono en microsegundos (el mismo
     /// para todos los eventos), para medir desde la tecla.
     pub fn step(&mut self, event: Event, now_us: u64) -> Vec<Effect> {
+        let mut out = self.step_inner(event, now_us);
+        // Avisos en pantalla: cuando una tecla no hizo nada, además del log.
+        if self.options.notices
+            && let Some(text) = out.iter().rev().find_map(|e| match e {
+                Effect::Log(l) => crate::notices::notice_for(l),
+                _ => None,
+            })
+        {
+            out.push(Effect::Notice(text));
+        }
+        out
+    }
+
+    fn step_inner(&mut self, event: Event, now_us: u64) -> Vec<Effect> {
         let mut out = Vec::new();
         match event {
             // En pausa, el hook deja pasar todo; si igual llega algo (en
@@ -939,7 +965,8 @@ impl World {
                     self.sync_focused(result, now_us, &mut out);
                     return out;
                 }
-                let Some(Pending::Focus { letter, app, title, key_us }) = self.pending.remove(&req)
+                let Some(Pending::Focus { letter, app, title, key_us, win }) =
+                    self.pending.remove(&req)
                 else {
                     return out;
                 };
@@ -949,6 +976,9 @@ impl World {
                         self.activations.total += 1;
                         self.activations.ok += u32::from(f.ok);
                         self.activations.neutral_key += u32::from(f.neutral_key);
+                        if f.ok && self.options.mouse_follows_focus {
+                            out.push(Effect::MovePointer { win });
+                        }
                         let status = if f.ok { "ok" } else { "FALLÓ" };
                         let trick = if f.neutral_key { ", con tecla neutra" } else { "" };
                         let since = now_us.saturating_sub(key_us) as f64 / 1000.0;
@@ -1036,6 +1066,7 @@ impl World {
                 }
             }
             Event::DragDone { win, result } => self.on_drag_done(win, result, &mut out),
+            Event::Options(o) => self.options = o,
             Event::Uncloaked(win) => self.on_uncloaked(win, now_us, &mut out),
             Event::Launched { req, result } => {
                 let Some(Pending::Launch { letter, app, path }) = self.pending.remove(&req) else {
@@ -1420,6 +1451,7 @@ impl World {
     fn may_fly(&self, obs: &Obs, spot: Spot, target: Rect) -> bool {
         let resize = target.width() != obs.frame.width() || target.height() != obs.frame.height();
         self.fly
+            && self.options.animate
             && obs.no_fly.is_none()
             && !obs.maximized
             && !obs.minimized
@@ -2035,8 +2067,13 @@ impl World {
                 let title =
                     windows.iter().find(|w| w.key == window).map_or("", |w| w.title.as_str());
                 let req = self.req();
-                let pending =
-                    Pending::Focus { letter, app: app.to_owned(), title: title.to_owned(), key_us };
+                let pending = Pending::Focus {
+                    letter,
+                    app: app.to_owned(),
+                    title: title.to_owned(),
+                    key_us,
+                    win: window,
+                };
                 self.pending.insert(req, pending);
                 out.push(Effect::Focus { req, win: window });
             }
@@ -2213,6 +2250,7 @@ mod tests {
                         Effect::Show { .. } | Effect::Hide { .. } | Effect::FocusShell { .. } => {
                             panic!("todo está en el escritorio 1")
                         }
+                        Effect::Notice(_) | Effect::MovePointer { .. } => {}
                         Effect::InspectAt { .. }
                         | Effect::Raise { .. }
                         | Effect::DragStart { .. }
@@ -2485,7 +2523,7 @@ mod command_tests {
         assert!(!w.can_undo());
         let out = w.step(Event::Command(Command::Undo), 0);
         assert!(
-            matches!(&out[..], [Effect::Log(l)] if l.contains("nada para deshacer")),
+            matches!(&out[..], [Effect::Log(l), Effect::Notice(_)] if l.contains("nada para deshacer")),
             "{out:?}"
         );
     }

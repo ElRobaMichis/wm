@@ -13,6 +13,8 @@ pub mod keyboard;
 pub mod map;
 pub mod mapview;
 pub mod mouse;
+pub mod notices;
+pub mod options;
 pub mod place;
 pub mod screens;
 pub mod settings_demo;

@@ -136,6 +136,37 @@ impl Overlays {
         }
     }
 
+    /// Muestra también la ventana del monitor `i` (encima de todo, sin
+    /// activarla) sin tocar las demás: para un aviso con el mapa visible en
+    /// otro monitor.
+    pub fn show_also(&self, i: usize) {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SetWindowPos,
+        };
+        if let Some(s) = self.screens.get(i) {
+            // SAFETY: ventana propia.
+            let _ = unsafe {
+                SetWindowPos(
+                    s.hwnd,
+                    Some(HWND_TOPMOST),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                )
+            };
+        }
+    }
+
+    /// Esconde la ventana del monitor `i`.
+    pub fn hide_one(&self, i: usize) {
+        if let Some(s) = self.screens.get(i) {
+            // SAFETY: ventana propia.
+            let _ = unsafe { ShowWindow(s.hwnd, SW_HIDE) };
+        }
+    }
+
     pub fn hide(&self) {
         for s in &self.screens {
             // SAFETY: ventanas propias.

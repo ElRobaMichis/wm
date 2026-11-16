@@ -133,6 +133,7 @@ impl Plat {
                         queue.push_back(Event::Focused { req, result: Ok(report) });
                     }
                     Effect::Log(line) => self.logs.push(line),
+                    Effect::Notice(_) | Effect::MovePointer { .. } => {}
                     other => panic!("efecto inesperado en la prueba de escritorios: {other:?}"),
                 }
             }

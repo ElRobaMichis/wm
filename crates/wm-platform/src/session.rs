@@ -193,6 +193,15 @@ pub fn send_mouse_button(right: bool, down: bool) -> u32 {
     unsafe { SendInput(&[input], size_of::<INPUT>() as i32) }
 }
 
+/// Posición del cursor.
+pub fn cursor() -> Option<(i32, i32)> {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    let mut p = POINT::default();
+    // SAFETY: variable local.
+    unsafe { GetCursorPos(&mut p) }.ok().map(|()| (p.x, p.y))
+}
+
 /// Hito 5 (pruebas): mover el cursor.
 pub fn set_cursor(x: i32, y: i32) -> bool {
     use windows::Win32::UI::WindowsAndMessaging::SetCursorPos;
