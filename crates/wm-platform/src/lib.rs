@@ -23,6 +23,8 @@ pub mod drag;
 #[cfg(windows)]
 mod dynlib;
 #[cfg(windows)]
+pub mod focus_border;
+#[cfg(windows)]
 pub mod geometry;
 #[cfg(windows)]
 pub mod ghost;

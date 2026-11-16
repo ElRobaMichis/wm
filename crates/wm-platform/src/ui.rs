@@ -73,6 +73,8 @@ enum Cmd {
     Hide,
     /// Un aviso corto en pantalla.
     Notice(String),
+    /// Borde de foco: seguir a esta ventana (`None`: apagado).
+    Border(Option<isize>),
 }
 
 /// Cuánto dura un aviso en pantalla (con los fundidos).
@@ -163,6 +165,11 @@ impl Ui {
         self.send(Cmd::Notice(text));
     }
 
+    /// Borde de foco alrededor de `win` (`None`: ninguno).
+    pub fn border(&mut self, win: Option<isize>) {
+        self.send(Cmd::Border(win));
+    }
+
     pub fn next_deadline(&self) -> Option<Instant> {
         self.waiting
     }
@@ -219,6 +226,8 @@ struct State {
     /// El aviso en pantalla: monitor, visual y su temporizador.
     toast: Option<(usize, windows::UI::Composition::ContainerVisual)>,
     toast_timer: usize,
+    /// Borde de foco (se crea la primera vez que se pide).
+    border: Option<crate::focus_border::FocusBorder>,
 }
 
 fn run(brain: u32, cmds: Receiver<Cmd>, events: Sender<UiEvent>, abandoned: Arc<AtomicBool>) {
@@ -235,8 +244,15 @@ fn run(brain: u32, cmds: Receiver<Cmd>, events: Sender<UiEvent>, abandoned: Arc<
         *w = overlays.screens().iter().map(|s| s.hwnd.0 as isize).collect();
     }
     reply(UiEvent::Ready(Ok(())));
-    let mut st =
-        State { overlays, built: None, shown: None, timer: 0, toast: None, toast_timer: 0 };
+    let mut st = State {
+        overlays,
+        built: None,
+        shown: None,
+        timer: 0,
+        toast: None,
+        toast_timer: 0,
+        border: None,
+    };
     let mut msg = MSG::default();
     // SAFETY: bucle de mensajes estándar (Composition usa esta cola).
     while unsafe { GetMessageW(&mut msg, None, 0, 0) }.as_bool() {
@@ -246,6 +262,10 @@ fn run(brain: u32, cmds: Receiver<Cmd>, events: Sender<UiEvent>, abandoned: Arc<
         if msg.hwnd.is_invalid() && msg.message == WM_UI_RUN {
             while let Ok(cmd) = cmds.try_recv() {
                 reply(st.run(cmd));
+            }
+        } else if msg.hwnd.is_invalid() && msg.message == crate::focus_border::WM_BORDER_UPDATE {
+            if let Some(b) = st.border.as_mut() {
+                b.update();
             }
         } else if msg.hwnd.is_invalid()
             && msg.message == WM_TIMER
@@ -308,6 +328,22 @@ impl State {
             }
             Cmd::Hide => {
                 self.hide();
+                UiEvent::Shown { ms: 0.0, monitor: usize::MAX }
+            }
+            Cmd::Border(win) => {
+                if self.border.is_none() && win.is_some() {
+                    match crate::focus_border::FocusBorder::new(self.overlays.compositor()) {
+                        Ok(b) => self.border = Some(b),
+                        Err(e) => {
+                            return UiEvent::Failed(format!(
+                                "no se pudo crear el borde de foco: {e}"
+                            ));
+                        }
+                    }
+                }
+                if let Some(b) = self.border.as_mut() {
+                    b.follow(win.map(windows_list::WindowId));
+                }
                 UiEvent::Shown { ms: 0.0, monitor: usize::MAX }
             }
             Cmd::Notice(text) => {

@@ -384,7 +384,7 @@ fn build_shapes(
 use wm_model::mapview::Tone;
 
 /// Tokens oscuros de design.md §3.2 (el mapa es siempre oscuro).
-mod tokens {
+pub(crate) mod tokens {
     use windows::UI::Color;
     const fn c(a: u8, r: u8, g: u8, b: u8) -> Color {
         Color { A: a, R: r, G: g, B: b }

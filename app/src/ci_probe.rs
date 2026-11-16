@@ -681,8 +681,41 @@ fn options_check(
         windows_list::foreground()
             .is_some_and(|fg| fg != from && puppets.contains(&fg) && inside(fg))
     });
-    let border = windows_list::foreground().and_then(windows_list::border_color);
-    let border_ok = border.is_none_or(|c| c == 0x00FF_8C5B);
+    // El borde propio rodea el marco de la ventana al frente.
+    let fg = windows_list::foreground();
+    let border = wait_for(Duration::from_millis(500), || {
+        let (Some(fg), Some(b)) = (fg, wm_platform::focus_border::shown_rect(core_pid)) else {
+            return false;
+        };
+        wm_platform::ghost::frame_bounds(fg).is_some_and(|f| {
+            b.left < f.left
+                && b.top < f.top
+                && b.right > f.right
+                && b.bottom > f.bottom
+                && f.left - b.left <= 4
+        })
+    });
+    // Y lo sigue al moverla (WinEvents de su proceso).
+    let follows =
+        fg.zip(wm_platform::ghost::window_rect(fg.unwrap_or(WindowId(0)))).and_then(|(fg, r)| {
+            let moved = wm_model::Rect::new(r.left + 60, r.top + 40, r.right + 60, r.bottom + 40);
+            let before = wm_platform::ghost::frame_bounds(fg)?;
+            let _ = windows_list::place_async(fg, moved);
+            wait_for(Duration::from_millis(600), || {
+                let (Some(f), Some(b)) = (
+                    wm_platform::ghost::frame_bounds(fg),
+                    wm_platform::focus_border::shown_rect(core_pid),
+                ) else {
+                    return false;
+                };
+                f.left >= before.left + 50
+                    && f.left - b.left <= 4
+                    && f.left - b.left > 0
+                    && b.top < f.top
+                    && f.top - b.top <= 4
+            })
+        });
+    let border_ok = border.is_some() && follows.is_some();
     // Una letra sin ninguna app: aviso en pantalla.
     let used: Vec<char> = windows_list::user_windows()
         .iter()
@@ -705,10 +738,10 @@ fn options_check(
         "settings.txt recargado {}; puntero a la ventana enfocada: {}; borde de foco: {}; aviso: {}",
         reloaded.map_or_else(|| "NUNCA".into(), |d| format!("a los {}", ms(d))),
         if followed.is_some() { "sí" } else { "NO" },
-        match border {
-            Some(0x00FF_8C5B) => "accent".to_owned(),
-            Some(c) => format!("{c:#08x} (NO)"),
-            None => "Windows no lo informa".to_owned(),
+        match (border, follows) {
+            (Some(_), Some(d)) => format!("rodea la ventana y la sigue al moverla ({})", ms(d)),
+            (Some(_), None) => "rodea la ventana pero NO la sigue".to_owned(),
+            _ => "NO".to_owned(),
         },
         match notice {
             None => "sin letra libre para probarlo".to_owned(),

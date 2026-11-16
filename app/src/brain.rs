@@ -244,14 +244,15 @@ impl Brain {
             if self.border.is_none() {
                 self.paint_border(windows_list::foreground().map(windows_list::root_owner));
             }
-        } else if let Some(old) = self.border.take() {
-            windows_list::set_border(old, None);
+        } else if self.border.is_some() {
+            self.clear_border();
         }
         self.feed(Event::Options(o));
     }
 
-    /// Borde de foco (2 px `accent`, design.md §5) en la ventana al frente;
-    /// la anterior vuelve al borde de Windows.
+    /// Borde de foco (2 px `accent`, design.md §5) alrededor de la ventana
+    /// al frente: una ventana nuestra que la sigue (`focus_border.rs`; se ve
+    /// también en las apps con marco propio, como Terminal o Claude).
     fn paint_border(&mut self, fg: Option<WindowId>) {
         if !self.options.focus_border {
             return;
@@ -260,20 +261,17 @@ impl Brain {
         if fg == self.border {
             return;
         }
-        if let Some(old) = self.border.take() {
-            windows_list::set_border(old, None);
-        }
-        if let Some(id) = fg {
-            // `accent` #5B8CFF como COLORREF (0x00BBGGRR).
-            windows_list::set_border(id, Some(0x00FF_8C5B));
-            self.border = Some(id);
+        self.border = fg;
+        if let Some(ui) = self.ui.as_mut() {
+            ui.border(fg.map(|id| id.0));
         }
     }
 
-    /// Al salir: la ventana con borde vuelve al de Windows.
+    /// Apagar el borde (opción apagada o salida).
     pub fn clear_border(&mut self) {
-        if let Some(old) = self.border.take() {
-            windows_list::set_border(old, None);
+        self.border = None;
+        if let Some(ui) = self.ui.as_mut() {
+            ui.border(None);
         }
     }
 
