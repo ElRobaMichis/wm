@@ -302,6 +302,10 @@ pub fn run(exe: &Path) -> Vec<Check> {
 
     // (ii, aproximación) Foco a una ventana con cloak, como el clic en la
     // barra de tareas: ¿se destapa sola? ¿llega FOREGROUND?
+    // Primero el foco a otra: si la escondida ya estaba al frente, activarla
+    // no cambia nada (ni evento ni destape).
+    let _ = windows_list::activate(p1);
+    pump(100);
     let _ = hider.hide(p2);
     wait(500, || cloaked(p2) == DWM_CLOAKED_SHELL);
     clear_events();
@@ -365,6 +369,14 @@ pub fn run(exe: &Path) -> Vec<Check> {
         ));
     }
 
+    // (viii) ¿A cuál activa Windows al minimizar o cerrar la del frente,
+    // si hay una escondida más arriba en Z que una visible?
+    out.push(z_order_check(&hider, exe, &mut children));
+
+    // ¿La espera del brain (MsgWaitForMultipleObjectsEx) despierta con un
+    // WinEvent fuera de contexto?
+    out.push(wake_check(p1, p2));
+
     // (i) Diálogo con dueño.
     out.push(owned_check(&hider, exe, &mut children));
 
@@ -380,6 +392,102 @@ pub fn run(exe: &Path) -> Vec<Check> {
 
 fn describe_v(v: hide::Visibility) -> String {
     format!("cloak={} visible={} minimizada={}", v.cloaked, v.visible, v.minimized)
+}
+
+fn z_order_check(hider: &Hider, exe: &Path, children: &mut Children) -> Check {
+    const NAME: &str = "foco tras minimizar o cerrar";
+    // Tres procesos de un títere cada uno, para poder cerrar uno solo.
+    let mut wins = Vec::new();
+    for _ in 0..3 {
+        let Some(pid) = children.spawn(exe, &["puppet", "1"]) else {
+            return verdict(NAME, false, "no se pudieron lanzar los títeres".into());
+        };
+        if !wait(5000, || puppets_of(pid).len() == 1) {
+            return verdict(NAME, false, "no apareció un títere".into());
+        }
+        wins.push(puppets_of(pid)[0]);
+    }
+    pump(300);
+    let name = |w: WindowId, wins: &[WindowId]| match wins.iter().position(|&x| x == w) {
+        Some(0) => "la visible (abajo)".to_string(),
+        Some(1) => "LA ESCONDIDA".to_string(),
+        Some(2) => "la del frente".to_string(),
+        _ => w.map_or_class(),
+    };
+    let mut result = Vec::new();
+    for case in ["minimizar", "cerrar"] {
+        // Orden Z: visible (0) < escondida (1) < frente (2).
+        for &w in &wins {
+            let _ = windows_list::activate(w);
+            pump(80);
+        }
+        let _ = hider.hide(wins[1]);
+        wait(500, || cloaked(wins[1]) == DWM_CLOAKED_SHELL);
+        let _ = windows_list::activate(wins[2]);
+        pump(150);
+        if case == "minimizar" {
+            show_cmd(wins[2], SW_MINIMIZE);
+        } else {
+            windows_list::close(wins[2]);
+        }
+        pump(400);
+        let fg = windows_list::foreground();
+        result.push(format!(
+            "{case}: queda al frente {}; la escondida {}",
+            fg.map(|w| name(w, &wins)).unwrap_or_else(|| "nada".into()),
+            describe(wins[1])
+        ));
+        let _ = hider.show(wins[1]);
+        wait(500, || cloaked(wins[1]) == 0);
+        if case == "minimizar" {
+            show_cmd(wins[2], SW_RESTORE);
+            wait(1000, || hide::fully_visible(hide::visibility(wins[2])));
+        }
+    }
+    info(NAME, result.join(" · "))
+}
+
+fn wake_check(a: WindowId, b: WindowId) -> Check {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, QS_ALLINPUT,
+    };
+    const NAME: &str = "WinEvent despierta la espera";
+    let _ = windows_list::activate(a);
+    pump(300);
+    clear_events();
+    pump(0);
+    // Otro hilo cambia el foco a los 150 ms; este espera como el brain.
+    let target = b.0;
+    let t = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(150));
+        let _ = windows_list::activate(WindowId(target));
+    });
+    let start = Instant::now();
+    // SAFETY: sin handles; espera mensajes de la cola de este hilo.
+    let r = unsafe { MsgWaitForMultipleObjectsEx(None, 2000, QS_ALLINPUT, MWMO_INPUTAVAILABLE) };
+    let woke_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let _ = t.join();
+    pump(50);
+    let got = count(EVENT_SYSTEM_FOREGROUND, Some(b));
+    let woke = r.0 != 0x102;
+    verdict(
+        NAME,
+        woke && got > 0,
+        format!(
+            "{} a los {woke_ms:.0} ms; FOREGROUND recibido después: {got}",
+            if woke { "despertó" } else { "NO despertó (venció el plazo)" }
+        ),
+    )
+}
+
+trait MapOrClass {
+    fn map_or_class(self) -> String;
+}
+
+impl MapOrClass for WindowId {
+    fn map_or_class(self) -> String {
+        format!("otra ({})", class_name(self))
+    }
 }
 
 fn owned_check(hider: &Hider, exe: &Path, children: &mut Children) -> Check {
