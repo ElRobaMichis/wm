@@ -38,6 +38,11 @@ pub struct WindowInfo {
     /// La escondimos nosotros (tiene nuestra marca): con cloak, minimizada,
     /// fuera de pantalla u oculta. Sigue siendo del usuario.
     pub hidden: bool,
+    /// Escritorio anotado en la ventana (`wm.desk`, hito 4).
+    pub desk: Option<u8>,
+    /// Tiene cloak (de quien sea) ahora mismo.
+    pub cloaked: bool,
+    pub minimized: bool,
 }
 
 /// Ventanas que un usuario consideraría "abiertas" (las del Alt+Tab), en
@@ -76,11 +81,27 @@ pub fn user_windows() -> Vec<WindowInfo> {
                 return None;
             }
             let title = title(h);
-            if title.is_empty() {
+            // Una escondida por nosotros nunca se descarta (quedaría fuera
+            // del modelo y no volvería a su escritorio).
+            if title.is_empty() && !hidden {
                 return None;
             }
-            let app = process_name(pid)?;
-            Some(WindowInfo { id, pid, title, app, hidden })
+            let app = match process_name(pid) {
+                Some(a) => a,
+                None if hidden => String::new(),
+                None => return None,
+            };
+            let v = crate::hide::visibility(id);
+            Some(WindowInfo {
+                id,
+                pid,
+                title,
+                app,
+                hidden,
+                desk: crate::hide::desk_of(id),
+                cloaked: v.cloaked != 0,
+                minimized: v.minimized,
+            })
         })
         .collect()
 }
@@ -114,6 +135,23 @@ fn is_user_window(h: HWND) -> bool {
         );
         !(ok.is_ok() && cloaked != 0)
     }
+}
+
+/// El dueño raíz (`GA_ROOTOWNER`): para un diálogo, su ventana principal.
+pub fn root_owner(id: WindowId) -> WindowId {
+    use windows::Win32::UI::WindowsAndMessaging::{GA_ROOTOWNER, GetAncestor};
+    // SAFETY: lectura sobre un HWND; si no existe, devuelve nulo.
+    let h = unsafe { GetAncestor(id.hwnd(), GA_ROOTOWNER) };
+    if h.is_invalid() { id } else { WindowId(h.0 as isize) }
+}
+
+/// La ventana del escritorio de Windows (`Progman`), para dejar el foco ahí
+/// cuando el escritorio de destino está vacío.
+pub fn shell_window() -> Option<WindowId> {
+    use windows::Win32::UI::WindowsAndMessaging::GetShellWindow;
+    // SAFETY: sin precondiciones.
+    let h = unsafe { GetShellWindow() };
+    (!h.is_invalid()).then_some(WindowId(h.0 as isize))
 }
 
 /// Título de una ventana (vacío si no tiene).

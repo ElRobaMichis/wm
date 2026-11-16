@@ -97,6 +97,18 @@ pub enum Op {
     Launch(String),
     /// Prueba: una llamada que tarda `ms` en el carril indicado.
     Stall { lane: Lane, ms: u32 },
+    /// Hito 4: anotar el escritorio en cada ventana (HWND, proceso, 1-4).
+    SetDesks(Vec<(WindowId, u32, u8)>),
+    /// Hito 4: mostrar un lote (cada una con el método de su marca).
+    ShowMany(Vec<(WindowId, u32)>),
+    /// Hito 4: esconder un lote.
+    HideMany { wins: Vec<(WindowId, u32)>, method: HideMethod },
+    /// Hito 4: foco al escritorio de Windows (destino vacío).
+    FocusShell,
+    /// Hito 4: borrar `wm.desk` de todas las ventanas.
+    ForgetDesks,
+    /// Hito 4: ¿está disponible el cloak del shell? (al arrancar).
+    CloakProbe,
 }
 
 impl Op {
@@ -112,6 +124,10 @@ impl Op {
                 Duration::from_millis(250)
             }
             Op::Hide { .. } => Duration::from_millis(50),
+            Op::ShowMany(_) | Op::HideMany { .. } => Duration::from_millis(400),
+            Op::SetDesks(_) | Op::ForgetDesks => Duration::from_millis(200),
+            Op::FocusShell => Duration::from_millis(300),
+            Op::CloakProbe => Duration::from_millis(250),
             Op::RestoreAll => Duration::from_secs(1),
             Op::Launch(_) => Duration::from_secs(2),
             Op::Stall { lane, .. } => match lane {
@@ -131,6 +147,8 @@ pub enum Output {
     Inspection(windows_list::Inspection),
     Activation(Activation),
     Restored(RestoreReport),
+    /// Resultado por ventana de un pedido en lote.
+    Batch(Vec<(WindowId, Result<(), String>)>),
 }
 
 pub type Ticket = u64;
@@ -248,6 +266,12 @@ impl Ops {
             {
                 self.stats.degraded_hides += 1;
                 Op::Hide { id, method: HideMethod::Minimize }
+            }
+            Op::HideMany { wins, method: HideMethod::ShellCloak }
+                if self.lanes[Lane::Shell.index()].stuck > 0 =>
+            {
+                self.stats.degraded_hides += wins.len() as u32;
+                Op::HideMany { wins, method: HideMethod::Minimize }
             }
             other => other,
         }
@@ -387,6 +411,23 @@ fn route(op: &Op) -> Lane {
         }
         Op::RestoreAll => Lane::Shell,
         Op::Stall { lane, .. } => *lane,
+        Op::SetDesks(_) | Op::ForgetDesks => Lane::Win,
+        Op::FocusShell => Lane::Focus,
+        Op::CloakProbe => Lane::Shell,
+        Op::HideMany { wins, method } => {
+            if *method == HideMethod::ShellCloak || wins.iter().any(|(id, _)| cloaked(id)) {
+                Lane::Shell
+            } else {
+                Lane::Win
+            }
+        }
+        Op::ShowMany(wins) => {
+            if wins.iter().any(|(id, _)| cloaked(id)) {
+                Lane::Shell
+            } else {
+                Lane::Win
+            }
+        }
     }
 }
 
@@ -521,6 +562,42 @@ impl Context {
                 std::thread::sleep(Duration::from_millis(u64::from(*ms)));
                 Ok(Output::Nothing)
             }
+            Op::SetDesks(items) => Ok(Output::Batch(
+                items
+                    .iter()
+                    .map(|&(id, pid, desk)| {
+                        let now = windows_list::window_pid(id);
+                        let r = if now == 0 || (pid != 0 && now != pid) {
+                            Err("la ventana ya no existe".to_owned())
+                        } else {
+                            hide::set_desk(id, desk)
+                        };
+                        (id, r)
+                    })
+                    .collect(),
+            )),
+            Op::ShowMany(wins) => {
+                // `show` usa el método de cada marca: cualquier `Hider` sirve.
+                // En `shell` (hay alguna con cloak) se reusa la conexión COM.
+                let method = if self.lane == Lane::Shell {
+                    HideMethod::ShellCloak
+                } else {
+                    HideMethod::Minimize
+                };
+                Ok(Output::Batch(self.hider(method)?.show_many(wins)))
+            }
+            Op::HideMany { wins, method } => {
+                Ok(Output::Batch(self.hider(*method)?.hide_many(wins)))
+            }
+            Op::FocusShell => {
+                let shell = windows_list::shell_window().ok_or("no hay escritorio de Windows")?;
+                Ok(Output::Activation(windows_list::activate(shell)))
+            }
+            Op::ForgetDesks => {
+                hide::forget_desks();
+                Ok(Output::Nothing)
+            }
+            Op::CloakProbe => self.hider(HideMethod::ShellCloak).map(|_| Output::Nothing),
         }
     }
 }

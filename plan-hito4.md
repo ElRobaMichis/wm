@@ -115,10 +115,12 @@ El modelo no cambia. En la plataforma: las ya minimizadas ni se marcan ni se res
 | Propios `CLOAKED`/`UNCLOAKED` | Llegan (1 y 1) | Filtro por `desk == activo`; `CLOAKED` no se registra |
 | Foco a una escondida | Windows la destapa sola, llega `FOREGROUND`; la marca queda | El salto la desmarca; el rebote la re-esconde |
 | Minimizada, diálogo con dueño, pantalla completa, UWP, `Progman` | OK | Sin casos especiales; `FocusShell` = `Progman` |
-| Clic real en la barra, Alt+Tab, elevada | Pendiente (`wm desk-check manual`) | El diseño sirve en los dos casos |
+| Elevada | Pendiente (`wm desk-check manual`, paso 3) | Falla marca o cloak → sticky |
 | Video real a pantalla completa | Pendiente | Si da problemas: `Desk`/`Carry` no hacen nada con pantalla completa al frente |
-| (viii) Al minimizar o cerrar la del frente con una escondida más arriba en Z, ¿a cuál activa Windows? | Pendiente (`desk-check`) | Si activa la escondida, el rebote lo cubre |
-| ¿La espera del brain despierta con un WinEvent fuera de contexto? | Pendiente | Si no: hilo `wm-events` con canal, como la bandeja |
+| ¿La espera del brain despierta con un WinEvent fuera de contexto? | **Sí** (`MsgWaitForMultipleObjectsEx` vuelve a los ~150 ms, cuando cambia el foco) | El hook va en el hilo del brain |
+| (viii) Foco tras minimizar o cerrar la del frente | Windows activa **la visible** de abajo, nunca la escondida | El rebote casi nunca corre |
+| Esconder la ventana que tiene el foco | Casi siempre ~1 ms; en el `ci-probe` un títere que antes voló y pasó por los cuatro métodos **no tomó el cloak** estando al frente (cloak = 0 a 1 s, `SetCloak` sin error) | El Sync nunca esconde la del frente (el foco se mueve antes) y el lote confirma con DWM: la que no queda escondida se detecta |
+| Barra de tareas y Alt+Tab (usuario) | **Las escondidas aparecen en las dos** y elegirlas las trae (Windows les quita el cloak) | Salto al escritorio de la ventana por `FOREGROUND` |
 
 ## 7. Orden y recortes
 

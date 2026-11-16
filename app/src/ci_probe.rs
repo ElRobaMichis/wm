@@ -179,6 +179,7 @@ pub fn run(args: &[String]) -> ExitCode {
         fly_crash_check(&mut r, puppets[1]);
         hook(&mut r, puppets[0]);
         hiding(&mut r, puppets[1]);
+        batch_check(&mut r, &puppets[..3]);
         frame(&mut r, puppets[2]);
     } else {
         for name in [
@@ -197,6 +198,7 @@ pub fn run(args: &[String]) -> ExitCode {
             "vuelo + caída",
             "hook + SendInput",
             "esconder",
+            "lotes",
             "marco DWM",
         ] {
             r.check(name, Status::Skip, "sin títeres".into());
@@ -1285,6 +1287,77 @@ fn hiding(r: &mut Report, id: WindowId) {
         );
         r.check(&name, status, detail);
     }
+}
+
+/// Hito 4a.1: esconder y mostrar en lote, `wm.desk`, y re-esconder una
+/// marcada que Windows destapó al activarla (como el clic en la barra).
+fn batch_check(r: &mut Report, ids: &[WindowId]) {
+    let hider = match Hider::new(HideMethod::ShellCloak) {
+        Ok(h) => h,
+        Err(e) => return r.check("lotes", Status::Skip, format!("sin cloak: {e}")),
+    };
+    let wins: Vec<(WindowId, u32)> =
+        ids.iter().map(|&id| (id, windows_list::window_pid(id))).collect();
+    let mut problems = Vec::new();
+    for &(id, _) in &wins {
+        if let Err(e) = hide::set_desk(id, 2) {
+            problems.push(format!("set_desk: {e}"));
+        }
+    }
+    // El foco en otra: activar la que ya está al frente no la destapa.
+    let _ = windows_list::activate(ids[2]);
+    let start = Instant::now();
+    let hid = hider.hide_many(&wins);
+    let hide_time = start.elapsed();
+    if hid.iter().any(|(_, r)| r.is_err()) {
+        let late: Vec<String> = hid
+            .iter()
+            .filter(|(_, r)| r.is_err())
+            .map(|(id, _)| {
+                let t = wait_for(Duration::from_secs(1), || {
+                    hide::visibility(*id).cloaked == hide::DWM_CLOAKED_SHELL
+                });
+                format!(
+                    "{}: {:?}, al frente: {}, {:?}",
+                    ids.iter().position(|x| x == id).unwrap_or(9),
+                    t,
+                    windows_list::foreground() == Some(*id),
+                    hide::visibility(*id)
+                )
+            })
+            .collect();
+        problems.push(format!("esconder: {hid:?}; después: {late:?}"));
+    }
+    // Windows destapa una escondida al activarla; la marca queda.
+    let _ = windows_list::activate(ids[0]);
+    let uncloaked =
+        wait_for(Duration::from_millis(300), || hide::visibility(ids[0]).cloaked == 0).is_some();
+    let again = hider.hide_many(&wins);
+    let recloaked = again.iter().all(|(_, r)| r.is_ok())
+        && hide::visibility(ids[0]).cloaked == hide::DWM_CLOAKED_SHELL;
+    let desks_ok = ids.iter().all(|&id| hide::desk_of(id) == Some(2));
+    let start = Instant::now();
+    let shown = hider.show_many(&wins);
+    let show_time = start.elapsed();
+    let visible = ids.iter().all(|&id| hide::fully_visible(hide::visibility(id)));
+    let unmarked = ids.iter().all(|&id| hide::hidden_with(id).is_none());
+    if shown.iter().any(|(_, r)| r.is_err()) {
+        problems.push(format!("mostrar: {shown:?}"));
+    }
+    hide::forget_desks();
+    let forgotten = ids.iter().all(|&id| hide::desk_of(id).is_none());
+    let ok = problems.is_empty() && recloaked && desks_ok && visible && unmarked && forgotten;
+    r.check(
+        "lotes",
+        if ok { Status::Ok } else { Status::Fail },
+        format!(
+            "3 ventanas: esconder {}, mostrar {}; destapada al activarla: {uncloaked}, re-escondida: {recloaked}; wm.desk: {desks_ok}, visibles y sin marca: {}, wm.desk borrado: {forgotten}{}",
+            ms(hide_time),
+            ms(show_time),
+            visible && unmarked,
+            if problems.is_empty() { String::new() } else { format!("; {}", problems.join("; ")) }
+        ),
+    );
 }
 
 fn frame(r: &mut Report, id: WindowId) {

@@ -119,6 +119,10 @@ impl HideMethod {
 }
 
 const PROP_METHOD: PCWSTR = w!("wm.hidden");
+/// Escritorio (1-4) de la ventana (hito 4). Sobrevive a `restore_all`, que
+/// solo quita `wm.hidden`: así un core relanzado tras una caída sabe dónde
+/// iba cada una (D4). Se borra al salir limpio.
+const PROP_DESK: PCWSTR = w!("wm.desk");
 const PROP_X: PCWSTR = w!("wm.x");
 const PROP_Y: PCWSTR = w!("wm.y");
 
@@ -159,9 +163,20 @@ impl Hider {
         // perdería la información para recuperarla.
         if let Some(previous) = marked_method(hwnd) {
             if previous == self.method {
-                return Ok(());
+                // Idempotente por observación (hallazgo 8): si sigue
+                // escondida, nada; si alguien la destapó (el shell al
+                // activarla, un reinicio de Explorer), se vuelve a aplicar.
+                if looks_hidden(self.method, visibility(id)) {
+                    return Ok(());
+                }
+                return self.apply(hwnd);
             }
             show_marked(hwnd, &self.views)?;
+        }
+        // Con `minimize`, una que el usuario ya minimizó no se marca: al
+        // mostrarla no hay que restaurarla (plan-hito4 §5).
+        if self.method == HideMethod::Minimize && visibility(id).minimized {
+            return Ok(());
         }
         let mut pos = None;
         if self.method == HideMethod::Offscreen {
@@ -169,7 +184,16 @@ impl Hider {
             pos = Some((rect.left, rect.top));
         }
         mark(hwnd, self.method, pos)?;
-        let result = match self.method {
+        let result = self.apply(hwnd);
+        if result.is_err() {
+            unmark(hwnd);
+        }
+        result
+    }
+
+    /// Esconde con el método, sin tocar la marca.
+    fn apply(&self, hwnd: HWND) -> Result<(), String> {
+        match self.method {
             HideMethod::ShellCloak => self.cloak(hwnd, true),
             HideMethod::Minimize => {
                 disable_transitions(hwnd);
@@ -187,11 +211,48 @@ impl Hider {
                 move_async(hwnd, x, y)
             }
             HideMethod::Hide => show_async(hwnd, SW_HIDE.0),
-        };
-        if result.is_err() {
-            unmark(hwnd);
         }
-        result
+    }
+
+    /// Esconde un lote. `pid` se verifica antes de tocar cada ventana (HWND
+    /// reciclado). Con cloak, espera hasta 50 ms en total a que DWM lo
+    /// confirme; las que no quedan escondidas cuentan como fallidas.
+    pub fn hide_many(&self, wins: &[(WindowId, u32)]) -> Vec<(WindowId, Result<(), String>)> {
+        let mut out: Vec<(WindowId, Result<(), String>)> = wins
+            .iter()
+            .map(|&(id, pid)| {
+                let r = if !same_process(id, pid) {
+                    Err("la ventana ya no existe".to_owned())
+                } else {
+                    self.hide(id)
+                };
+                (id, r)
+            })
+            .collect();
+        if self.method == HideMethod::ShellCloak {
+            confirm(&mut out, |id| {
+                hidden_with(id).is_none() || visibility(id).cloaked == DWM_CLOAKED_SHELL
+            });
+        }
+        out
+    }
+
+    /// Muestra un lote (cada una con el método de su marca; sin marca, nada).
+    pub fn show_many(&self, wins: &[(WindowId, u32)]) -> Vec<(WindowId, Result<(), String>)> {
+        let mut out: Vec<(WindowId, Result<(), String>)> = wins
+            .iter()
+            .map(|&(id, pid)| {
+                let r = if !same_process(id, pid) {
+                    Err("la ventana ya no existe".to_owned())
+                } else {
+                    rescue_lost(id);
+                    self.show(id)
+                };
+                (id, r)
+            })
+            .collect();
+        confirm(&mut out, |id| visibility(id).cloaked != DWM_CLOAKED_SHELL);
+        out
     }
 
     pub fn show(&self, id: WindowId) -> Result<(), String> {
@@ -356,6 +417,87 @@ fn show_marked(hwnd: HWND, views: &ShellViews) -> Result<(), String> {
         unmark(hwnd);
     }
     result
+}
+
+/// Espera hasta 50 ms a que `ok` valga para todas las que salieron bien; las
+/// que no, pasan a error.
+fn confirm(out: &mut [(WindowId, Result<(), String>)], ok: impl Fn(WindowId) -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
+    loop {
+        let pending = out.iter().any(|(id, r)| r.is_ok() && !ok(*id));
+        if !pending || std::time::Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    for (id, r) in out.iter_mut() {
+        if r.is_ok() && !ok(*id) {
+            *r = Err("DWM no lo confirmó en 50 ms".to_owned());
+        }
+    }
+}
+
+/// Hito 4d (mínimo): una ventana que vuelve de otro escritorio y quedó fuera
+/// de toda pantalla (se desconectó un monitor mientras estaba escondida) se
+/// trae con el desplazamiento mínimo antes de destaparla.
+fn rescue_lost(id: WindowId) {
+    let h = hwnd(id);
+    let v = visibility(id);
+    if v.minimized {
+        return;
+    }
+    let frame = wm_model::Rect { left: v.left, top: v.top, right: v.right, bottom: v.bottom };
+    let areas: Vec<wm_model::Rect> = crate::monitors().into_iter().map(|m| m.work_area).collect();
+    if let Some(r) =
+        wm_model::screens::rescue(frame, &areas, wm_model::screens::MinVisible::at_dpi(96))
+    {
+        let _ = move_async(h, r.left, r.top);
+    }
+}
+
+fn same_process(id: WindowId, pid: u32) -> bool {
+    let now = crate::windows_list::window_pid(id);
+    now != 0 && (pid == 0 || now == pid)
+}
+
+/// Anota el escritorio (1-4) en la ventana. Funciona entre procesos.
+pub fn set_desk(id: WindowId, desk: u8) -> Result<(), String> {
+    // SAFETY: SetPropW con un entero guardado como HANDLE.
+    unsafe { SetPropW(hwnd(id), PROP_DESK, Some(HANDLE(usize::from(desk) as *mut c_void))) }
+        .map_err(|e| format!("SetPropW: {e}"))
+}
+
+/// El escritorio anotado en la ventana, si tiene.
+pub fn desk_of(id: WindowId) -> Option<u8> {
+    // SAFETY: lectura de una propiedad; 0 si no existe.
+    let v = unsafe { GetPropW(hwnd(id), PROP_DESK) }.0 as usize;
+    (1..=9).contains(&v).then_some(v as u8)
+}
+
+/// Borra `wm.desk` de todas las ventanas (salida limpia, arranque normal).
+/// Devuelve cuántas tenían.
+pub fn forget_desks() -> usize {
+    let mut n = 0;
+    for h in top_level_windows() {
+        // SAFETY: quitar una propiedad propia; si no existe, devuelve 0.
+        if !unsafe { RemovePropW(h, PROP_DESK) }.unwrap_or_default().is_invalid() {
+            n += 1;
+        }
+    }
+    n
+}
+
+fn top_level_windows() -> Vec<HWND> {
+    let mut handles: Vec<HWND> = Vec::new();
+    unsafe extern "system" fn collect(hwnd: HWND, data: LPARAM) -> BOOL {
+        // SAFETY: `data` es el `&mut Vec` que pasamos abajo.
+        let handles = unsafe { &mut *(data.0 as *mut Vec<HWND>) };
+        handles.push(hwnd);
+        true.into()
+    }
+    // SAFETY: el callback solo usa `data` como el `&mut Vec` que le pasamos.
+    let _ = unsafe { EnumWindows(Some(collect), LPARAM(&mut handles as *mut Vec<HWND> as isize)) };
+    handles
 }
 
 /// Resultado de [`restore_all`].

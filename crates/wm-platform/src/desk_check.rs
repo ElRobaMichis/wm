@@ -300,6 +300,55 @@ pub fn run(exe: &Path) -> Vec<Check> {
         ),
     ));
 
+    // Esconder la ventana que tiene el foco: ¿cuánto tarda DWM en confirmarlo?
+    let mut times = Vec::new();
+    for _ in 0..5 {
+        let _ = windows_list::activate(p2);
+        pump(100);
+        let _ = windows_list::activate(p1);
+        let t = Instant::now();
+        let _ = hider.hide(p1);
+        let ok = wait(1000, || cloaked(p1) == DWM_CLOAKED_SHELL);
+        times.push(if ok {
+            format!("{:.0}", t.elapsed().as_secs_f64() * 1000.0)
+        } else {
+            "nunca".into()
+        });
+        let _ = hider.show(p1);
+        wait(500, || cloaked(p1) == 0);
+        pump(50);
+    }
+    // En lote, con la del frente en el medio (falla vista en el ci-probe,
+    // donde antes se la escondió con `minimize`, `offscreen` y `hide`).
+    for m in [HideMethod::Minimize, HideMethod::Offscreen, HideMethod::Hide] {
+        if let Ok(h) = Hider::new(m) {
+            let _ = h.hide(p2);
+            pump(150);
+            let _ = h.show(p2);
+            pump(150);
+        }
+    }
+    let _ = windows_list::activate(p2);
+    pump(100);
+    let wins = [(p1, windows_list::window_pid(p1)), (p2, windows_list::window_pid(p2))];
+    let r = hider.hide_many(&wins);
+    let t = Instant::now();
+    let late = wait(2000, || cloaked(p2) == DWM_CLOAKED_SHELL);
+    out.push(info(
+        "lote con la del frente",
+        format!(
+            "{:?}; la del frente con cloak {} ms después del lote ({late}); al frente queda {}",
+            r.iter().map(|(_, r)| r.is_ok()).collect::<Vec<_>>(),
+            t.elapsed().as_millis(),
+            windows_list::foreground().map(class_name).unwrap_or_default()
+        ),
+    ));
+    let _ = hider.show_many(&wins);
+    out.push(info(
+        "esconder la recién activada",
+        format!("cloak confirmado a los {} ms", times.join(", ")),
+    ));
+
     // (ii, aproximación) Foco a una ventana con cloak, como el clic en la
     // barra de tareas: ¿se destapa sola? ¿llega FOREGROUND?
     // Primero el foco a otra: si la escondida ya estaba al frente, activarla
