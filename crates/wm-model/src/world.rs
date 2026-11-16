@@ -486,6 +486,8 @@ pub struct World {
     record: Option<Entry>,
     centers: HashMap<WinKey, Centering>,
     sizing: HashMap<WinKey, Sizing>,
+    /// El `go` en curso viene de G/V (conserva el ancla).
+    sizing_move: bool,
     gesture: Option<Gesture>,
     deferred: Option<Deferred>,
     /// Dónde dejamos cada ventana y qué marco logró: mientras siga igual, la
@@ -977,6 +979,13 @@ impl World {
         out: &mut Vec<Effect>,
     ) {
         let record = self.record.take();
+        // El ancla de G/V vale solo si el último movimiento de la ventana fue
+        // G o V: con cualquier otro (A/D/W/S, esquina, C, Z) se olvida. Antes
+        // se deducía por la posición y una mitad recién puesta podía pasar
+        // por "la misma de antes" (pruebas del usuario, 16/11/2026).
+        if !std::mem::take(&mut self.sizing_move) {
+            self.sizing.remove(&obs.key);
+        }
         // Un rectángulo concreto (deshacer, centrar) que coincide con una mitad
         // o esquina cuenta como esa ubicación para la tecla siguiente.
         let spot = if spot.placement == Placement::Full {
@@ -1124,6 +1133,7 @@ impl World {
         let tag = self.fresh_tag();
         self.remember(Entry { win: obs.key, frame: obs.frame, maximized: obs.maximized, tag });
         self.ground(obs.key, out);
+        self.sizing.remove(&obs.key);
         self.jobs.remove(&obs.key); // una colocación en curso ya no vale
         self.placed.remove(&obs.key);
         let since = now_us.saturating_sub(key_us) as f64 / 1000.0;
@@ -1175,23 +1185,13 @@ impl World {
         let previous = self
             .sizing
             .get(&obs.key)
-            // También si quedó pegada al borde con otro tamaño **porque la app
-            // no aceptó ese tamaño** (sin esto, el V siguiente cambiaba de
-            // eje). Solo en ese caso: cualquier otra ventana pegada al mismo
-            // borde (una mitad recién puesta con D) también coincide.
+            // Donde la dejó la tecla anterior: el lugar pedido o, si la app
+            // no aceptó ese tamaño, pegada al mismo borde con el que logró.
             .filter(|s| {
                 let (w, h) = (here_rect.width(), here_rect.height());
-                let lim = self.limits.get(&obs.key).copied().unwrap_or_default();
-                let near =
-                    |v: i32, l: Option<i32>| l.is_some_and(|l| (v - l).abs() <= TOLERANCE_PX);
-                let at_app_limit = near(w, lim.min_w)
-                    || near(w, lim.max_w)
-                    || near(h, lim.min_h)
-                    || near(h, lim.max_h);
                 !obs.maximized
                     && (edge_error(here_rect, s.target) <= TOLERANCE_PX
-                        || (at_app_limit
-                            && edge_error(here_rect, anchor(s.target, work, w, h)) <= TOLERANCE_PX))
+                        || edge_error(here_rect, anchor(s.target, work, w, h)) <= TOLERANCE_PX)
             })
             .copied();
         let (anchor_rect, x, y) = match previous {
@@ -1256,7 +1256,9 @@ impl World {
         self.record = Some(Entry { win: obs.key, frame: obs.frame, maximized: obs.maximized, tag });
         let spot = Spot { monitor, placement: Placement::Full };
         let what = format!("{what} → {verb}, {label} ({})", obs.app);
+        self.sizing_move = true;
         self.go(&obs, spot, target, what, key_us, now_us, out);
+        self.sizing_move = false;
     }
 
     /// C: centrar sin cambiar el tamaño; repetir alterna 60 % → 80 % →
@@ -1333,6 +1335,7 @@ impl World {
         let what = format!("Caps + Alt + Z → deshacer ({})", obs.app);
         if entry.maximized {
             self.ground(obs.key, out);
+            self.sizing.remove(&obs.key);
             self.jobs.remove(&obs.key);
             self.placed.remove(&obs.key);
             if !obs.maximized {

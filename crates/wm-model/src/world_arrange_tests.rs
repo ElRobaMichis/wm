@@ -1426,3 +1426,25 @@ fn v_on_a_right_half_after_growing_a_corner_changes_only_the_width() {
     assert_eq!(sim.win.frame.height(), work().height());
     assert_eq!(sim.win.frame.right, work().right);
 }
+
+#[test]
+fn v_on_a_half_the_app_cannot_fill_changes_only_the_width() {
+    // Prueba del usuario con Steam (no baja de 1010 × 600): esquina de arriba
+    // a la derecha → G hasta ~93 % → D (mitad derecha, queda de 1010 px) → V
+    // achicaba los dos ejes ("53 % × 90 %").
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.win.min_width = 1010;
+    sim.key(&mut w, b'D'); // aprende el mínimo de ancho
+    sim.chord(&mut w, b"WD", true);
+    for _ in 0..4 {
+        sim.key(&mut w, b'G');
+    }
+    sim.key(&mut w, b'D');
+    assert_eq!(sim.win.frame.width(), 1010, "{:?}", sim.logs);
+    assert_eq!(sim.win.frame.height(), work().height());
+    let places = sim.places;
+    sim.key(&mut w, b'V');
+    assert_eq!(sim.win.frame.height(), work().height(), "solo el ancho: {:?}", sim.logs);
+    assert_eq!(sim.places, places, "ya está en su mínimo de ancho: {:?}", sim.logs);
+}
