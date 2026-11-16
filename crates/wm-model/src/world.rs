@@ -24,6 +24,13 @@
 //! segunda pasada con los márgenes nuevos; si sigue lejos (tamaño mínimo,
 //! app que no responde), se acepta lo logrado. Una sola colocación en curso
 //! por ventana: la última tecla gana. Sin plazos pendientes, el brain duerme.
+//!
+//! **Animación** (hito 1e, plan-core.md §3.4): si el destino tiene el mismo
+//! tamaño que la ventana (mitad ↔ mitad, esquina ↔ esquina, empujar entre
+//! monitores con la misma escala, centrar), en vez de `Place` sale `Fly`: el
+//! carril `anim` mueve un fantasma y la ventana real va en un solo pedido. Al
+//! responder (`Flown`) siguen los chequeos de siempre. Cualquier otro pedido
+//! sobre una ventana en vuelo la baja antes (`Land`).
 
 use std::collections::{HashMap, VecDeque};
 
@@ -50,6 +57,49 @@ pub struct Obs {
     pub minimized: bool,
     /// Los monitores en el momento de la observación.
     pub monitors: Vec<MonitorObs>,
+    /// Por qué no se puede animar esta ventana (`None`: se puede).
+    pub no_fly: Option<NoFly>,
+}
+
+/// Por qué una ventana no se anima (se mueve instantánea).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoFly {
+    /// No está al frente: el vuelo la subiría en el orden Z (Z sobre otra).
+    NotFront,
+    /// La app no responde (`IsHungAppWindow`).
+    Hung,
+    /// Contenido protegido: la miniatura sale negra.
+    Protected,
+    /// El sistema pide reducir animaciones.
+    ReducedMotion,
+}
+
+/// Cómo terminó un vuelo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlyReport {
+    /// La ventana real llegó al destino antes de quitar el fantasma.
+    pub arrived: bool,
+    pub flight_ms: u32,
+}
+
+/// Un vuelo que no se pudo hacer: la ventana se coloca sin animación.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlyFail {
+    /// `true`: no se anima más en esta sesión (carril trabado, sin cloak).
+    pub fatal: bool,
+    pub why: String,
+}
+
+/// Desplazamiento mínimo para animar: menos se ve como un salto igual.
+const FLY_MIN_PX: f64 = 64.0;
+
+/// Duración de un vuelo: más largo cuanto más lejos, entre 110 y 180 ms
+/// (validados en el spike 6: 150 y 200 ms para 800 px, §13.8).
+pub fn fly_ms(from: Rect, to: Rect) -> u32 {
+    let dx = f64::from(to.left - from.left);
+    let dy = f64::from(to.top - from.top);
+    let dist = dx.hypot(dy);
+    (100.0 + dist / 16.0).clamp(110.0, 180.0) as u32
 }
 
 /// Chequeos después de pedir una ubicación, en ms desde el pedido.
@@ -119,6 +169,11 @@ struct Job {
     spot: Spot,
     /// Ya se hizo la pasada de anclaje (tamaño mínimo o fijo).
     anchored: bool,
+    /// En vuelo: el carril `anim` responde con `Flown`; hasta entonces no
+    /// hay chequeos.
+    flying: bool,
+    /// Lo que duró el vuelo, para el log.
+    flight_ms: Option<u32>,
 }
 
 /// Dónde está (o va) una ventana: un monitor y una ubicación en él (`Full`
@@ -236,6 +291,13 @@ pub enum Event {
         req: Req,
         result: Result<(), String>,
     },
+    /// Terminó un vuelo (o no se pudo hacer).
+    Flown {
+        req: Req,
+        result: Result<FlyReport, FlyFail>,
+    },
+    /// Se puede animar (el carril `anim` está listo) o ya no.
+    FlyEnabled(bool),
     /// Venció el plazo de [`World::deadline`].
     Tick,
 }
@@ -265,6 +327,21 @@ pub enum Effect {
         req: Req,
         win: WinKey,
         rect: Rect,
+    },
+    /// Mover con animación: fantasma de `from` a `to` (marcos visibles) en
+    /// `ms`, y la ventana real con un solo pedido a `rect` (exterior). Si la
+    /// ventana ya está en vuelo, el carril la redirige desde donde va.
+    Fly {
+        req: Req,
+        win: WinKey,
+        rect: Rect,
+        from: Rect,
+        to: Rect,
+        ms: u32,
+    },
+    /// Terminar ya el vuelo de esta ventana (va a recibir otro pedido).
+    Land {
+        win: WinKey,
     },
     /// Sacarla de maximizada (o minimizada) sin activarla.
     Normalize {
@@ -345,6 +422,12 @@ enum Pending {
         win: WinKey,
         job: u64,
     },
+    /// Respuesta de un vuelo; `rect`: el pedido sin animación si falla.
+    FlyCmd {
+        win: WinKey,
+        job: u64,
+        rect: Rect,
+    },
 }
 
 /// El estado del core.
@@ -369,6 +452,8 @@ pub struct World {
     /// próxima tecla cuenta desde esa ubicación aunque la app no haya podido
     /// achicarse del todo (tamaño mínimo).
     placed: HashMap<WinKey, (Spot, Rect)>,
+    /// Se puede animar (lo habilita el brain cuando el carril está listo).
+    fly: bool,
 }
 
 impl World {
@@ -398,10 +483,16 @@ impl World {
         self.jobs.len()
     }
 
+    /// La ventana está en vuelo (sus avisos de cloak son nuestros).
+    pub fn flying(&self, win: WinKey) -> bool {
+        self.jobs.get(&win).is_some_and(|j| j.flying)
+    }
+
     /// Cuándo hay que despertar al modelo con [`Event::Tick`] (µs del mismo
     /// reloj que `step`). `None`: nada pendiente, el brain duerme.
     pub fn deadline(&self) -> Option<u64> {
-        let jobs = self.jobs.values().filter(|j| !j.inspecting).map(next_check_us);
+        // Un vuelo no tiene plazos del modelo: lo vigila el brain.
+        let jobs = self.jobs.values().filter(|j| !j.inspecting && !j.flying).map(next_check_us);
         jobs.chain(self.deferred.as_ref().map(|d| d.due_us)).min()
     }
 
@@ -506,6 +597,8 @@ impl World {
                     out.push(Effect::Log(format!("{}: {e}", j.what)));
                 }
             }
+            Event::Flown { req, result } => self.flown(req, result, now_us, &mut out),
+            Event::FlyEnabled(on) => self.fly = on,
             Event::Tick => self.tick(now_us, &mut out),
             Event::Launched { req, result } => {
                 let Some(Pending::Launch { letter, app, path }) = self.pending.remove(&req) else {
@@ -797,6 +890,10 @@ impl World {
         if let Some(entry) = record {
             self.remember(entry);
         }
+        let fly = self.may_fly(obs, spot, target);
+        if !fly {
+            self.ground(obs.key, out);
+        }
         if obs.maximized {
             out.push(Effect::Normalize { win: obs.key });
         }
@@ -816,10 +913,81 @@ impl World {
             want_dpi: spot.monitor.dpi,
             spot,
             anchored: false,
+            flying: fly,
+            flight_ms: None,
         };
         // La última tecla gana: la colocación anterior de esta ventana se olvida.
         self.jobs.insert(obs.key, job);
-        self.send_place(obs.key, rect, out);
+        if fly {
+            let req = self.req();
+            let (win, job) = (obs.key, self.next_job);
+            self.pending.insert(req, Pending::FlyCmd { win, job, rect });
+            let ms = fly_ms(obs.frame, target);
+            out.push(Effect::Fly { req, win, rect, from: obs.frame, to: target, ms });
+        } else {
+            self.send_place(obs.key, rect, out);
+        }
+    }
+
+    /// Se anima solo si el destino tiene exactamente el mismo tamaño (1 px
+    /// de diferencia estiraría la miniatura todo el vuelo), la misma escala,
+    /// y la ventana está normal, al frente y lo bastante lejos.
+    fn may_fly(&self, obs: &Obs, spot: Spot, target: Rect) -> bool {
+        let dx = f64::from(target.left - obs.frame.left);
+        let dy = f64::from(target.top - obs.frame.top);
+        self.fly
+            && obs.no_fly.is_none()
+            && !obs.maximized
+            && !obs.minimized
+            && target.width() == obs.frame.width()
+            && target.height() == obs.frame.height()
+            && obs.dpi == spot.monitor.dpi
+            && dx.hypot(dy) >= FLY_MIN_PX
+    }
+
+    /// Si la ventana está en vuelo, bajarla ya (antes de otro pedido).
+    fn ground(&mut self, win: WinKey, out: &mut Vec<Effect>) {
+        if let Some(j) = self.jobs.get_mut(&win).filter(|j| j.flying) {
+            j.flying = false;
+            out.push(Effect::Land { win });
+        }
+    }
+
+    /// Terminó un vuelo: verificar ya dónde quedó la real. Si no se pudo
+    /// volar, el mismo pedido sin animación.
+    fn flown(
+        &mut self,
+        req: Req,
+        result: Result<FlyReport, FlyFail>,
+        now_us: u64,
+        out: &mut Vec<Effect>,
+    ) {
+        let Some(Pending::FlyCmd { win, job, rect }) = self.pending.remove(&req) else {
+            return;
+        };
+        if let Err(f) = &result
+            && f.fatal
+            && self.fly
+        {
+            self.fly = false;
+            out.push(Effect::Log(format!("Animación apagada por esta sesión: {}", f.why)));
+        }
+        let Some(j) = self.jobs.get_mut(&win).filter(|j| j.id == job && j.flying) else {
+            return; // otra tecla la redirigió o la bajó
+        };
+        j.flying = false;
+        j.placed_us = now_us;
+        j.check = 0;
+        match result {
+            Ok(report) => {
+                j.flight_ms = Some(report.flight_ms);
+                j.inspecting = true;
+                let req = self.req();
+                self.pending.insert(req, Pending::Verify { win, job });
+                out.push(Effect::Inspect { req, win: Some(win) });
+            }
+            Err(_) => self.send_place(win, rect, out),
+        }
     }
 
     /// Anota una entrada en el historial (una por gesto).
@@ -847,6 +1015,7 @@ impl World {
         }
         let tag = self.fresh_tag();
         self.remember(Entry { win: obs.key, frame: obs.frame, maximized: obs.maximized, tag });
+        self.ground(obs.key, out);
         self.jobs.remove(&obs.key); // una colocación en curso ya no vale
         self.placed.remove(&obs.key);
         let since = now_us.saturating_sub(key_us) as f64 / 1000.0;
@@ -938,6 +1107,7 @@ impl World {
         self.centers.remove(&obs.key);
         let what = format!("Caps + Alt + Z → deshacer ({})", obs.app);
         if entry.maximized {
+            self.ground(obs.key, out);
             self.jobs.remove(&obs.key);
             self.placed.remove(&obs.key);
             if !obs.maximized {
@@ -968,7 +1138,7 @@ impl World {
         let due: Vec<(WinKey, u64)> = self
             .jobs
             .iter()
-            .filter(|(_, j)| !j.inspecting && next_check_us(j) <= now_us)
+            .filter(|(_, j)| !j.inspecting && !j.flying && next_check_us(j) <= now_us)
             .map(|(w, j)| (*w, j.id))
             .collect();
         for (win, job) in due {
@@ -1011,15 +1181,20 @@ impl World {
         if error <= TOLERANCE_PX {
             let passes =
                 if j.pass == 1 { "1 pasada".to_owned() } else { format!("{} pasadas", j.pass) };
+            let flight = j.flight_ms.map(|ms| format!(" (vuelo {ms} ms)")).unwrap_or_default();
             let line = if j.anchored {
                 let (w, h) = (obs.frame.width(), obs.frame.height());
                 format!(
-                    "{}: la app no se achica ({w}×{h}); quedó pegada al borde en {passes}, {:.1} ms",
+                    "{}: la app no se achica ({w}×{h}); quedó pegada al borde en {passes}, {:.1} ms{flight}",
                     j.what,
                     since(j)
                 )
             } else {
-                format!("{}: {error} px en {passes}, {:.1} ms desde la tecla", j.what, since(j))
+                format!(
+                    "{}: {error} px en {passes}, {:.1} ms desde la tecla{flight}",
+                    j.what,
+                    since(j)
+                )
             };
             let spot = j.spot;
             self.jobs.remove(&win);
@@ -1267,6 +1442,8 @@ mod tests {
                         Effect::Quit => self.quit = true,
                         Effect::Inspect { .. }
                         | Effect::Place { .. }
+                        | Effect::Fly { .. }
+                        | Effect::Land { .. }
                         | Effect::Normalize { .. }
                         | Effect::Maximize { .. } => {
                             panic!("la capa de apps no coloca ventanas")

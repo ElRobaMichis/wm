@@ -13,7 +13,7 @@ use std::sync::mpsc::{self, Sender};
 use std::time::{Duration, Instant};
 
 use wm_model::place::MonitorObs;
-use wm_model::world::{Effect, Event, FocusReport, Obs, Req, WinInfo, WinKey, World};
+use wm_model::world::{Effect, Event, FlyFail, FocusReport, Obs, Req, WinInfo, WinKey, World};
 use wm_platform::input::{self, InputEvent, ReinstallReason};
 use wm_platform::ops::{Op, Ops, OpsEvent, Output, Ticket};
 use wm_platform::windows_list::{self, WindowId};
@@ -158,6 +158,13 @@ impl Brain {
                     let t = self.ops.submit(Op::Place { id: WindowId(win.hwnd), rect });
                     self.waits.insert(t, Wait::Place(req));
                 }
+                Effect::Fly { req, .. } => {
+                    // Todavía sin carril `anim` (el modelo no lo pide mientras
+                    // no se habilite): sin animación.
+                    let why = "sin carril de animación".to_owned();
+                    self.feed(Event::Flown { req, result: Err(FlyFail { fatal: false, why }) });
+                }
+                Effect::Land { .. } => {}
                 Effect::Normalize { win } => {
                     self.ops.submit(Op::Normalize(WindowId(win.hwnd)));
                 }
@@ -321,6 +328,7 @@ fn obs(i: windows_list::Inspection) -> Obs {
             .iter()
             .map(|m| MonitorObs { bounds: m.bounds, work: m.work_area, dpi: m.dpi })
             .collect(),
+        no_fly: None,
     }
 }
 

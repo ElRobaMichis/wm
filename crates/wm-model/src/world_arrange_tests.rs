@@ -4,12 +4,17 @@
 //! apps que tardan en moverse y que se reescalan al cruzar a un monitor con
 //! otro DPI. La simulación entrega los eventos en orden de llegada, y puede
 //! recibir varias teclas antes de que Windows responda a la primera.
+//!
+//! También simula el carril `anim` (hito 1e): un vuelo mueve la ventana real
+//! al despegar y responde `Flown` cuando termina; un vuelo nuevo sobre la
+//! misma ventana la redirige. La simulación verifica que nunca llegue otro
+//! pedido sobre una ventana en vuelo sin `Land` antes.
 
 use std::collections::VecDeque;
 
 use crate::keyboard::{HELD_A, HELD_D, HELD_S, HELD_W, HyperAction};
 use crate::place::{MonitorObs, monitor_of};
-use crate::world::{Effect, Event, Obs, WinKey, World};
+use crate::world::{Effect, Event, FlyFail, FlyReport, NoFly, Obs, WinKey, World};
 use crate::{Placement, Rect, place};
 
 const MS: u64 = 1000;
@@ -31,6 +36,15 @@ struct FakeWin {
     min_width: i32,
     /// Milisegundos que tarda la app en aplicar un pedido.
     lag_ms: u64,
+    no_fly: Option<NoFly>,
+}
+
+/// Un vuelo en curso en el carril de mentira.
+struct Flight {
+    due: u64,
+    req: u64,
+    to: Rect,
+    ms: u32,
 }
 
 impl FakeWin {
@@ -63,6 +77,11 @@ struct Sim {
     logs: Vec<String>,
     places: usize,
     normalized: bool,
+    flight: Option<Flight>,
+    flights: usize,
+    lands: usize,
+    /// El carril responde así a todo vuelo (sin animación).
+    fly_fail: Option<FlyFail>,
 }
 
 fn monitor(left: i32) -> MonitorObs {
@@ -85,6 +104,7 @@ impl Sim {
             restore: Rect::new(300, 200, 1100, 800),
             min_width: 0,
             lag_ms: 0,
+            no_fly: None,
         };
         Self {
             now: 1_000 * MS,
@@ -95,6 +115,10 @@ impl Sim {
             logs: Vec::new(),
             places: 0,
             normalized: false,
+            flight: None,
+            flights: 0,
+            lands: 0,
+            fly_fail: None,
         }
     }
 
@@ -109,6 +133,7 @@ impl Sim {
             maximized: self.win.maximized,
             minimized: false,
             monitors: self.monitors.clone(),
+            no_fly: self.win.no_fly,
         }
     }
 
@@ -171,12 +196,40 @@ impl Sim {
                         }
                         Effect::Place { req, win, rect } => {
                             assert_eq!(win, self.win.key);
+                            assert!(self.flight.is_none(), "Place sobre una ventana en vuelo");
                             self.places += 1;
                             self.queued.push((self.now + self.win.lag_ms * MS, rect));
                             queue.push_back(Event::Placed { req, result: Ok(()) });
                         }
+                        Effect::Fly { req, win, rect, to, ms, .. } => {
+                            assert_eq!(win, self.win.key);
+                            assert!(!self.win.maximized, "vuelo de una maximizada");
+                            if let Some(f) = self.fly_fail.clone() {
+                                queue.push_back(Event::Flown { req, result: Err(f) });
+                                continue;
+                            }
+                            self.flights += 1;
+                            // Redirigir: el pedido anterior responde enseguida.
+                            if let Some(old) = self.flight.take() {
+                                let report = FlyReport { arrived: false, flight_ms: 0 };
+                                queue.push_back(Event::Flown { req: old.req, result: Ok(report) });
+                            }
+                            // La real va en un solo pedido, al despegar.
+                            self.queued.push((self.now + self.win.lag_ms * MS, rect));
+                            let due = self.now + u64::from(ms) * MS;
+                            self.flight = Some(Flight { due, req, to, ms });
+                        }
+                        Effect::Land { win } => {
+                            assert_eq!(win, self.win.key);
+                            self.lands += 1;
+                            if let Some(old) = self.flight.take() {
+                                let report = FlyReport { arrived: false, flight_ms: 0 };
+                                queue.push_back(Event::Flown { req: old.req, result: Ok(report) });
+                            }
+                        }
                         Effect::Normalize { win } => {
                             assert_eq!(win, self.win.key);
+                            assert!(self.flight.is_none(), "Normalize sobre una ventana en vuelo");
                             self.normalized = true;
                             if self.win.maximized {
                                 self.win.maximized = false;
@@ -185,6 +238,7 @@ impl Sim {
                         }
                         Effect::Maximize { win } => {
                             assert_eq!(win, self.win.key);
+                            assert!(self.flight.is_none(), "Maximize sobre una ventana en vuelo");
                             if !self.win.maximized {
                                 let m = monitor_of(&self.monitors, self.win.frame).unwrap();
                                 self.win.restore = self.win.frame;
@@ -197,13 +251,23 @@ impl Sim {
                     }
                 }
             }
-            // Sin nada en cola: avanzar el reloj al próximo plazo, si hay.
-            match w.deadline() {
-                Some(t) => {
+            // Sin nada en cola: avanzar el reloj al próximo plazo (del modelo
+            // o del vuelo), si hay.
+            let flight_due = self.flight.as_ref().map(|f| f.due);
+            match (w.deadline(), flight_due) {
+                (d, Some(f)) if d.is_none_or(|d| f <= d) => {
+                    assert!(d.is_none(), "el modelo no tiene plazos durante un vuelo");
+                    self.now = self.now.max(f);
+                    self.settle();
+                    let fl = self.flight.take().expect("recién visto");
+                    let report = FlyReport { arrived: self.win.frame == fl.to, flight_ms: fl.ms };
+                    queue.push_back(Event::Flown { req: fl.req, result: Ok(report) });
+                }
+                (Some(t), _) => {
                     self.now = self.now.max(t);
                     queue.push_back(Event::Tick);
                 }
-                None => break,
+                (None, _) => break,
             }
         }
     }
@@ -645,9 +709,12 @@ fn every_chord_gives_the_same_result_in_every_order() {
             for keys in chords {
                 for lag in [0, 100] {
                     let mut results = Vec::new();
-                    for order in permutations(keys) {
+                    for (order, fly) in
+                        permutations(keys).into_iter().flat_map(|o| [(o.clone(), false), (o, true)])
+                    {
                         for together in [true, false] {
                             let mut w = World::new(Vec::new());
+                            w.step(Event::FlyEnabled(fly), 0);
                             let mut sim = Sim::new();
                             sim.win.lag_ms = lag;
                             match origin {
@@ -658,6 +725,8 @@ fn every_chord_gives_the_same_result_in_every_order() {
                                 }
                             }
                             sim.chord(&mut w, &order, together);
+                            assert!(sim.flight.is_none(), "quedó un vuelo sin terminar");
+                            assert_eq!(w.placing(), 0);
                             results.push((order.clone(), together, sim.win.frame));
                         }
                     }
@@ -843,4 +912,213 @@ fn opposite_keys_leave_nothing_to_undo() {
     assert!(sim.is_at(0, P::TopLeft));
     sim.key(&mut w, b'Z');
     assert!(sim.logs.last().unwrap().contains("no hay nada para deshacer"), "{:?}", sim.logs);
+}
+
+// ---- Animación (hito 1e) ----
+
+fn flying_world() -> World {
+    let mut w = World::new(Vec::new());
+    w.step(Event::FlyEnabled(true), 0);
+    w
+}
+
+#[test]
+fn half_to_opposite_half_flies() {
+    let mut w = flying_world();
+    let mut sim = Sim::new();
+    sim.at(0, P::LeftHalf);
+    sim.key(&mut w, b'D');
+    assert!(sim.is_at(0, P::RightHalf), "{:?}", sim.logs);
+    assert_eq!((sim.flights, sim.places), (1, 0), "un vuelo, ningún Place");
+    let last = sim.logs.last().unwrap();
+    assert!(last.contains("0 px en 1 pasada") && last.contains("(vuelo 160 ms)"), "{last}");
+    assert_eq!(w.deadline(), None);
+}
+
+#[test]
+fn changing_size_is_instant() {
+    let mut w = flying_world();
+    let mut sim = Sim::new();
+    sim.at(0, P::LeftHalf);
+    sim.key(&mut w, b'W'); // mitad de arriba: otro tamaño
+    assert!(sim.is_at(0, P::TopHalf));
+    assert_eq!(sim.flights, 0);
+    assert_eq!(sim.places, 1);
+}
+
+#[test]
+fn pushing_flies_only_between_monitors_with_the_same_scale() {
+    let mut w = flying_world();
+    let mut sim = Sim::new();
+    sim.at(0, P::RightHalf);
+    sim.key(&mut w, b'D');
+    assert!(sim.is_at(1, P::LeftHalf), "{:?}", sim.logs);
+    assert_eq!(sim.flights, 1);
+
+    let mut w = flying_world();
+    let mut sim = Sim::new();
+    sim.monitors[1].dpi = 144;
+    sim.at(0, P::RightHalf);
+    sim.key(&mut w, b'D');
+    assert_eq!(sim.flights, 0, "al cruzar de escala la app se reescala: sin vuelo");
+}
+
+#[test]
+fn windows_that_cannot_fly_move_instantly() {
+    for reason in [NoFly::NotFront, NoFly::Hung, NoFly::Protected, NoFly::ReducedMotion] {
+        let mut w = flying_world();
+        let mut sim = Sim::new();
+        sim.win.no_fly = Some(reason);
+        sim.at(0, P::LeftHalf);
+        sim.key(&mut w, b'D');
+        assert!(sim.is_at(0, P::RightHalf));
+        assert_eq!(sim.flights, 0, "{reason:?}");
+    }
+    // Sin habilitar (el carril no está listo): instantáneo.
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.at(0, P::LeftHalf);
+    sim.key(&mut w, b'D');
+    assert_eq!(sim.flights, 0);
+}
+
+#[test]
+fn a_short_move_is_not_animated() {
+    let mut w = flying_world();
+    let mut sim = Sim::new();
+    let half = place(work(), P::LeftHalf);
+    sim.win.frame = Rect::new(half.left + 30, half.top, half.right + 30, half.bottom);
+    sim.key(&mut w, b'A'); // 30 px: se ve igual que un salto
+    assert!(sim.is_at(0, P::LeftHalf));
+    assert_eq!(sim.flights, 0);
+}
+
+#[test]
+fn a_key_during_a_flight_counts_from_its_destination_and_redirects() {
+    let mut w = flying_world();
+    let mut sim = Sim::new();
+    sim.at(0, P::LeftHalf);
+    let left = place(work(), P::LeftHalf);
+    let right = place(work(), P::RightHalf);
+    // D: despega (la real ya va a la derecha, con cloak) y el vuelo sigue.
+    let effects = w.step(arrange(b'D', HELD_D), sim.now);
+    let Effect::Inspect { req, .. } = effects[0] else { panic!("{effects:?}") };
+    let effects = w.step(Event::Inspected { req, result: Ok(sim.obs()) }, sim.now);
+    let Effect::Fly { req: first, rect, to, .. } = effects[0] else { panic!("{effects:?}") };
+    assert_eq!(to, right);
+    sim.queued.push((sim.now, rect));
+    sim.settle();
+    w.step(Event::Layer(Layer::Apps), sim.now);
+    w.step(Event::Layer(Layer::Window), sim.now);
+    // A a mitad de vuelo (otro gesto): cuenta desde la derecha → izquierda.
+    sim.now += 40 * MS;
+    let effects = w.step(arrange(b'A', HELD_A), sim.now);
+    let Effect::Inspect { req, .. } = effects[0] else { panic!("{effects:?}") };
+    let effects = w.step(Event::Inspected { req, result: Ok(sim.obs()) }, sim.now);
+    assert!(!effects.iter().any(|e| matches!(e, Effect::Land { .. })), "mismo tamaño: se redirige");
+    let Some(Effect::Fly { to, .. }) = effects.first() else { panic!("{effects:?}") };
+    assert_eq!(*to, left);
+    // La respuesta del primer vuelo (redirigido) no cambia nada.
+    let report = FlyReport { arrived: false, flight_ms: 40 };
+    assert!(w.step(Event::Flown { req: first, result: Ok(report) }, sim.now).is_empty());
+    assert!(w.flying(sim.win.key));
+}
+
+#[test]
+fn the_model_has_no_deadline_while_flying() {
+    let mut w = flying_world();
+    let mut sim = Sim::new();
+    sim.at(0, P::LeftHalf);
+    let effects = w.step(arrange(b'D', HELD_D), sim.now);
+    let Effect::Inspect { req, .. } = effects[0] else { panic!("{effects:?}") };
+    let effects = w.step(Event::Inspected { req, result: Ok(sim.obs()) }, sim.now);
+    let Effect::Fly { req, from, to, ms, .. } = effects[0] else { panic!("{effects:?}") };
+    assert_eq!(from, place(work(), P::LeftHalf));
+    assert_eq!(to, place(work(), P::RightHalf));
+    assert!(w.flying(sim.win.key));
+    assert_eq!(w.deadline(), None);
+    // Un Flown viejo (de otro pedido) no cambia nada.
+    let stray =
+        Event::Flown { req: req + 100, result: Ok(FlyReport { arrived: true, flight_ms: ms }) };
+    assert!(w.step(stray, sim.now).is_empty());
+    assert!(w.flying(sim.win.key));
+}
+
+#[test]
+fn a_chord_that_changes_size_lands_the_flight_first() {
+    let mut w = flying_world();
+    let mut sim = Sim::new();
+    sim.at(0, P::LeftHalf);
+    sim.chord(&mut w, b"DS", true); // D vuela; con S, la esquina (otro tamaño)
+    assert!(sim.is_at(0, P::BottomRight), "{:?}", sim.logs);
+    assert_eq!(sim.lands, 1);
+}
+
+#[test]
+fn f_during_a_flight_lands_it_first() {
+    let mut w = flying_world();
+    let mut sim = Sim::new();
+    sim.at(0, P::LeftHalf);
+    sim.run_many(&mut w, vec![arrange(b'D', HELD_D), arrange(b'F', 0)]);
+    assert!(sim.win.maximized);
+    assert_eq!(sim.lands, 1);
+}
+
+#[test]
+fn undo_flies_back() {
+    let mut w = flying_world();
+    let mut sim = Sim::new();
+    sim.at(0, P::LeftHalf);
+    sim.key(&mut w, b'D');
+    sim.key(&mut w, b'Z');
+    assert!(sim.is_at(0, P::LeftHalf), "{:?}", sim.logs);
+    assert_eq!(sim.flights, 2);
+}
+
+#[test]
+fn a_failed_flight_places_without_animation() {
+    let mut w = flying_world();
+    let mut sim = Sim::new();
+    sim.fly_fail = Some(FlyFail { fatal: false, why: "cloak no confirmado".into() });
+    sim.at(0, P::LeftHalf);
+    sim.key(&mut w, b'D');
+    assert!(sim.is_at(0, P::RightHalf));
+    assert_eq!(sim.places, 1);
+    assert!(!sim.logs.iter().any(|l| l.contains("apagada")), "{:?}", sim.logs);
+}
+
+#[test]
+fn a_fatal_failure_turns_animation_off_for_the_session() {
+    let mut w = flying_world();
+    let mut sim = Sim::new();
+    sim.fly_fail = Some(FlyFail { fatal: true, why: "el carril se trabó".into() });
+    sim.at(0, P::LeftHalf);
+    sim.key(&mut w, b'D');
+    assert!(sim.is_at(0, P::RightHalf));
+    assert!(sim.logs.iter().any(|l| l.contains("Animación apagada")), "{:?}", sim.logs);
+    sim.fly_fail = None;
+    sim.key(&mut w, b'A');
+    assert!(sim.is_at(0, P::LeftHalf));
+    assert_eq!(sim.flights, 0, "ya no se anima");
+}
+
+#[test]
+fn a_slow_app_that_misses_the_landing_is_checked_as_usual() {
+    let mut w = flying_world();
+    let mut sim = Sim::new();
+    sim.win.lag_ms = 300; // llega después del vuelo
+    sim.at(0, P::LeftHalf);
+    sim.key(&mut w, b'D');
+    assert!(sim.is_at(0, P::RightHalf), "{:?}", sim.logs);
+    assert_eq!(sim.places, 0, "sin segundo pedido");
+    assert_eq!(w.placing(), 0);
+}
+
+#[test]
+fn flight_time_grows_with_distance() {
+    use crate::world::fly_ms;
+    let r = |x: i32| Rect::new(x, 0, x + 800, 600);
+    assert_eq!(fly_ms(r(0), r(64)), 110);
+    assert_eq!(fly_ms(r(0), r(960)), 160);
+    assert_eq!(fly_ms(r(0), r(1920)), 180);
 }
