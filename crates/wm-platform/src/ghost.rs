@@ -97,19 +97,25 @@ pub fn is_cloaked(id: WindowId) -> bool {
 pub struct GhostHost {
     host: HWND,
     origin: (i32, i32),
+    size: (i32, i32),
+}
+
+/// La pantalla virtual ahora: (x, y, ancho, alto).
+fn virtual_screen() -> (i32, i32, i32, i32) {
+    // SAFETY: sin precondiciones.
+    unsafe {
+        (
+            GetSystemMetrics(SM_XVIRTUALSCREEN),
+            GetSystemMetrics(SM_YVIRTUALSCREEN),
+            GetSystemMetrics(SM_CXVIRTUALSCREEN),
+            GetSystemMetrics(SM_CYVIRTUALSCREEN),
+        )
+    }
 }
 
 impl GhostHost {
     pub fn new() -> windows::core::Result<Self> {
-        // SAFETY: sin precondiciones.
-        let (x, y, cx, cy) = unsafe {
-            (
-                GetSystemMetrics(SM_XVIRTUALSCREEN),
-                GetSystemMetrics(SM_YVIRTUALSCREEN),
-                GetSystemMetrics(SM_CXVIRTUALSCREEN),
-                GetSystemMetrics(SM_CYVIRTUALSCREEN),
-            )
-        };
+        let (x, y, cx, cy) = virtual_screen();
         // SAFETY: registro y creación de una ventana propia.
         let host = unsafe {
             let instance = HINSTANCE(GetModuleHandleW(None)?.0);
@@ -146,7 +152,19 @@ impl GhostHost {
             SetLayeredWindowAttributes(h, COLORREF(0), 255, LWA_ALPHA)?;
             h
         };
-        Ok(Self { host, origin: (x, y) })
+        Ok(Self { host, origin: (x, y), size: (cx, cy) })
+    }
+
+    /// ¿Sigue cubriendo la pantalla virtual (no cambiaron los monitores)?
+    pub fn is_current(&self) -> bool {
+        let (x, y, cx, cy) = virtual_screen();
+        self.origin == (x, y) && self.size == (cx, cy)
+    }
+
+    /// El HWND del anfitrión, para esconderlo desde otro hilo
+    /// ([`cloak_host`]).
+    pub fn raw(&self) -> isize {
+        self.host.0 as isize
     }
 
     pub fn show(&self) {
@@ -229,6 +247,22 @@ impl Drop for Ghost {
         // SAFETY: miniatura propia.
         let _ = unsafe { DwmUnregisterThumbnail(self.thumb) };
     }
+}
+
+/// Esconde el anfitrión (cloak de DWM) desde cualquier hilo de este proceso:
+/// si el hilo `anim` se traba, el fantasma no queda pegado en pantalla.
+pub fn cloak_host(raw: isize) {
+    use windows::Win32::Graphics::Dwm::{DWMWA_CLOAK, DwmSetWindowAttribute};
+    let on: BOOL = true.into();
+    // SAFETY: ventana propia (o ya destruida: falla sin efecto); valor local.
+    let _ = unsafe {
+        DwmSetWindowAttribute(
+            HWND(raw as *mut c_void),
+            DWMWA_CLOAK,
+            &on as *const BOOL as *const c_void,
+            size_of::<BOOL>() as u32,
+        )
+    };
 }
 
 type WaitClock = unsafe extern "system" fn(u32, *const c_void, u32) -> u32;

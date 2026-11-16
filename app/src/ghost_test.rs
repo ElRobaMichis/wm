@@ -20,6 +20,10 @@
 //! controlamos (cuenta lo que no es magenta).
 //!
 //! Escribe `READY l t r b` (marco visible) y `ANIM t0 t1 desde hasta llegó`.
+//!
+//! Con `lane`, los vuelos los hace el carril `anim` del core
+//! (`wm_platform::anim`, hito 1e) en vez de esta secuencia: así
+//! `wm-bench ghost` mide el código de producción.
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -79,6 +83,7 @@ pub fn demo(args: &[String]) -> ExitCode {
     let ms: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(200);
     let reps: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(10);
     let curtain_on = args.iter().any(|a| a == "curtain");
+    let lane = args.iter().any(|a| a == "lane");
 
     wm_platform::input::ensure_message_queue();
     // Cómo estaba la ventana, para dejarla igual al terminar (puede ser una
@@ -150,7 +155,10 @@ pub fn demo(args: &[String]) -> ExitCode {
 
     let duration = Duration::from_millis(ms);
     let mut dir = 1;
-    for _ in 0..reps {
+    if lane {
+        lane_flights(id, dx, ms as u32, reps);
+    }
+    for _ in 0..if lane { 0 } else { reps } {
         let (Some(win_from), Some(efb_from)) = (ghost::window_rect(id), ghost::frame_bounds(id))
         else {
             break;
@@ -212,4 +220,45 @@ pub fn demo(args: &[String]) -> ExitCode {
     drop(curtain);
     println!("END");
     ExitCode::SUCCESS
+}
+
+/// Los vuelos con el carril `anim` del core: ida y vuelta, uno por vez.
+fn lane_flights(id: WindowId, dx: i32, ms: u32, reps: usize) {
+    use wm_platform::anim::{Anim, AnimEvent};
+    let mut anim = Anim::start(wm_platform::input::current_thread_id());
+    let next = |anim: &mut Anim| loop {
+        if let Some(e) = anim.drain().into_iter().next() {
+            return e;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    if let AnimEvent::Ready(Err(e)) = next(&mut anim) {
+        eprintln!("El carril no arrancó: {e}");
+        return;
+    }
+    let mut dir = 1;
+    for _ in 0..reps {
+        let (Some(win_from), Some(efb_from)) = (ghost::window_rect(id), ghost::frame_bounds(id))
+        else {
+            break;
+        };
+        let (win_to, efb_to) = (shift(win_from, dx * dir), shift(efb_from, dx * dir));
+        anim.fly(id, win_to, efb_to, ms);
+        match next(&mut anim) {
+            AnimEvent::Flown { result: Ok(done), .. } => {
+                println!(
+                    "ANIM {} {} {} {} {}",
+                    done.t0,
+                    done.t1,
+                    efb_from.left,
+                    efb_to.left,
+                    u8::from(done.arrived)
+                );
+            }
+            other => eprintln!("vuelo fallido: {other:?}"),
+        }
+        let _ = std::io::stdout().flush();
+        std::thread::sleep(Duration::from_millis(300));
+        dir = -dir;
+    }
 }

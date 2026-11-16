@@ -391,7 +391,9 @@ fn route(op: &Op) -> Lane {
     }
 }
 
-fn wake(brain: u32) {
+/// Despierta al brain con `WM_OPS` (uno pendiente a la vez). También lo usa
+/// el carril `anim`: el brain revisa los dos al despertar.
+pub(crate) fn wake(brain: u32) {
     if !WAKE_PENDING.swap(true, Ordering::AcqRel) {
         // SAFETY: PostThreadMessageW no bloquea.
         let _ = unsafe { PostThreadMessageW(brain, WM_OPS, WPARAM(0), LPARAM(0)) };

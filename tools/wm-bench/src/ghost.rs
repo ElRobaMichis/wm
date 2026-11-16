@@ -87,6 +87,10 @@ pub fn run(args: &[String], exe: &std::path::Path) -> ExitCode {
     let mut demo_args: Vec<String> = vec!["ghost-demo".into()];
     demo_args.extend(target);
     demo_args.extend([dx.to_string(), ms.to_string(), reps.to_string(), "curtain".into()]);
+    // `lane`: los vuelos los hace el carril `anim` del core (hito 1e).
+    if args.iter().any(|a| a == "lane") {
+        demo_args.push("lane".into());
+    }
     let mut demo = match Command::new(exe).args(&demo_args).stdout(Stdio::piped()).spawn() {
         Ok(c) => c,
         Err(e) => {

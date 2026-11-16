@@ -5,6 +5,8 @@
 //! - Información del sistema para `wm doctor` (spike 0).
 
 #[cfg(windows)]
+pub mod anim;
+#[cfg(windows)]
 pub mod clock;
 #[cfg(windows)]
 pub mod console;
