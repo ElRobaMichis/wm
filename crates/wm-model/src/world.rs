@@ -1175,7 +1175,14 @@ impl World {
         let previous = self
             .sizing
             .get(&obs.key)
-            .filter(|s| !obs.maximized && edge_error(here_rect, s.target) <= TOLERANCE_PX)
+            // También si quedó pegada al borde con otro tamaño (la app no se
+            // achicó del todo): sin esto, el V siguiente cambiaba de eje.
+            .filter(|s| {
+                let (w, h) = (here_rect.width(), here_rect.height());
+                !obs.maximized
+                    && (edge_error(here_rect, s.target) <= TOLERANCE_PX
+                        || edge_error(here_rect, anchor(s.target, work, w, h)) <= TOLERANCE_PX)
+            })
             .copied();
         let (anchor_rect, x, y) = match previous {
             Some(s) => (s.anchor, s.x, s.y),
@@ -1198,13 +1205,29 @@ impl World {
             let next = if grow { current + step } else { current - step };
             next.clamp(total * SIZE_MIN_PCT / 100, total)
         };
-        let w = size(here_rect.width(), work.width(), x);
-        let h = size(here_rect.height(), work.height(), y);
-        if (w, h) == (here_rect.width(), here_rect.height()) {
-            let limit = if grow {
-                "ya está en el tamaño máximo"
+        let (w, h) =
+            (size(here_rect.width(), work.width(), x), size(here_rect.height(), work.height(), y));
+        // Sin pedir lo que la app ya mostró que no acepta (tamaño mínimo o
+        // fijo): en la prueba del usuario, cada V de más tardaba ~150 ms en
+        // terminar donde mismo.
+        let lim = self.limits.get(&obs.key).copied().unwrap_or_default();
+        let clamp = |v: i32, min: Option<i32>, max: Option<i32>| {
+            let v = min.map_or(v, |m| v.max(m));
+            max.map_or(v, |m| v.min(m))
+        };
+        let (w, h) = (clamp(w, lim.min_w, lim.max_w), clamp(h, lim.min_h, lim.max_h));
+        let near = |a: i32, b: i32| (a - b).abs() <= TOLERANCE_PX;
+        if near(w, here_rect.width()) && near(h, here_rect.height()) {
+            let at_app_limit = if grow {
+                lim.max_w.is_some() || lim.max_h.is_some()
             } else {
-                "ya está en el tamaño mínimo"
+                lim.min_w.is_some() || lim.min_h.is_some()
+            };
+            let limit = match (grow, at_app_limit) {
+                (true, false) => "ya está en el tamaño máximo",
+                (false, false) => "ya está en el tamaño mínimo",
+                (true, true) => "la app no se agranda más",
+                (false, true) => "la app no se achica más",
             };
             out.push(Effect::Log(format!("{what}: {limit} ({}).", obs.app)));
             return;

@@ -1381,11 +1381,30 @@ fn hitting_the_minimum_with_v_does_not_stop_other_animations() {
     sim.chord(&mut w, b"WA", true);
     sim.key(&mut w, b'C');
     assert!(sim.flights >= flights + 4, "se siguen animando: {:?}", sim.logs);
-    // Lo que sí no acepta (más angosta que 502) va sin animación.
+    // La segunda vez, V ya no pide menos de 502 px: llega volando.
     let flights = sim.flights;
     sim.at(0, P::RightHalf);
     for _ in 0..3 {
         sim.key(&mut w, b'V');
     }
-    assert!(sim.flights < flights + 3, "{:?}", sim.logs);
+    assert_eq!(sim.win.frame.width(), 502, "{:?}", sim.logs);
+    assert_eq!(sim.flights, flights + 3, "{:?}", sim.logs);
+    assert_eq!(sim.win.frame.height(), work().height(), "solo el ancho: {:?}", sim.logs);
+}
+
+#[test]
+fn v_at_the_app_minimum_does_not_ask_again() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.win.min_width = 502;
+    sim.at(0, P::RightHalf);
+    for _ in 0..3 {
+        sim.key(&mut w, b'V'); // 40 %, 30 %, 20 % (queda en 502 px)
+    }
+    let places = sim.places;
+    sim.key(&mut w, b'V');
+    assert_eq!(sim.places, places, "no vuelve a pedir: {:?}", sim.logs);
+    assert!(sim.logs.last().unwrap().contains("la app no se achica más"), "{:?}", sim.logs);
+    sim.key(&mut w, b'G'); // agrandar sí
+    assert!(sim.win.frame.width() > 502);
 }
