@@ -1243,6 +1243,10 @@ impl World {
             out.push(Effect::Log(format!("{what}: la ventana está minimizada.")));
             return;
         }
+        if is_fullscreen(&obs) {
+            out.push(Effect::Log(format!("{what}: {} está en pantalla completa.", obs.app)));
+            return;
+        }
         let tag = self.fresh_tag();
         self.remember(Entry { win: obs.key, frame: obs.frame, maximized: obs.maximized, tag });
         self.ground(obs.key, out);
@@ -1390,6 +1394,12 @@ impl World {
             out.push(Effect::Log(format!("{what}: la ventana está minimizada.")));
             return;
         }
+        // Un video o juego a pantalla completa ignora los pedidos de mover: se
+        // daba por colgada (prueba del usuario con Brave).
+        if is_fullscreen(&obs) {
+            out.push(Effect::Log(format!("{what}: {} está en pantalla completa.", obs.app)));
+            return;
+        }
         let Some(m) = monitor_of(&obs.monitors, obs.frame) else { return };
         let work = obs.monitors[m].work;
         // Seguir el ciclo si la ventana está donde la dejó la C anterior.
@@ -1453,8 +1463,14 @@ impl World {
 
     /// Z: deja la ventana como estaba antes de la entrada.
     fn undo(&mut self, entry: Entry, obs: Obs, key_us: u64, now_us: u64, out: &mut Vec<Effect>) {
-        self.centers.remove(&obs.key);
         let what = format!("Caps + Alt + Z → deshacer ({})", obs.app);
+        if is_fullscreen(&obs) {
+            // La entrada queda para cuando salga de pantalla completa.
+            self.journal.push_back(entry);
+            out.push(Effect::Log(format!("{what}: {} está en pantalla completa.", obs.app)));
+            return;
+        }
+        self.centers.remove(&obs.key);
         if entry.maximized {
             self.ground(obs.key, out);
             self.sizing.remove(&obs.key);
@@ -1718,6 +1734,13 @@ fn fit_inside(r: Rect, area: Rect) -> Rect {
     Rect::new(r.left + dx, r.top + dy, r.right + dx, r.bottom + dy)
 }
 
+/// La ventana cubre todo su monitor sin estar maximizada: un video o un
+/// juego a pantalla completa. Ahí no se mueve nada (la app lo ignoraría).
+fn is_fullscreen(obs: &Obs) -> bool {
+    !obs.maximized
+        && monitor_of(&obs.monitors, obs.frame).is_some_and(|m| obs.frame == obs.monitors[m].bounds)
+}
+
 fn is_corner(p: Placement) -> bool {
     matches!(
         p,
@@ -1947,5 +1970,54 @@ mod tests {
         let effects = w.step(Event::Focused { req, result: Ok(report) }, 13_000);
         let Effect::Log(line) = &effects[0] else { panic!("{effects:?}") };
         assert!(line.contains("desde la tecla 5.0 ms"), "{line}");
+    }
+}
+
+#[cfg(test)]
+mod fullscreen_tests {
+    use super::*;
+    use crate::place::MonitorObs;
+
+    fn obs(frame: Rect) -> Obs {
+        let m = MonitorObs {
+            bounds: Rect::new(0, 0, 1920, 1080),
+            work: Rect::new(0, 0, 1920, 1032),
+            dpi: 96,
+        };
+        Obs {
+            key: WinKey { hwnd: 1, pid: 1 },
+            app: "brave".into(),
+            title: String::new(),
+            frame,
+            outer: frame,
+            dpi: 96,
+            maximized: false,
+            minimized: false,
+            monitors: vec![m],
+            no_fly: None,
+        }
+    }
+
+    #[test]
+    fn c_f_and_z_leave_a_fullscreen_window_alone() {
+        // Prueba del usuario: C sobre un video de Brave a pantalla completa
+        // pedía moverlo y terminaba en "la app no responde".
+        let full = obs(Rect::new(0, 0, 1920, 1080));
+        let mut w = World::new(Vec::new());
+        let mut out = Vec::new();
+        w.center(full.clone(), "C".into(), 0, 0, &mut out);
+        w.full(full.clone(), "F".into(), 0, 0, &mut out);
+        assert!(
+            out.iter().all(|e| matches!(e, Effect::Log(l) if l.contains("pantalla completa"))),
+            "{out:?}"
+        );
+        assert_eq!(out.len(), 2);
+        // Z: la entrada no se pierde.
+        let entry =
+            Entry { win: full.key, frame: Rect::new(0, 0, 800, 600), maximized: false, tag: 1 };
+        let mut out = Vec::new();
+        w.undo(entry, full, 0, 0, &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(w.journal.len(), 1, "queda para deshacer después");
     }
 }
