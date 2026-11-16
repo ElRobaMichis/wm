@@ -401,6 +401,24 @@ fn a_fixed_size_window_goes_into_the_corner_it_was_sent_to() {
 }
 
 #[test]
+fn a_fixed_window_already_in_its_anchored_spot_is_not_called_hung() {
+    // Prueba real de 1d: W la llevó arriba (pegada al borde) y para cuando
+    // llegó A, la esquina de arriba a la izquierda (pegada) era donde ya
+    // estaba. No se mueve, pero la app no está colgada.
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.win.fixed = Some((800, 400));
+    let work = work();
+    sim.win.frame = Rect::new(work.left, work.top, work.left + 800, work.top + 400);
+    sim.chord(&mut w, b"WA", true);
+    let last = sim.logs.last().unwrap();
+    assert!(!last.contains("no responde"), "{:?}", sim.logs);
+    assert!(last.contains("ya estaba pegada al borde"), "{:?}", sim.logs);
+    assert_eq!(sim.win.frame, Rect::new(work.left, work.top, work.left + 800, work.top + 400));
+    assert_eq!(w.deadline(), None);
+}
+
+#[test]
 fn a_window_that_could_not_shrink_still_counts_as_where_we_left_it() {
     let mut w = World::new(Vec::new());
     let mut sim = Sim::new();

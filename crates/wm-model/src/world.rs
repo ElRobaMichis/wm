@@ -1040,6 +1040,22 @@ impl World {
             return; // la app todavía no aplicó el pedido o se está acomodando
         }
         if j.pass == 1 && !moved {
+            // Ni se movió, pero ya está donde quedaría pegada al borde con el
+            // tamaño que tiene (tamaño fijo o mínimo que ya estaba en ese
+            // lugar): no hay nada que hacer, y la app no está colgada.
+            let (w, h) = (obs.frame.width(), obs.frame.height());
+            if edge_error(obs.frame, anchor(j.target, j.spot.monitor.work, w, h)) <= TOLERANCE_PX {
+                let line = format!(
+                    "{}: la app no se achica ({w}×{h}); ya estaba pegada al borde, {:.1} ms",
+                    j.what,
+                    since(j)
+                );
+                let spot = j.spot;
+                self.jobs.remove(&win);
+                self.placed.insert(win, (spot, obs.frame));
+                out.push(Effect::Log(line));
+                return;
+            }
             // A los 600 ms ni se movió: la app no responde (colgada). El
             // pedido ya está en su cola y se aplica solo cuando despierte; no
             // se reintenta ni se ancla (plan-core.md §3.3).
