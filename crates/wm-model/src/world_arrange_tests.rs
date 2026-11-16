@@ -655,6 +655,27 @@ fn c_on_an_already_centered_window_starts_at_60() {
 }
 
 #[test]
+fn every_c_moves_the_window_even_starting_maximized() {
+    // Error que vio el usuario: desde maximizada, "original" y "60 %" eran el
+    // mismo rectángulo y una de cada tres C no hacía nada.
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.key(&mut w, b'F');
+    let mut last = sim.win.frame;
+    for i in 0..6 {
+        sim.key(&mut w, b'C');
+        assert_ne!(
+            sim.win.frame,
+            last,
+            "la C número {} no movió la ventana: {:?}",
+            i + 1,
+            sim.logs
+        );
+        last = sim.win.frame;
+    }
+}
+
+#[test]
 fn z_undoes_every_kind_of_move_in_order() {
     let mut w = World::new(Vec::new());
     let mut sim = Sim::new();

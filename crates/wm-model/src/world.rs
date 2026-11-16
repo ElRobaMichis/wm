@@ -877,35 +877,34 @@ impl World {
             .get(&obs.key)
             .filter(|c| !obs.maximized && edge_error(obs.frame, c.target) <= TOLERANCE_PX)
             .copied();
-        let (original, step) = match current {
-            Some(c) => {
-                let next = match c.step {
-                    CenterStep::Original => CenterStep::P60,
-                    CenterStep::P60 => CenterStep::P80,
-                    CenterStep::P80 => CenterStep::Original,
-                };
-                (c.original, next)
-            }
+        let next = |step: CenterStep| match step {
+            CenterStep::Original => CenterStep::P60,
+            CenterStep::P60 => CenterStep::P80,
+            CenterStep::P80 => CenterStep::Original,
+        };
+        let (original, mut step) = match current {
+            Some(c) => (c.original, next(c.step)),
+            // Maximizada: no hay un tamaño propio que recordar; el "original"
+            // es el 60 % (y abajo se saltea por ser igual).
             None if obs.maximized => {
                 ((work.width() * 60 / 100, work.height() * 60 / 100), CenterStep::P60)
             }
-            None => {
-                let size = (obs.frame.width(), obs.frame.height());
-                // Si ya está centrada con su tamaño, el primer paso es 60 %.
-                let same = centered(work, size.0, size.1);
-                let step = if edge_error(obs.frame, same) <= TOLERANCE_PX {
-                    CenterStep::P60
-                } else {
-                    CenterStep::Original
-                };
-                (size, step)
-            }
+            None => ((obs.frame.width(), obs.frame.height()), CenterStep::Original),
         };
-        let (target, label) = match step {
+        let rect_of = |step: CenterStep| match step {
             CenterStep::Original => (centered(work, original.0, original.1), "centrada"),
             CenterStep::P60 => (centered_percent(work, 60), "centrada al 60 %"),
             CenterStep::P80 => (centered_percent(work, 80), "centrada al 80 %"),
         };
+        // Cada C tiene que mover algo: se saltean los pasos que dan el mismo
+        // rectángulo donde ya está (ya centrada con su tamaño, o un "original"
+        // igual al 60 %).
+        for _ in 0..2 {
+            if !obs.maximized && edge_error(obs.frame, rect_of(step).0) <= TOLERANCE_PX {
+                step = next(step);
+            }
+        }
+        let (target, label) = rect_of(step);
         self.centers.insert(obs.key, Centering { original, step, target });
         let spot = Spot { monitor: obs.monitors[m], placement: Placement::Full };
         let tag = self.fresh_tag();
