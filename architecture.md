@@ -415,7 +415,7 @@ Defensa en capas, de adentro hacia afuera:
   - la entrada se inyecta con `SendInput`.
 - **Caos:** matar el core en momentos aleatorios durante cambios de workspace; matar Explorer; colgar el títere.
 - **Resistencia:** 24 h de operaciones aleatorias vigilando handles, objetos GDI/USER y bytes privados.
-- **CI:** GitHub Actions `windows-latest` y `windows-11-arm`. **Medido (spike 9, §13.11):** hooks, `SendInput`, DWM, cloaking, overlays y el guardián funcionan en los dos; el foco, solo en x64. x64 es obligatorio y ARM64 informativo para las pruebas con ventanas.
+- **CI:** GitHub Actions `windows-latest` y `windows-11-arm`. **Medido (spike 9, §13.11):** hooks, `SendInput`, DWM, cloaking, overlays y el guardián funcionan en los dos; el foco, en x64 siempre y en ARM64 a veces. x64 es obligatorio y ARM64 informativo para las pruebas con ventanas.
   - Tienen un solo monitor a 96 DPI, así que multi-monitor, DPI mixto y frecuencias van a **una máquina propia con dos pantallas** y a una lista de pruebas manual por versión.
 - **Instalación limpia:** Windows Sandbox o una VM sin Visual C++ Redistributable.
 
@@ -1139,7 +1139,7 @@ Planteo revisado con Fable 5.2; implementado y medido el 15/11/2026.
 
 **Medido en la PC del usuario** (Windows 11 LTSC 24H2, sin elevar): 9/9 en 2,5 s; foco 9/9 sin tecla neutra (p50 2,6 ms); 10/10 acordes con callback p99 ≤ 170 µs; las cuatro formas de esconder en < 1 ms; marco con 0 px de error; overlay en 10 ms. `crash-test` en el formato de la CI: 0 ventanas perdidas.
 
-**Resultados en GitHub Actions** (repositorio público [ElRobaMichis/wm](https://github.com/ElRobaMichis/wm), 15/11/2026, tres corridas):
+**Resultados en GitHub Actions** (repositorio público [ElRobaMichis/wm](https://github.com/ElRobaMichis/wm), 15/11/2026, cuatro corridas en x64 y cinco en ARM64):
 
 | | `windows-latest` (x64) | `windows-11-arm` (ARM64), como arranca | ARM64, con la configuración inicial cerrada |
 |---|---|---|---|
@@ -1148,7 +1148,7 @@ Planteo revisado con Fable 5.2; implementado y medido el 15/11/2026.
 | Al frente al empezar | la terminal del runner | **"Choose privacy settings"** (`WWAHost.exe`) a pantalla completa | el escritorio (`Progman`) |
 | Pantalla | 1024 × 768 a 64 Hz, 96 DPI | ídem | ídem |
 | `build` (fmt, clippy `-D warnings`, pruebas, release MSVC, DLL) | ✅ | ✅ | ✅ |
-| Foco | ✅ 9/9, sin tecla neutra, p50 1,7 ms | ❌ 0/9, ni con tecla neutra | ❌ **ningún cambio real** (los 3 "aciertos" eran ventanas que ya tenían el foco) |
+| Foco | ✅ 9/9 en todas, sin tecla neutra, p50 1,7–4,5 ms | ❌ 0/9, ni con tecla neutra | ⚠️ **inestable:** 0/6, 9/9 y 1/7 cambios reales en tres corridas iguales |
 | Hook + `SendInput` | ✅ 10/10, p99 ≤ 70 µs | ✅ 10/10 | ✅ 10/10 |
 | Esconder (cloak, minimizar, fuera de pantalla, `SW_HIDE`) | ✅ | ✅ | ✅ |
 | Marco DWM | ✅ 0 px | ✅ 0 px | ✅ 0 px |
@@ -1156,12 +1156,12 @@ Planteo revisado con Fable 5.2; implementado y medido el 15/11/2026.
 | Guardián (`crash-test cloak 50`) | ✅ 0 perdidas, p99 9,9 ms | ✅ 0 perdidas, p99 13,2 ms | ✅ 0 perdidas |
 
 - Al cerrar la pantalla de privacidad, la imagen sigue con su primer arranque (una consola de `wsl.exe` que pide actualizarse y el menú Inicio) y durante unos segundos el shell no registra ventanas: el cloak falla con "sin vista del shell", el marco tarda 1,2 s. Con 15 s de espera y cerrando la consola y el menú, todo vuelve a andar menos el foco.
-- **El foco en ARM64 no es por la pantalla de privacidad:** con el escritorio limpio sigue sin poder cambiarse, ni directo ni con la tecla neutra. Coincide con [actions/runner-images#14049](https://github.com/actions/runner-images/issues/14049). No sabemos si es de la imagen del runner o de Windows en ARM64: hace falta una PC ARM64 real.
+- **El foco en ARM64 es inestable, no imposible:** con el escritorio limpio dio 0/6, 9/9 y 1/7 cambios en tres corridas con el mismo código. Cuando falla, la tecla neutra no alcanza. Como una vez dio 9/9, Windows en ARM64 puede hacerlo; lo que cambia es el estado del runner (que es una imagen sin terminar de configurar). Coincide con [actions/runner-images#14049](https://github.com/actions/runner-images/issues/14049), donde nadie mencionó la pantalla de privacidad.
 
 **Decisión: estrategia de CI.**
 - **`windows-latest` (x64), obligatorio:** formato, lint, pruebas, release y DLL (`build`), y con ventanas reales la sonda, el guardián con 50 muertes y la captura de los overlays (`ventanas`). Todo lo que el runner permite se prueba en cada commit.
-- **`windows-11-arm`, informativo:** `build` obligatorio (compila y pasa las pruebas en ARM64); `ventanas` con `continue-on-error`, cerrando antes la configuración inicial. El foco falla siempre ahí.
-- **Máquina propia** (lista manual por versión): varios monitores, DPI mixto, 144/240 Hz, reposo y bloqueo, apps reales (Chrome, Office, Electron, UWP), Narrador y **el foco en una PC ARM64 real** (no tenemos ninguna: riesgo abierto, ligado al riesgo 2 de §13.1).
+- **`windows-11-arm`, informativo:** `build` obligatorio (compila y pasa las pruebas en ARM64); `ventanas` con `continue-on-error`, cerrando antes la configuración inicial. Todo pasa siempre salvo el foco, que a veces sí y a veces no.
+- **Máquina propia** (lista manual por versión): varios monitores, DPI mixto, 144/240 Hz, reposo y bloqueo, apps reales (Chrome, Office, Electron, UWP), Narrador y **el foco en una PC ARM64 real** (no tenemos ninguna; en el runner es inestable, así que no sirve para decidir: riesgo abierto, ligado al riesgo 2 de §13.1).
 
 ---
 
