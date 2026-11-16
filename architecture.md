@@ -967,6 +967,22 @@ Diseño revisado con Fable 5.2; implementado y medido el 15/11/2026 a 144 Hz (no
 - **Sin animación** con: ventanas maximizadas, minimizadas o a pantalla completa; contenido protegido (la miniatura sale negra); apps colgadas (`IsHungAppWindow` antes de empezar); y cloak degradado (§6.3).
 - **Esquinas redondeadas y sombra:** la sombra desaparece durante el vuelo. Mirar las esquinas en capturas; si difieren, `DWMWCP_DONOTROUND` en las ventanas en mosaico.
 
+### 13.8b Mini-spike 6b: vuelos con cambio de tamaño (16/11/2026, en curso)
+
+`wm ghost-demo … lane resize=corner|mixed fit=crop|stretch|stretch-late` y `wm-bench ghost <app> 0 160 20 lane resize=… fit=…`: ida y vuelta entre dos ubicaciones de distinto tamaño. La medición compara cada cuadro con el ancho que debería tener el fantasma según la misma curva del carril (`anim::ease_out`), con ±2 cuadros de margen de tiempo. Movimientos: `corner` = mitad de arriba ↔ esquina de arriba a la izquierda (cambia el ancho); `mixed` = mitad izquierda ↔ mitad de arriba (crece el ancho y se achica el alto). 144 Hz, 20 vuelos de 160 ms.
+
+| Variante | Títere corner | Títere mixed | Brave corner / mixed | Terminal corner / mixed |
+|---|---|---|---|---|
+| Estirar, `SetWindowPos` al despegar | 1 cuadro sin ventana al crecer (la miniatura muestra el área nueva sin pintar) | ídem | — | — |
+| Estirar, `SetWindowPos` al final | 1 cuadro sin ventana al aterrizar creciendo (la app todavía no repintó) | ídem | — | — |
+| Recortar, un solo `SetWindowPos` | 0 defectos (con el borde corregido) | hueco en el eje que se achica | — | — |
+| **Recortar en dos pasos** | **0 defectos, 95,8 %**, aterrizaje 7 ms | **0 defectos, 96,3 %**, 7 ms | **0 / 0 defectos, 95,9 % / 96,3 %**, 6–7 ms | **0 / 0 defectos, 90,3 % / 92,9 %**, 6–7 ms |
+
+- **Recortar en dos pasos** (`Fit::Crop`): la miniatura muestra 1:1 la parte de la fuente que entra en el cuadro, sin estirar. Al despegar, la real (con cloak) pasa a un tamaño que cubre el de salida y el de llegada; al aterrizar, al tamaño final. Si todo crece, es un solo pedido al despegar; si todo se achica, uno solo al final. Achicar nunca deja áreas sin pintar, y al crecer el recorte revela el área nueva de a poco: cuando el fantasma llega a mostrarla, la app ya la pintó.
+- **Hallazgo:** el origen de `rcSource` es el rectángulo de la ventana **con** los bordes invisibles (aunque `DwmQueryThumbnailSourceSize` dé el marco visible): sin correrlo, faltaban 7 px.
+- **Terminal** no llega al 95 %: el compositor saltea cuadros (469 de ~488) mientras Terminal se redibuja con el tamaño nuevo. Con el mismo tamaño daba 100 %.
+- **Falta:** Rayo (es la ventana real del usuario: se mide con su permiso), un vistazo del usuario (texto, bordes, sensación) y decidir. La métrica de la fila mide el ancho; un problema solo en el alto no se ve en los números.
+
 ### 13.9 Estado del spike 7 (noviembre 2026)
 
 Diseño revisado con Fable 5.2. Lo automatizable se implementó y midió el 15/11/2026; las pruebas con cambios físicos de pantallas las hace el usuario con el guion de abajo.

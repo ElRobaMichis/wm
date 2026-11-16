@@ -72,6 +72,9 @@ struct Flight {
     t0: i64,
     t1: i64,
     arrived: bool,
+    /// Con cambio de tamaño (mini-spike 6b): espera de aterrizaje y anchos
+    /// del marco al salir y al llegar.
+    resize: Option<(u32, i32, i32)>,
 }
 
 pub fn run(args: &[String], exe: &std::path::Path) -> ExitCode {
@@ -87,9 +90,12 @@ pub fn run(args: &[String], exe: &std::path::Path) -> ExitCode {
     let mut demo_args: Vec<String> = vec!["ghost-demo".into()];
     demo_args.extend(target);
     demo_args.extend([dx.to_string(), ms.to_string(), reps.to_string(), "curtain".into()]);
-    // `lane`: los vuelos los hace el carril `anim` del core (hito 1e).
-    if args.iter().any(|a| a == "lane") {
-        demo_args.push("lane".into());
+    // `lane`: los vuelos los hace el carril `anim` del core (hito 1e);
+    // `resize=…` y `fit=…`: vuelos con cambio de tamaño (mini-spike 6b).
+    for a in args {
+        if a == "lane" || a.starts_with("resize=") || a.starts_with("fit=") {
+            demo_args.push(a.clone());
+        }
     }
     let mut demo = match Command::new(exe).args(&demo_args).stdout(Stdio::piped()).spawn() {
         Ok(c) => c,
@@ -116,7 +122,9 @@ pub fn run(args: &[String], exe: &std::path::Path) -> ExitCode {
     };
     let [left, top, right, bottom] = [0, 1, 2, 3].map(|i| ready[i] as i32);
     let target_hwnd = ready.get(4).copied().unwrap_or(0) as isize;
-    let row_y = top + (bottom - top) * 3 / 4;
+    // Con cambio de tamaño, la demo elige una fila dentro de las dos
+    // ubicaciones.
+    let row_y = ready.get(5).map_or(top + (bottom - top) * 3 / 4, |&y| y as i32);
     let monitor = wm_platform::monitors()
         .into_iter()
         .map(|m| m.bounds)
@@ -146,7 +154,9 @@ pub fn run(args: &[String], exe: &std::path::Path) -> ExitCode {
         if let Some(rest) = line.strip_prefix("ANIM ") {
             let v: Vec<i64> = rest.split_whitespace().filter_map(|x| x.parse().ok()).collect();
             if v.len() >= 5 {
-                flights.push(Flight { t0: v[0], t1: v[1], arrived: v[4] == 1 });
+                let resize =
+                    (v.len() >= 8 && v[6] != v[7]).then(|| (v[5] as u32, v[6] as i32, v[7] as i32));
+                flights.push(Flight { t0: v[0], t1: v[1], arrived: v[4] == 1, resize });
             }
         }
     }
@@ -175,12 +185,42 @@ pub fn run(args: &[String], exe: &std::path::Path) -> ExitCode {
         if desktop.left != monitor.left || desktop.top != monitor.top {
             continue;
         }
-        report(&name, hz, &measured.samples, measure_start, &flights);
+        report(&name, hz, ms, &measured.samples, measure_start, &flights);
     }
     ExitCode::SUCCESS
 }
 
-fn report(name: &str, hz: f64, samples: &[Sample], measure_start: i64, flights: &[Flight]) {
+/// Anchos aceptables en la fila para un cuadro presentado en `qpc`, en un
+/// vuelo con cambio de tamaño: el ancho del fantasma según la misma curva
+/// del carril (`anim::ease_out`), con ±2 cuadros de margen de tiempo (el
+/// cuadro se calcula para el siguiente y se presenta en el próximo refresco).
+fn expected_widths(f: &Flight, qpc: i64, ms: u64, hz: f64, offset: i64) -> Option<(u32, u32)> {
+    let (_, w0, w1) = f.resize?;
+    let us = |a: i64, b: i64| clock::micros(a.min(b), a.max(b)) as f64 * (b - a).signum() as f64;
+    let period_us = 1e6 / hz;
+    let dur_us = ms as f64 * 1000.0;
+    let width = |dt_us: f64| {
+        let u = wm_platform::anim::ease_out((dt_us / dur_us).clamp(0.0, 1.0));
+        f64::from(w0) + f64::from(w1 - w0) * u
+    };
+    let dt = us(f.t0, qpc);
+    let (a, b) = (width(dt - 2.0 * period_us), width(dt + 2.0 * period_us));
+    let (lo, hi) = (a.min(b), a.max(b));
+    // Después del vuelo, el ancho final.
+    let (lo, hi) =
+        if qpc > f.t1 { (lo.min(f64::from(w1)), hi.max(f64::from(w1))) } else { (lo, hi) };
+    let shift = |w: f64| (w.round() as i64 + offset).max(0) as u32;
+    Some((shift(lo), shift(hi)))
+}
+
+fn report(
+    name: &str,
+    hz: f64,
+    ms: u64,
+    samples: &[Sample],
+    measure_start: i64,
+    flights: &[Flight],
+) {
     // Ancho en reposo: los últimos cuadros antes de la primera secuencia
     // (cuando el telón ya está pintado).
     let first_seq = flights.first().map_or(i64::MAX, |f| f.t0 - clock::plus_micros(0, 150_000));
@@ -196,6 +236,13 @@ fn report(name: &str, hz: f64, samples: &[Sample], measure_start: i64, flights: 
         return;
     };
     println!("== {name} ({hz:.2} Hz): ancho de la ventana en la fila {base} px");
+    // Con cambio de tamaño: lo que la fila ve de más o de menos respecto del
+    // marco (en reposo, antes del primer vuelo).
+    let offset = flights.first().and_then(|f| f.resize).map_or(0, |(_, w0, _)| {
+        let off = i64::from(base) - i64::from(w0);
+        println!("  con cambio de tamaño: la fila ve {off:+} px respecto del marco");
+        off
+    });
 
     let (mut gaps, mut doubles, mut moved, mut refreshes, mut frames) = (0, 0, 0, 0.0, 0);
     let mut notes: Vec<String> = Vec::new();
@@ -206,9 +253,10 @@ fn report(name: &str, hz: f64, samples: &[Sample], measure_start: i64, flights: 
         let (mut g, mut d) = (0, 0);
         let mut odd: Vec<String> = Vec::new();
         for s in &seq {
-            if s.covered + SLACK_PX < base {
+            let (lo, hi) = expected_widths(f, s.qpc, ms, hz, offset).unwrap_or((base, base));
+            if s.covered + SLACK_PX < lo {
                 g += 1;
-            } else if s.covered > base + SLACK_PX {
+            } else if s.covered > hi + SLACK_PX {
                 d += 1;
             } else {
                 continue;
@@ -244,6 +292,13 @@ fn report(name: &str, hz: f64, samples: &[Sample], measure_start: i64, flights: 
     println!(
         "  cuadros con defecto (±{SLACK_PX} px): {gaps} sin ventana, {doubles} con doble imagen"
     );
+    let mut lands: Vec<u32> = flights.iter().filter_map(|f| f.resize.map(|r| r.0)).collect();
+    if !lands.is_empty() {
+        lands.sort_unstable();
+        let p95 = lands[(lands.len() * 95 / 100).min(lands.len() - 1)];
+        let max = lands[lands.len() - 1];
+        println!("  espera de aterrizaje: p95 {p95} ms, máx {max} ms (meta p95 ≤ 50 ms)");
+    }
     for n in &notes {
         println!("    {n}");
     }

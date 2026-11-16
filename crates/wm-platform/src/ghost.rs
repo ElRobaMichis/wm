@@ -230,6 +230,40 @@ impl Ghost {
         unsafe { DwmUpdateThumbnailProperties(self.thumb, &props) }
     }
 
+    /// Como [`Ghost::place`], pero mostrando solo `w` × `h` píxeles de la
+    /// fuente desde `(x, y)`, 1:1 (mini-spike 6b: recortar en vez de estirar
+    /// al cambiar de tamaño). Medido: el origen de la fuente es el rectángulo
+    /// de la ventana, con los bordes invisibles (sin correrlo, faltaban 7 px).
+    pub fn place_crop(
+        &mut self,
+        frame: Rect,
+        (x, y): (i32, i32),
+        (w, h): (i32, i32),
+    ) -> windows::core::Result<()> {
+        use windows::Win32::Graphics::Dwm::DWM_TNP_RECTSOURCE;
+        let (ox, oy) = self.origin;
+        let mut props = DWM_THUMBNAIL_PROPERTIES {
+            dwFlags: DWM_TNP_RECTDESTINATION | DWM_TNP_RECTSOURCE,
+            rcDestination: RECT {
+                left: frame.left - ox,
+                top: frame.top - oy,
+                right: frame.right - ox,
+                bottom: frame.bottom - oy,
+            },
+            rcSource: RECT { left: x, top: y, right: x + w, bottom: y + h },
+            ..Default::default()
+        };
+        if !self.shown {
+            props.dwFlags |= DWM_TNP_VISIBLE | DWM_TNP_OPACITY | DWM_TNP_SOURCECLIENTAREAONLY;
+            props.opacity = 255;
+            props.fVisible = true.into();
+            props.fSourceClientAreaOnly = false.into();
+            self.shown = true;
+        }
+        // SAFETY: miniatura propia y estructura local.
+        unsafe { DwmUpdateThumbnailProperties(self.thumb, &props) }
+    }
+
     pub fn conceal(&mut self) {
         let props = DWM_THUMBNAIL_PROPERTIES {
             dwFlags: DWM_TNP_VISIBLE,

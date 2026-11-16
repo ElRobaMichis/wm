@@ -70,6 +70,27 @@ pub struct FlyDone {
     /// QPC del primer y el último cuadro del vuelo (0 si no voló).
     pub t0: i64,
     pub t1: i64,
+    /// Espera desde el último cuadro del vuelo hasta ver la real en el
+    /// destino (o el tope).
+    pub land_ms: u32,
+}
+
+/// Qué hace el carril si el destino tiene otro tamaño que la ventana.
+/// Producción usa `Same` (el modelo solo pide vuelos del mismo tamaño); los
+/// otros son el mini-spike 6b.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fit {
+    /// Solo el mismo tamaño: otro tamaño se rechaza (sin animación).
+    Same,
+    /// Recortar la fuente 1:1, sin estirar (estira solo en un eje que tiene
+    /// que crecer más allá de la fuente). Si todo crece, `SetWindowPos` al
+    /// despegar (la fuente ya es grande); si todo se achica, al final.
+    Crop,
+    /// Estirar la fuente entera al rectángulo del cuadro.
+    Stretch,
+    /// Estirar, con `SetWindowPos` al final: durante el vuelo se estira el
+    /// contenido viejo (estable) y la app cambia de tamaño recién al llegar.
+    StretchLate,
 }
 
 /// Un vuelo que no se hizo (o no terminó bien).
@@ -121,13 +142,18 @@ pub struct Anim {
 impl Anim {
     /// Crea el hilo sin esperarlo; avisa con [`AnimEvent::Ready`].
     pub fn start(brain: u32) -> Self {
+        Self::start_with(brain, Fit::Same)
+    }
+
+    /// Como [`Anim::start`], con otra política de tamaño (mini-spike 6b).
+    pub fn start_with(brain: u32, fit: Fit) -> Self {
         let (events_tx, events_rx) = mpsc::channel();
         let (cmds_tx, cmds_rx) = mpsc::channel();
         let abandoned = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&abandoned);
         let spawned = std::thread::Builder::new()
             .name("wm-anim".into())
-            .spawn(move || run(brain, cmds_rx, events_tx, flag));
+            .spawn(move || run(brain, fit, cmds_rx, events_tx, flag));
         let (worker, dead) = match spawned {
             Ok(handle) => {
                 use std::os::windows::io::AsRawHandle;
@@ -293,10 +319,33 @@ struct Current {
     flight_ms: u32,
     t0: i64,
     t1: i64,
+    land_ms: u32,
+    /// Cambia de tamaño y se recorta la fuente ([`Fit::Crop`]).
+    crop: bool,
+    /// `SetWindowPos` al despegar (`None`: ninguno) y al final del vuelo.
+    first: Option<Rect>,
+    late: bool,
+    /// Bordes invisibles (izquierda, arriba) de la ventana al despegar.
+    border: (i32, i32),
+}
+
+impl Current {
+    /// Pone el fantasma en `r` (recortando la fuente si corresponde).
+    fn show_at(&mut self, r: Rect) {
+        self.at = r;
+        if self.crop {
+            let (sw, sh) = self.ghost.source_size().unwrap_or((r.width(), r.height()));
+            let size = (r.width().min(sw), r.height().min(sh));
+            let _ = self.ghost.place_crop(r, self.border, size);
+        } else {
+            let _ = self.ghost.place(r);
+        }
+    }
 }
 
 struct Lane {
     brain: u32,
+    fit: Fit,
     events: Sender<AnimEvent>,
     abandoned: Arc<AtomicBool>,
     hider: Hider,
@@ -304,7 +353,13 @@ struct Lane {
     current: Option<Current>,
 }
 
-fn run(brain: u32, cmds: Receiver<Cmd>, events: Sender<AnimEvent>, abandoned: Arc<AtomicBool>) {
+fn run(
+    brain: u32,
+    fit: Fit,
+    cmds: Receiver<Cmd>,
+    events: Sender<AnimEvent>,
+    abandoned: Arc<AtomicBool>,
+) {
     input::ensure_message_queue();
     let ready = Hider::new(HideMethod::ShellCloak)
         .map_err(|e| format!("sin cloak: {e}"))
@@ -320,7 +375,7 @@ fn run(brain: u32, cmds: Receiver<Cmd>, events: Sender<AnimEvent>, abandoned: Ar
     HOST_RAW.store(host.raw(), Ordering::Release);
     let _ = events.send(AnimEvent::Ready(Ok(())));
     ops::wake(brain);
-    let mut lane = Lane { brain, events, abandoned, hider, host, current: None };
+    let mut lane = Lane { brain, fit, events, abandoned, hider, host, current: None };
     let mut msg = MSG::default();
     // SAFETY: bucle de mensajes estándar con un MSG válido (STA: también
     // bombea lo que COM necesite).
@@ -357,7 +412,7 @@ static HOST_RAW: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize
 /// puro llega con velocidad cero y en los últimos 3-4 cuadros avanza menos
 /// de 1 px (el fantasma repite posición: 94,7 % de cuadros distintos en vez
 /// de ≥ 95 %); con la mezcla llega a ~5 px por cuadro en 600 px.
-fn ease_out(t: f64) -> f64 {
+pub fn ease_out(t: f64) -> f64 {
     0.75 * (1.0 - (1.0 - t).powi(3)) + 0.25 * t
 }
 
@@ -401,14 +456,16 @@ fn flight_step(c: &mut Current, now: Instant, start: Instant, from: Rect) {
     let total = Duration::from_millis(u64::from(c.ms));
     let t = ((now - start) + c.period).as_secs_f64() / total.as_secs_f64();
     if t >= 1.0 {
-        c.at = c.to;
-        let _ = c.ghost.place(c.to);
+        c.show_at(c.to);
         c.t1 = clock::now();
         c.flight_ms = (now - start).as_millis() as u32;
+        if c.late {
+            // Recorte que achica: recién ahora la real cambia de tamaño.
+            let _ = windows_list::place_async_top(c.win, c.rect);
+        }
         c.phase = Phase::Arrive { since: now };
     } else {
-        c.at = lerp(from, c.to, ease_out(t));
-        let _ = c.ghost.place(c.at);
+        c.show_at(lerp(from, c.to, ease_out(t)));
     }
 }
 
@@ -478,7 +535,7 @@ impl Lane {
                     return self.fly(ticket, win, rect, to, ms);
                 }
             }
-            let done = FlyDone { arrived: false, flight_ms: 0, t0: 0, t1: 0 };
+            let done = FlyDone { arrived: false, flight_ms: 0, t0: 0, t1: 0, land_ms: 0 };
             self.reply(old, win, Ok(done));
             return;
         }
@@ -489,9 +546,39 @@ impl Lane {
         let Some(from) = ghost::frame_bounds(win) else {
             return self.refuse(ticket, win, "la ventana ya no existe");
         };
-        if !same_size(from, to) {
+        let resize = !same_size(from, to);
+        if resize && self.fit == Fit::Same {
             return self.refuse(ticket, win, "cambió de tamaño");
         }
+        let crop = resize && self.fit == Fit::Crop;
+        // Recorte: la fuente tiene que cubrir al fantasma en todo el vuelo.
+        // Al despegar, la real (escondida) pasa a un tamaño que cubre los dos
+        // rectángulos; al llegar, al final. Si todo crece, eso es el final
+        // de una; si todo se achica, no hace falta el primer pedido.
+        let (uw, uh) = (from.width().max(to.width()), from.height().max(to.height()));
+        let union = Rect::new(
+            rect.left,
+            rect.top,
+            rect.right + uw - to.width(),
+            rect.bottom + uh - to.height(),
+        );
+        let (first, late) = match self.fit {
+            Fit::Crop if resize => {
+                let grows = (uw, uh) == (to.width(), to.height());
+                let shrinks = (uw, uh) == (from.width(), from.height());
+                match (grows, shrinks) {
+                    (true, _) => (Some(rect), false),
+                    (_, true) => (None, true),
+                    _ => (Some(union), true),
+                }
+            }
+            Fit::StretchLate if resize => (None, true),
+            _ => (Some(rect), false),
+        };
+        // La fuente de la miniatura empieza en el rectángulo de la ventana,
+        // con los bordes invisibles: el recorte se corre por ellos.
+        let border =
+            ghost::window_rect(win).map_or((0, 0), |w| (from.left - w.left, from.top - w.top));
         if hide::hidden_with(win).is_some() || ghost::is_cloaked(win) {
             return self.refuse(ticket, win, "la ventana está escondida");
         }
@@ -526,6 +613,11 @@ impl Lane {
             flight_ms: 0,
             t0: 0,
             t1: 0,
+            land_ms: 0,
+            crop,
+            first,
+            late,
+            border,
         });
     }
 
@@ -541,8 +633,11 @@ impl Lane {
             },
             Phase::Cloak { since, confirmed } => {
                 if confirmed {
-                    // Un cuadro con la real escondida: ahora sí, el pedido.
-                    if let Err(e) = windows_list::place_async_top(c.win, c.rect) {
+                    // Un cuadro con la real escondida: ahora sí, el pedido
+                    // (salvo un recorte que achica: va al final).
+                    if let Some(r) = c.first
+                        && let Err(e) = windows_list::place_async_top(c.win, r)
+                    {
                         return self.abort(e);
                     }
                     set_priority(true);
@@ -561,11 +656,11 @@ impl Lane {
                 let real = ghost::frame_bounds(c.win);
                 c.arrived = real == Some(c.to);
                 if c.arrived || now - since > ARRIVE_LIMIT {
+                    c.land_ms = (now - since).as_millis() as u32;
                     if !c.arrived
                         && let Some(r) = real
                     {
-                        c.at = r;
-                        let _ = c.ghost.place(r);
+                        c.show_at(r);
                     }
                     set_priority(false);
                     ghost::boost_clock(false);
@@ -596,7 +691,13 @@ impl Lane {
         drop(c.ghost);
         self.host.hide();
         let result = match fatal {
-            None => Ok(FlyDone { arrived: c.arrived, flight_ms: c.flight_ms, t0: c.t0, t1: c.t1 }),
+            None => Ok(FlyDone {
+                arrived: c.arrived,
+                flight_ms: c.flight_ms,
+                t0: c.t0,
+                t1: c.t1,
+                land_ms: c.land_ms,
+            }),
             Some(why) => Err(FlyError { fatal: true, why }),
         };
         self.reply(c.ticket, c.win, result);
@@ -631,8 +732,7 @@ impl Lane {
             }
             Phase::Flight { .. } | Phase::Arrive { .. } => {
                 if let Some(r) = ghost::frame_bounds(c.win) {
-                    c.at = r;
-                    let _ = c.ghost.place(r);
+                    c.show_at(r);
                 }
                 c.arrived = ghost::frame_bounds(c.win) == Some(c.to);
                 let _ = self.hider.show(c.win);

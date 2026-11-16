@@ -113,6 +113,22 @@ pub fn demo(args: &[String]) -> ExitCode {
     });
     let Some(monitor) = monitor else { return ExitCode::FAILURE };
     let period = Duration::from_secs_f64(1.0 / f64::from(monitor.refresh_hz.unwrap_or(60)));
+    // Mini-spike 6b: ida y vuelta entre dos ubicaciones de otro tamaño. La
+    // ventana empieza en la primera; la fila medida está dentro de las dos.
+    let resize = resize_pair(args, monitor.work_area);
+    let (start_win, start_efb) = match resize {
+        Some((a, _)) => {
+            let outer = wm_model::place::outer_for(start_efb, start_win, a, 96, 96);
+            let _ = windows_list::place_async_top(id, outer);
+            std::thread::sleep(Duration::from_millis(600));
+            let (Some(w), Some(f)) = (ghost::window_rect(id), ghost::frame_bounds(id)) else {
+                return ExitCode::FAILURE;
+            };
+            (w, f)
+        }
+        None => (start_win, start_efb),
+    };
+    let row = resize.map(|_| monitor.work_area.top + monitor.work_area.height() / 4);
 
     let curtain = curtain_on.then(|| wm_platform::ghost_curtain::Curtain::new(monitor.bounds, id));
     let hider = match Hider::new(HideMethod::ShellCloak) {
@@ -146,8 +162,9 @@ pub fn demo(args: &[String]) -> ExitCode {
     for _ in 0..40 {
         ghost::wait_frame(); // deja pintar el telón antes de avisar
     }
+    let row = row.map(|y| format!(" {y}")).unwrap_or_default();
     println!(
-        "READY {} {} {} {} {}",
+        "READY {} {} {} {} {}{row}",
         start_efb.left, start_efb.top, start_efb.right, start_efb.bottom, id.0
     );
     let _ = std::io::stdout().flush();
@@ -156,7 +173,7 @@ pub fn demo(args: &[String]) -> ExitCode {
     let duration = Duration::from_millis(ms);
     let mut dir = 1;
     if lane {
-        lane_flights(id, dx, ms as u32, reps);
+        lane_flights(id, dx, ms as u32, reps, resize, fit_of(args));
     }
     for _ in 0..if lane { 0 } else { reps } {
         let (Some(win_from), Some(efb_from)) = (ghost::window_rect(id), ghost::frame_bounds(id))
@@ -222,10 +239,44 @@ pub fn demo(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Los vuelos con el carril `anim` del core: ida y vuelta, uno por vez.
-fn lane_flights(id: WindowId, dx: i32, ms: u32, reps: usize) {
+/// Mini-spike 6b, `resize=corner|mixed`: las dos ubicaciones (marcos
+/// visibles) entre las que va y vuelve. `corner`: mitad de arriba ↔ esquina
+/// de arriba a la izquierda (cambia el ancho); `mixed`: mitad izquierda ↔
+/// mitad de arriba (crece el ancho y se achica el alto, el caso más común).
+fn resize_pair(args: &[String], work: Rect) -> Option<(Rect, Rect)> {
+    use wm_model::{Placement, place};
+    let kind = args.iter().find_map(|a| a.strip_prefix("resize="))?;
+    match kind {
+        "corner" => Some((place(work, Placement::TopHalf), place(work, Placement::TopLeft))),
+        "mixed" => Some((place(work, Placement::LeftHalf), place(work, Placement::TopHalf))),
+        _ => None,
+    }
+}
+
+/// `fit=crop|stretch` (mini-spike 6b); sin eso, solo el mismo tamaño.
+fn fit_of(args: &[String]) -> wm_platform::anim::Fit {
+    use wm_platform::anim::Fit;
+    match args.iter().find_map(|a| a.strip_prefix("fit=")) {
+        Some("crop") => Fit::Crop,
+        Some("stretch") => Fit::Stretch,
+        Some("stretch-late") => Fit::StretchLate,
+        _ => Fit::Same,
+    }
+}
+
+/// Los vuelos con el carril `anim` del core: ida y vuelta, uno por vez. Con
+/// `resize`, entre esas dos ubicaciones; si no, `dx` píxeles de costado.
+/// Escribe `ANIM t0 t1 desde hasta llegó espera ancho_desde ancho_hasta`.
+fn lane_flights(
+    id: WindowId,
+    dx: i32,
+    ms: u32,
+    reps: usize,
+    resize: Option<(Rect, Rect)>,
+    fit: wm_platform::anim::Fit,
+) {
     use wm_platform::anim::{Anim, AnimEvent};
-    let mut anim = Anim::start(wm_platform::input::current_thread_id());
+    let mut anim = Anim::start_with(wm_platform::input::current_thread_id(), fit);
     let next = |anim: &mut Anim| loop {
         if let Some(e) = anim.drain().into_iter().next() {
             return e;
@@ -237,22 +288,31 @@ fn lane_flights(id: WindowId, dx: i32, ms: u32, reps: usize) {
         return;
     }
     let mut dir = 1;
-    for _ in 0..reps {
+    for i in 0..reps {
         let (Some(win_from), Some(efb_from)) = (ghost::window_rect(id), ghost::frame_bounds(id))
         else {
             break;
         };
-        let (win_to, efb_to) = (shift(win_from, dx * dir), shift(efb_from, dx * dir));
+        let (win_to, efb_to) = match resize {
+            Some((a, b)) => {
+                let to = if i % 2 == 0 { b } else { a };
+                (wm_model::place::outer_for(efb_from, win_from, to, 96, 96), to)
+            }
+            None => (shift(win_from, dx * dir), shift(efb_from, dx * dir)),
+        };
         anim.fly(id, win_to, efb_to, ms);
         match next(&mut anim) {
             AnimEvent::Flown { result: Ok(done), .. } => {
                 println!(
-                    "ANIM {} {} {} {} {}",
+                    "ANIM {} {} {} {} {} {} {} {}",
                     done.t0,
                     done.t1,
                     efb_from.left,
                     efb_to.left,
-                    u8::from(done.arrived)
+                    u8::from(done.arrived),
+                    done.land_ms,
+                    efb_from.width(),
+                    efb_to.width(),
                 );
             }
             other => eprintln!("vuelo fallido: {other:?}"),
