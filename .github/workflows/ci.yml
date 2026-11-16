@@ -134,6 +134,12 @@ jobs:
           $shell = 'explorer', 'StartMenuExperienceHost', 'ShellExperienceHost', 'SearchHost'
           if ($fg.Class -eq 'Windows.UI.Core.CoreWindow' -and $fg.Name -notin $shell) {
             Stop-Process -Id $fg.Pid -Force
+            # Después viene el "primer arranque": una consola de wsl.exe que
+            # pide actualizarse y el menú Inicio. Esperar a que el shell se
+            # asiente, cerrar la consola y el menú (Esc).
+            Start-Sleep -Seconds 15
+            Get-Process wsl -ErrorAction SilentlyContinue | Stop-Process -Force
+            [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
             Start-Sleep -Seconds 3
             $fg = Foreground
             Write-Output "Cerrado. Ahora al frente: $($fg.Class) de $($fg.Name)"
