@@ -9,6 +9,7 @@ pub mod apps;
 pub mod i18n;
 pub mod keyboard;
 pub mod map;
+pub mod mapview;
 pub mod place;
 pub mod screens;
 pub mod settings_demo;

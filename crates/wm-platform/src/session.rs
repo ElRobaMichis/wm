@@ -175,3 +175,10 @@ pub fn key_down(vk: u8) -> bool {
     // SAFETY: sin precondiciones.
     (unsafe { GetAsyncKeyState(i32::from(vk)) } as u16) & 0x8000 != 0
 }
+
+/// ¿Bloq Mayús está activado?
+pub fn caps_lock_on() -> bool {
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState;
+    // SAFETY: sin precondiciones.
+    unsafe { GetKeyState(0x14) & 1 != 0 }
+}

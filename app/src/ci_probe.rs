@@ -29,7 +29,9 @@
 //!     cloak, y `restore_all` (lo que hace el guardián al relanzar) la
 //!     devuelve;
 //! 13. **G y V** (hito 1f): desde la mitad izquierda, G la agranda un 10 %
-//!     del área pegada al borde y V la devuelve a la mitad.
+//!     del área pegada al borde y V la devuelve a la mitad;
+//! 14. **mapa** (hito 2a): mantener Caps lo muestra a ~400 ms y soltar lo
+//!     oculta; un toque y un atajo rápido no lo muestran; Bloq Mayús intacto.
 //!
 //! "Llegó" exige además que la ventana no esté escondida: durante un vuelo,
 //! el marco real ya está en el destino pero con cloak.
@@ -188,6 +190,7 @@ pub fn run(args: &[String]) -> ExitCode {
             "G y V",
             "ventanas difíciles",
             "colgada",
+            "mapa",
             "vuelo",
             "vuelo + caída",
             "hook + SendInput",
@@ -328,6 +331,93 @@ fn focus(r: &mut Report, puppets: &[WindowId]) {
 }
 
 /// El core real (`wm core`) en otro proceso, manejado con teclas inyectadas.
+/// Hito 2a: el mapa de teclado con el core real. Mantener Caps 600 ms lo
+/// muestra (a los ~400 ms) y soltar lo oculta, sin tocar Bloq Mayús; un
+/// toque no lo muestra (y sí cambia Bloq Mayús); un atajo rápido lo suprime
+/// toda la pulsación; con el mapa visible, una acción no lo cierra.
+fn map_checks(r: &mut Report, core_pid: u32) {
+    use wm_platform::ui::map_visible_in;
+    let name = "mapa";
+    if std::env::var_os("WM_MAP").is_some_and(|v| v == "0") {
+        r.check(name, Status::Skip, "WM_MAP=0".into());
+        return;
+    }
+    let visible = || map_visible_in(core_pid);
+    let mut parts = Vec::new();
+    let mut ok = true;
+    let caps_before = session::caps_lock_on();
+
+    // 1. Mantener: aparece a ~400 ms y se oculta al soltar.
+    std::thread::sleep(Duration::from_millis(300));
+    session::send_keys(&[(CAPS, true)]);
+    let start = Instant::now();
+    let shown = wait_for(Duration::from_millis(900), visible);
+    let held = start.elapsed();
+    if held < Duration::from_millis(600) {
+        std::thread::sleep(Duration::from_millis(600) - held);
+    }
+    let still = visible();
+    session::send_keys(&[(CAPS, false)]);
+    let hidden = wait_for(Duration::from_millis(300), || !visible());
+    let in_time =
+        shown.is_some_and(|d| d >= Duration::from_millis(380) && d <= Duration::from_millis(520));
+    let kept_caps = session::caps_lock_on() == caps_before;
+    ok &= in_time && still && hidden.is_some() && kept_caps;
+    parts.push(format!(
+        "Caps 600 ms → visible {}; al soltar se oculta {}; Bloq Mayús {}",
+        shown.map_or_else(|| "NUNCA".into(), |d| format!("a los {}", ms(d))),
+        hidden.map_or_else(|| "NO".into(), |d| format!("en {}", ms(d))),
+        if kept_caps { "igual" } else { "CAMBIÓ" },
+    ));
+
+    // 2. Toque: no aparece y Bloq Mayús cambia (se restaura).
+    std::thread::sleep(Duration::from_millis(200));
+    let before = session::caps_lock_on();
+    session::send_keys(&[(CAPS, true)]);
+    std::thread::sleep(Duration::from_millis(80));
+    session::send_keys(&[(CAPS, false)]);
+    let appeared = wait_for(Duration::from_millis(700), visible).is_some();
+    std::thread::sleep(Duration::from_millis(50));
+    let toggled = session::caps_lock_on() != before;
+    if toggled {
+        session::send_keys(&[(CAPS, true), (CAPS, false)]); // dejarlo como estaba
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    ok &= !appeared && toggled;
+    parts.push(format!(
+        "toque → {}, Bloq Mayús {}",
+        if appeared { "APARECIÓ" } else { "sin mapa" },
+        if toggled { "cambió" } else { "NO cambió" },
+    ));
+
+    // 3. Atajo rápido (Caps + Q a los 50 ms, Caps hasta 800 ms): nunca aparece.
+    std::thread::sleep(Duration::from_millis(200));
+    session::send_keys(&[(CAPS, true)]);
+    std::thread::sleep(Duration::from_millis(50));
+    session::send_keys(&[(b'Q', true), (b'Q', false)]);
+    let appeared = wait_for(Duration::from_millis(750), visible).is_some();
+    session::send_keys(&[(CAPS, false)]);
+    ok &= !appeared;
+    parts.push(format!("Caps + Q rápido → {}", if appeared { "APARECIÓ" } else { "sin mapa" }));
+
+    // 4. Con el mapa visible, una acción no lo cierra (D7).
+    std::thread::sleep(Duration::from_millis(200));
+    session::send_keys(&[(CAPS, true)]);
+    let shown = wait_for(Duration::from_millis(900), visible).is_some();
+    session::send_keys(&[(b'Q', true), (b'Q', false)]);
+    std::thread::sleep(Duration::from_millis(150));
+    let kept = visible();
+    session::send_keys(&[(CAPS, false)]);
+    let gone = wait_for(Duration::from_millis(300), || !visible()).is_some();
+    ok &= shown && kept && gone;
+    parts.push(format!(
+        "visible + Caps + Q → {}",
+        if shown && kept { "sigue visible" } else { "SE CERRÓ" }
+    ));
+
+    r.check(name, if ok { Status::Ok } else { Status::Fail }, parts.join("; "));
+}
+
 /// Lanza `wm core` y espera su banner (plazo 5 s). Las líneas del core
 /// siguen llegando por el canal.
 fn spawn_core() -> Result<(std::process::Child, std::sync::mpsc::Receiver<String>), String> {
@@ -410,6 +500,7 @@ fn core(r: &mut Report, puppets: &[WindowId]) {
         r.check("capa de ventana", Status::Skip, "no quedó un títere al frente".into());
     }
 
+    map_checks(r, child.id());
     hard_checks(r);
     hung_check(r);
 

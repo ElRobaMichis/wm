@@ -113,6 +113,7 @@ fn banner(log: &Log, bindings: &[AppBinding], config: Option<&PathBuf>, test_mod
     log.line("wm core activo.");
     log.line("  Caps + letra    ir a la app con esa inicial (repetir = siguiente ventana)");
     log.line("  Caps (toque)    Bloq Mayús normal");
+    log.line("  Caps (mantener) mapa de teclado (con Alt: la capa de ventana)");
     log.line("  Caps + Alt + W/A/S/D   esa mitad; repetir = al otro monitor");
     log.line("  Caps + Alt + dos juntas  esquina (W + A, S + D...)");
     log.line("  Caps + Alt + F / C / Z maximizar (y volver) / centrar (60 %, 80 %) / deshacer");

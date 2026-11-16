@@ -20,6 +20,7 @@ use wm_model::world::{
 use wm_platform::anim::{Anim, AnimEvent};
 use wm_platform::input::{self, InputEvent, ReinstallReason};
 use wm_platform::ops::{Op, Ops, OpsEvent, Output, Ticket};
+use wm_platform::ui::{Ui, UiEvent};
 use wm_platform::windows_list::{self, WindowId};
 
 /// Teclas de prueba (solo con `WM_TEST=1`).
@@ -104,6 +105,8 @@ pub struct Brain {
     anim_allowed: bool,
     /// Vuelos en curso: ticket del carril → pedido del modelo.
     flights: HashMap<wm_platform::anim::Ticket, Req>,
+    /// Hilo `ui` (mapa de teclado, hito 2a); `None` con `WM_MAP=0`.
+    ui: Option<Ui>,
     /// El modelo pidió terminar.
     pub quit: bool,
 }
@@ -120,7 +123,45 @@ impl Brain {
             anim: None,
             anim_allowed: std::env::var_os("WM_ANIM").is_none_or(|v| v != "0"),
             flights: HashMap::new(),
+            ui: std::env::var_os("WM_MAP")
+                .is_none_or(|v| v != "0")
+                .then(|| Ui::start(input::current_thread_id())),
             quit: false,
+        }
+    }
+
+    /// Las dos capas del mapa con las asignaciones actuales.
+    fn map_views(&self) -> wm_platform::ui::Views {
+        use wm_model::keyboard::Layer;
+        use wm_model::mapview::map_view;
+        let b = self.world.bindings();
+        std::sync::Arc::new([map_view(Layer::Apps, b), map_view(Layer::Window, b)])
+    }
+
+    /// Respuestas del hilo `ui` (y su vigilante).
+    fn collect_ui(&mut self) {
+        let Some(ui) = self.ui.as_mut() else { return };
+        let stuck = ui.expire(Instant::now());
+        let events = ui.drain();
+        if stuck {
+            self.log.line("El mapa de teclado se trabó: lo escondo y lo apago por esta sesión.");
+            self.feed(Event::MapEnabled(false));
+        }
+        for e in events {
+            match e {
+                UiEvent::Ready(Ok(())) => self.feed(Event::MapEnabled(true)),
+                UiEvent::Ready(Err(e)) => {
+                    self.log.line(format!("Mapa de teclado no disponible: {e}."))
+                }
+                UiEvent::Shown { ms, monitor } if ms > 0.0 => {
+                    self.log.line(format!(
+                        "Mapa de teclado visible (monitor {}), {ms:.1} ms.",
+                        monitor + 1
+                    ));
+                }
+                UiEvent::Shown { .. } => {}
+                UiEvent::Failed(e) => self.log.line(e),
+            }
         }
     }
 
@@ -142,7 +183,8 @@ impl Brain {
     pub fn next_deadline(&self) -> Option<Instant> {
         let world = self.world.deadline().map(|us| self.started + Duration::from_micros(us));
         let anim = self.anim.as_ref().and_then(Anim::next_deadline);
-        [self.ops.next_deadline(), world, anim].into_iter().flatten().min()
+        let ui = self.ui.as_ref().and_then(Ui::next_deadline);
+        [self.ops.next_deadline(), world, anim, ui].into_iter().flatten().min()
     }
 
     /// Si venció el plazo del modelo, lo despierta.
@@ -193,9 +235,22 @@ impl Brain {
                         anim.land(WindowId(win.hwnd));
                     }
                 }
-                // Hito 2a: el hilo `ui` todavía no existe (el modelo no los
-                // pide mientras el mapa no se habilite).
-                Effect::ShowMap { .. } | Effect::MapLayer { .. } | Effect::HideMap => {}
+                Effect::ShowMap { layer } => {
+                    let views = self.map_views();
+                    if let Some(ui) = self.ui.as_mut() {
+                        ui.show(layer, views);
+                    }
+                }
+                Effect::MapLayer { layer } => {
+                    if let Some(ui) = self.ui.as_mut() {
+                        ui.set_layer(layer);
+                    }
+                }
+                Effect::HideMap => {
+                    if let Some(ui) = self.ui.as_mut() {
+                        ui.hide();
+                    }
+                }
                 Effect::ResetKeyboard => {
                     self.log.line("El mapa estuvo visible 30 s: reinicio el teclado.");
                     input::request_reset();
@@ -224,6 +279,9 @@ impl Brain {
     pub fn restore_at_exit(&mut self, limit: Duration) {
         if let Some(anim) = self.anim.as_mut() {
             anim.land_all();
+        }
+        if let Some(ui) = self.ui.as_mut() {
+            ui.hide();
         }
         let t = self.ops.submit(Op::RestoreAll);
         self.waits.insert(t, Wait::RestoreAtExit);
@@ -336,6 +394,7 @@ impl Brain {
     /// Resultados de los carriles (y plazos vencidos).
     pub fn collect(&mut self) {
         self.collect_anim();
+        self.collect_ui();
         let mut events = self.ops.expire(Instant::now());
         events.extend(self.ops.drain());
         for event in events {

@@ -43,6 +43,8 @@ pub mod puppet;
 #[cfg(windows)]
 pub mod session;
 #[cfg(windows)]
+pub mod ui;
+#[cfg(windows)]
 mod win;
 #[cfg(windows)]
 pub mod windows_list;

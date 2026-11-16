@@ -71,7 +71,7 @@ impl TextPath {
     }
 }
 
-const ROWS: [&str; 3] = ["QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"];
+use wm_model::mapview::ROWS;
 const APPS: [&str; 9] =
     ["brave", "code", "terminal", "spotify", "discord", "notion", "figma", "slack", "outlook"];
 const KEY: f32 = 96.0;
@@ -354,6 +354,20 @@ fn build_shapes(
     container: &ContainerVisual,
     keep: &mut Vec<IUnknown>,
 ) -> windows::core::Result<()> {
+    let items: Vec<(f32, f32, char, String, bool)> =
+        keys().into_iter().map(|(x, y, l, app)| (x, y, l, app.to_owned(), true)).collect();
+    keep.push(shape_keys(compositor, container, &items)?.cast()?);
+    Ok(())
+}
+
+/// Dibuja las teclas `(x, y, letra, etiqueta, activa)` como formas (texto en
+/// contornos, lo rasteriza DWM) dentro de `container`. Las inactivas van
+/// tenues y sin etiqueta.
+fn shape_keys(
+    compositor: &Compositor,
+    container: &ContainerVisual,
+    items: &[(f32, f32, char, String, bool)],
+) -> windows::core::Result<windows::UI::Composition::ShapeVisual> {
     let geist = Geist::load()?;
     let d2d: ID2D1Factory = d2d_factory()?;
     let bold = font(&geist, &geist.semibold)?;
@@ -365,25 +379,63 @@ fn build_shapes(
     let shapes = visual.Shapes()?;
     let color = |a, r, g, b| compositor.CreateColorBrushWithColor(Color { A: a, R: r, G: g, B: b });
     let key_brush = color(230, 32, 32, 36)?;
+    let dim_key_brush = color(200, 24, 24, 28)?;
     let text_brush = color(255, 240, 240, 240)?;
+    let dim_text_brush = color(255, 90, 94, 102)?;
     let name_brush = color(255, 150, 160, 175)?;
-    for (x, y, letter, app) in keys() {
+    for (x, y, letter, label, active) in items {
+        let (x, y) = (*x, *y);
         let rect = compositor.CreateRoundedRectangleGeometry()?;
         rect.SetSize(Vector2 { X: KEY, Y: KEY })?;
         rect.SetCornerRadius(Vector2 { X: 10.0, Y: 10.0 })?;
         let key = compositor.CreateSpriteShapeWithGeometry(&rect)?;
-        key.SetFillBrush(&key_brush)?;
+        key.SetFillBrush(if *active { &key_brush } else { &dim_key_brush })?;
         key.SetOffset(Vector2 { X: x, Y: y })?;
         shapes.Append(&key)?;
 
+        let brush = if *active { &text_brush } else { &dim_text_brush };
         let (g, lw) = text_geometry(&d2d, &bold, &letter.to_string(), LETTER_EM)?;
-        shape_text(compositor, &shapes, g, &text_brush, x + (KEY - lw) / 2.0, y + 8.0)?;
-        let (g, nw) = text_geometry(&d2d, &regular, app, NAME_EM)?;
-        shape_text(compositor, &shapes, g, &name_brush, x + (KEY - nw) / 2.0, y + KEY - 26.0)?;
+        shape_text(compositor, &shapes, g, brush, x + (KEY - lw) / 2.0, y + 8.0)?;
+        if *active && !label.is_empty() {
+            let (g, nw) = text_geometry(&d2d, &regular, label, NAME_EM)?;
+            let nx = x + ((KEY - nw) / 2.0).max(4.0);
+            shape_text(compositor, &shapes, g, &name_brush, nx, y + KEY - 26.0)?;
+        }
     }
     container.Children()?.InsertAtTop(&visual)?;
-    keep.push(visual.cast()?);
-    Ok(())
+    Ok(visual)
+}
+
+/// El mapa de una capa (hito 2a): las teclas de `view`, centradas en un área
+/// de `area_w` × `area_h`, dentro de `parent`. Devuelve el contenedor (para
+/// mostrarlo u ocultarlo con `SetIsVisible`).
+pub fn build_view(
+    compositor: &Compositor,
+    parent: &ContainerVisual,
+    area_w: f32,
+    area_h: f32,
+    view: &wm_model::mapview::MapView,
+) -> windows::core::Result<ContainerVisual> {
+    let (w, h) = map_size();
+    let container = compositor.CreateContainerVisual()?;
+    container.SetSize(Vector2 { X: w, Y: h })?;
+    // Si no entra en el 90 % del monitor, se achica entero.
+    let scale = (area_w * 0.9 / w).min(area_h * 0.9 / h).min(1.0);
+    container.SetScale(Vector3 { X: scale, Y: scale, Z: 1.0 })?;
+    let (sw, sh) = (w * scale, h * scale);
+    container.SetOffset(Vector3 { X: (area_w - sw) / 2.0, Y: (area_h - sh) / 2.0, Z: 0.0 })?;
+    let positions = keys();
+    let items: Vec<(f32, f32, char, String, bool)> = view
+        .cells
+        .iter()
+        .zip(positions)
+        .map(|(c, (x, y, _, _))| {
+            (x, y, c.letter, c.label.clone(), c.tone == wm_model::mapview::Tone::Normal)
+        })
+        .collect();
+    shape_keys(compositor, &container, &items)?;
+    parent.Children()?.InsertAtTop(&container)?;
+    Ok(container)
 }
 
 // ---------------------------------------------------------------------------

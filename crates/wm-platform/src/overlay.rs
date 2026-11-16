@@ -150,6 +150,33 @@ impl Overlays {
         }
     }
 
+    /// Muestra solo la ventana del monitor `i` (encima de todo, sin
+    /// activarla) y esconde las demás.
+    pub fn show_only(&self, i: usize) {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SetWindowPos,
+        };
+        for (k, s) in self.screens.iter().enumerate() {
+            if k == i {
+                // SAFETY: ventana propia.
+                let _ = unsafe {
+                    SetWindowPos(
+                        s.hwnd,
+                        Some(HWND_TOPMOST),
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                    )
+                };
+            } else {
+                // SAFETY: ventana propia.
+                let _ = unsafe { ShowWindow(s.hwnd, SW_HIDE) };
+            }
+        }
+    }
+
     pub fn hide(&self) {
         for s in &self.screens {
             // SAFETY: ventanas propias.
