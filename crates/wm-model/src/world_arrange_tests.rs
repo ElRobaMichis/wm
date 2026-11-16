@@ -302,6 +302,30 @@ fn repeating_a_direction_pushes_to_the_next_monitor() {
 }
 
 #[test]
+fn after_a_push_the_same_key_moves_within_the_monitor() {
+    // El caso que encontró el usuario: empujar y volver, y otra vez A tiene
+    // que llevar a la mitad izquierda del mismo monitor, no "no hay otro".
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.win.frame = place(monitor(1920).work, Placement::LeftHalf); // monitor 1
+    sim.run(&mut w, arrange(b'A', 0)); // empuja: mitad derecha del monitor 0
+    assert_eq!(sim.win.frame, place(work(), Placement::RightHalf));
+    sim.run(&mut w, arrange(b'A', 0)); // dentro del monitor 0: mitad izquierda
+    assert_eq!(sim.win.frame, place(work(), Placement::LeftHalf), "{:?}", sim.logs);
+    sim.run(&mut w, arrange(b'A', 0)); // ahora sí, pegada al borde y sin vecino
+    assert!(sim.logs.last().unwrap().contains("no hay otro monitor a la izquierda"));
+}
+
+#[test]
+fn from_the_opposite_corner_a_direction_goes_to_that_half() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.win.frame = place(work(), Placement::TopRight);
+    sim.run(&mut w, arrange(b'A', 0));
+    assert_eq!(sim.win.frame, place(work(), Placement::LeftHalf));
+}
+
+#[test]
 fn a_half_placed_by_hand_is_also_pushed() {
     let mut w = World::new(Vec::new());
     let mut sim = Sim::new();

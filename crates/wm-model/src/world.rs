@@ -22,10 +22,10 @@ use std::collections::HashMap;
 use crate::apps::{AppBinding, Target, resolve};
 use crate::keyboard::{HyperAction, Layer};
 use crate::place::{
-    Dir, MonitorObs, edge_error, mirror, monitor_of, neighbor, outer_for, placement_for,
-    placement_name,
+    Dir, MonitorObs, edge_error, mirror, monitor_of, neighbor, on_side, outer_for, placement_for,
+    placement_name, slot_of,
 };
-use crate::{Placement, Rect, place};
+use crate::{Rect, place};
 
 /// Una ventana observada con `Inspect` (siempre viene de Windows).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,7 +82,6 @@ struct Job {
 struct Combo {
     win: WinKey,
     dir: Dir,
-    placement: Placement,
     at_us: u64,
     target: Rect,
 }
@@ -440,8 +439,6 @@ impl World {
             return;
         }
         let still = |c: &Combo| c.win == obs.key && edge_error(obs.frame, c.target) <= TOLERANCE_PX;
-        // Repetir la misma tecla sobre una ubicación nuestra que sigue igual.
-        let repeat = self.combo.filter(|c| c.dir == dir && still(c)).map(|c| c.placement);
         let perp = dir.held_perpendicular(held).or_else(|| {
             self.combo
                 .filter(|c| {
@@ -455,19 +452,20 @@ impl World {
         let mut target = place(monitor.work, placement);
         let mut to_dpi = monitor.dpi;
         let mut where_ = placement_name(placement).to_owned();
-        // Ya está ahí (o se repitió la tecla): empujar al monitor vecino,
-        // entrando por el lado opuesto (keyboard-design.md §14.4).
-        let here = !obs.maximized && edge_error(obs.frame, target) <= TOLERANCE_PX;
-        if let Some(slot) = repeat.or(here.then_some(placement)) {
+        // Empujar al monitor vecino (keyboard-design.md §14.4) solo si la
+        // ventana ya está pegada al borde de ese lado: "A siempre lleva a la
+        // izquierda", así que desde la mitad derecha primero va a la mitad
+        // izquierda del mismo monitor, como `Win + ←`. Una esquina pegada a
+        // ese borde cruza conservando la otra componente.
+        let slot = if obs.maximized { None } else { slot_of(monitor.work, obs.frame) };
+        let push = slot.filter(|&s| match perp {
+            None => on_side(s, dir),
+            Some(_) => s == placement, // la esquina pedida es donde ya está
+        });
+        if let Some(slot) = push {
             let Some(n) = neighbor(&obs.monitors, m, dir) else {
                 self.jobs.remove(&obs.key);
-                self.combo = Some(Combo {
-                    win: obs.key,
-                    dir,
-                    placement: slot,
-                    at_us: now_us,
-                    target: obs.frame,
-                });
+                self.combo = Some(Combo { win: obs.key, dir, at_us: now_us, target: obs.frame });
                 out.push(Effect::Log(format!(
                     "{what} → {} ({}): no hay otro monitor a la {}.",
                     placement_name(slot),
@@ -481,7 +479,7 @@ impl World {
             to_dpi = obs.monitors[n].dpi;
             where_ = format!("monitor de la {}, {}", dir.name(), placement_name(placement));
         }
-        self.combo = Some(Combo { win: obs.key, dir, placement, at_us: now_us, target });
+        self.combo = Some(Combo { win: obs.key, dir, at_us: now_us, target });
         let what = format!("{what} → {where_} ({})", obs.app);
         if obs.maximized {
             out.push(Effect::Normalize { win: obs.key });

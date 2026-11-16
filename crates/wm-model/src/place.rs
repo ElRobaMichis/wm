@@ -158,6 +158,36 @@ pub fn neighbor(monitors: &[MonitorObs], from: usize, dir: Dir) -> Option<usize>
         .map(|(i, _)| i)
 }
 
+/// Las ubicaciones que reconocemos (todas menos `Full`).
+const SLOTS: [Placement; 8] = [
+    Placement::LeftHalf,
+    Placement::RightHalf,
+    Placement::TopHalf,
+    Placement::BottomHalf,
+    Placement::TopLeft,
+    Placement::TopRight,
+    Placement::BottomLeft,
+    Placement::BottomRight,
+];
+
+/// En qué mitad o esquina del área `work` está el marco `frame` (±1 px).
+pub fn slot_of(work: Rect, frame: Rect) -> Option<Placement> {
+    SLOTS.into_iter().find(|&p| edge_error(crate::place(work, p), frame) <= 1)
+}
+
+/// ¿La ubicación está pegada al borde del lado `dir`? Solo desde ahí,
+/// seguir en esa dirección empuja al monitor vecino ("A siempre lleva a la
+/// izquierda": desde la mitad derecha, primero va a la mitad izquierda).
+pub fn on_side(p: Placement, dir: Dir) -> bool {
+    use Placement as P;
+    match dir {
+        Dir::Left => matches!(p, P::LeftHalf | P::TopLeft | P::BottomLeft),
+        Dir::Right => matches!(p, P::RightHalf | P::TopRight | P::BottomRight),
+        Dir::Up => matches!(p, P::TopHalf | P::TopLeft | P::TopRight),
+        Dir::Down => matches!(p, P::BottomHalf | P::BottomLeft | P::BottomRight),
+    }
+}
+
 /// La ubicación espejada al cruzar a un monitor vecino en `dir`: empujar a
 /// la izquierda desde la mitad izquierda entra por la mitad derecha, y una
 /// esquina conserva la otra componente (arriba sigue arriba).
@@ -316,6 +346,22 @@ mod tests {
                 assert_eq!(mirror(mirror(p, d), d), p, "espejar dos veces es la identidad");
             }
         }
+    }
+
+    #[test]
+    fn slots_are_recognized_and_know_their_side() {
+        let work = mon(0, 1920).work;
+        for p in SLOTS {
+            assert_eq!(slot_of(work, place_in(work, p)), Some(p));
+        }
+        assert_eq!(slot_of(work, Rect::new(10, 10, 500, 500)), None);
+        assert!(on_side(Placement::TopLeft, Dir::Left));
+        assert!(on_side(Placement::TopLeft, Dir::Up));
+        assert!(!on_side(Placement::RightHalf, Dir::Left));
+        assert!(
+            !on_side(Placement::TopHalf, Dir::Left),
+            "la de arriba no está pegada a un costado"
+        );
     }
 
     #[test]

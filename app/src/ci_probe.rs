@@ -476,9 +476,12 @@ fn push_checks(r: &mut Report, id: WindowId, monitors: &[wm_model::place::Monito
     // Pasado el tiempo de combinación, para que la primera tecla sea una mitad.
     std::thread::sleep(Duration::from_millis(1100));
     let steps = [
+        (back_key, place(monitors[m].work, other_half), "al otro lado"),
         (key, place(monitors[m].work, half), "mitad"),
         (key, place(monitors[n].work, other_half), "empujada al vecino"),
         (back_key, place(monitors[m].work, half), "de vuelta"),
+        // La misma tecla otra vez: dentro del monitor, no "no hay otro".
+        (back_key, place(monitors[m].work, other_half), "y sigue dentro del monitor"),
     ];
     let mut parts = Vec::new();
     let mut all_ok = true;
