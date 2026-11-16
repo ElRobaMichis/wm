@@ -537,13 +537,40 @@ fn fly_check(r: &mut Report, id: WindowId, work: wm_model::Rect) {
     std::thread::sleep(Duration::from_millis(70));
     window_chord(b'D');
     let redirected = wait_for(Duration::from_secs(2), || landed(id, right));
-    let ok = cloak_at.is_some() && got.is_some_and(|d| d <= limit) && redirected.is_some();
+    // Esquina → esquina con las teclas a destiempo (W, y 25 ms después D con
+    // W apretada): la primera tecla sola no tiene que mandarla a una mitad.
+    let top_left = place(work, Placement::TopLeft);
+    let top_right = place(work, Placement::TopRight);
+    std::thread::sleep(Duration::from_millis(300));
+    session::send_keys(&[(CAPS, true), (ALT, true), (b'W', true), (b'A', true)]);
+    session::send_keys(&[(b'A', false), (b'W', false), (ALT, false), (CAPS, false)]);
+    let in_corner = wait_for(Duration::from_secs(2), || landed(id, top_left)).is_some();
+    std::thread::sleep(Duration::from_millis(300));
+    session::send_keys(&[(CAPS, true), (ALT, true), (b'W', true)]);
+    std::thread::sleep(Duration::from_millis(25));
+    session::send_keys(&[(b'D', true), (b'D', false), (b'W', false), (ALT, false), (CAPS, false)]);
+    let mut corner_cloak = false;
+    let corner = wait_for(Duration::from_secs(2), || {
+        corner_cloak |= wm_platform::ghost::is_cloaked(id);
+        landed(id, top_right)
+    });
+    let corner_ok = in_corner && corner_cloak && corner.is_some();
+    let ok =
+        cloak_at.is_some() && got.is_some_and(|d| d <= limit) && redirected.is_some() && corner_ok;
     let detail = format!(
         "A → D: cloak {}; aterrizó visible {} (vuelo de {expected} ms, tope {}); D a mitad de un vuelo a la izquierda: de vuelta a la derecha y visible {}",
         cloak_at.map_or_else(|| "NUNCA (¿sin animación?)".into(), |d| format!("a los {}", ms(d))),
         got.map_or_else(|| "NUNCA".into(), |d| format!("a los {}", ms(d))),
         ms(limit),
         redirected.map_or_else(|| "NUNCA".into(), |d| format!("a los {}", ms(d))),
+    ) + &format!(
+        "; esquina → esquina con W y D a 25 ms: {}",
+        match (in_corner, corner_cloak, corner) {
+            (false, _, _) => "no llegó a la primera esquina".into(),
+            (true, true, Some(d)) => format!("voló, visible a los {}", ms(d)),
+            (true, false, Some(_)) => "llegó SIN vuelo".into(),
+            (true, _, None) => "NO llegó".into(),
+        }
     );
     r.check(name, if ok { Status::Ok } else { Status::Fail }, detail);
 }

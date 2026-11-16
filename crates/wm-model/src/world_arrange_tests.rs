@@ -184,6 +184,12 @@ impl Sim {
     /// Como `run`, pero con varios eventos que llegan a la vez (antes de que
     /// Windows responda al primero): teclas "juntas".
     fn run_many(&mut self, w: &mut World, events: Vec<Event>) {
+        self.run_until(w, events, u64::MAX);
+    }
+
+    /// Como `run_many`, pero sin pasar de `until` (µs): lo que vence después
+    /// queda pendiente (por ejemplo, la espera de una segunda tecla).
+    fn run_until(&mut self, w: &mut World, events: Vec<Event>, until: u64) {
         let mut queue: VecDeque<Event> = events.into();
         loop {
             while let Some(e) = queue.pop_front() {
@@ -254,9 +260,13 @@ impl Sim {
             // Sin nada en cola: avanzar el reloj al próximo plazo (del modelo
             // o del vuelo), si hay.
             let flight_due = self.flight.as_ref().map(|f| f.due);
+            let next = [w.deadline(), flight_due].into_iter().flatten().min();
+            if next.is_none_or(|t| t > until) {
+                self.now = self.now.max(until.min(self.now.max(next.unwrap_or(0))));
+                break;
+            }
             match (w.deadline(), flight_due) {
                 (d, Some(f)) if d.is_none_or(|d| f <= d) => {
-                    assert!(d.is_none(), "el modelo no tiene plazos durante un vuelo");
                     self.now = self.now.max(f);
                     self.settle();
                     let fl = self.flight.take().expect("recién visto");
@@ -1121,4 +1131,77 @@ fn flight_time_grows_with_distance() {
     assert_eq!(fly_ms(r(0), r(64)), 110);
     assert_eq!(fly_ms(r(0), r(960)), 160);
     assert_eq!(fly_ms(r(0), r(1920)), 180);
+}
+
+// ---- Acordes de esquina a esquina con las teclas a destiempo (prueba del
+// usuario del 1e): la primera tecla llega sola y Windows ya respondió
+// cuando llega la segunda. Antes, la primera mandaba la ventana a una mitad
+// (otro tamaño) y el acorde ya no se animaba.
+
+/// Las teclas de un acorde con `gap_ms` entre una y otra (menos que la
+/// espera de 50 ms), y Windows respondiendo en el medio.
+fn chord_spaced(sim: &mut Sim, w: &mut World, letters: &[u8], gap_ms: u64) {
+    let mut held = 0;
+    for &l in letters {
+        held |= bit(l);
+        let until = sim.now + gap_ms * MS;
+        sim.run_until(w, vec![arrange(l, held)], until);
+        sim.now = until;
+    }
+    sim.run(w, Event::Layer(Layer::Apps));
+    sim.run(w, Event::Layer(Layer::Window));
+}
+
+#[test]
+fn corner_to_corner_flies_even_if_the_keys_arrive_apart() {
+    // (origen, teclas, destino) en el monitor 0, como los probó el usuario.
+    let cases: [(P, &[u8], P); 6] = [
+        (P::TopLeft, b"WD", P::TopRight),
+        (P::TopLeft, b"DW", P::TopRight),
+        (P::TopRight, b"WA", P::TopLeft),
+        (P::BottomRight, b"AS", P::BottomLeft),
+        (P::BottomLeft, b"SD", P::BottomRight),
+        (P::BottomLeft, b"DS", P::BottomRight),
+    ];
+    for (from, keys, to) in cases {
+        let mut w = flying_world();
+        let mut sim = Sim::new();
+        sim.at(0, from);
+        chord_spaced(&mut sim, &mut w, keys, 20);
+        let k = String::from_utf8_lossy(keys);
+        assert!(sim.is_at(0, to), "{from:?} + {k}: {:?}", sim.logs);
+        assert_eq!(
+            (sim.flights, sim.places, sim.lands),
+            (1, 0, 0),
+            "{from:?} + {k}: {:?}",
+            sim.logs
+        );
+    }
+}
+
+#[test]
+fn a_corner_pushed_to_the_neighbor_flies_even_if_the_keys_arrive_apart() {
+    let mut w = flying_world();
+    let mut sim = Sim::new();
+    sim.at(1, P::TopLeft); // monitor de la derecha
+    chord_spaced(&mut sim, &mut w, b"AW", 20);
+    assert!(sim.is_at(0, P::TopRight), "{:?}", sim.logs);
+    assert_eq!((sim.flights, sim.places), (1, 0), "{:?}", sim.logs);
+}
+
+#[test]
+fn a_single_key_from_a_corner_waits_for_a_second_one_then_goes() {
+    let mut w = flying_world();
+    let mut sim = Sim::new();
+    sim.at(0, P::TopLeft);
+    let start = sim.now;
+    sim.key(&mut w, b'A'); // sola: la mitad izquierda (otro tamaño: instantáneo)
+    assert!(sim.is_at(0, P::LeftHalf), "{:?}", sim.logs);
+    assert_eq!(sim.flights, 0);
+    assert!(sim.now - start >= 50 * MS, "esperó la segunda tecla");
+    // Desde una mitad no se espera.
+    let start = sim.now;
+    sim.key(&mut w, b'W');
+    assert!(sim.is_at(0, P::TopHalf));
+    assert!(sim.now - start < 50 * MS, "tardó {} ms", (sim.now - start) / MS);
 }

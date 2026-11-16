@@ -210,7 +210,10 @@ struct Gesture {
     seen: u8,
 }
 
-/// Un empuje de una tecla sola, demorado por si llega una segunda tecla.
+/// Una tecla sola demorada por si llega una segunda tecla: un empuje al
+/// monitor vecino (sin esperar, la ventana iría y volvería) o, desde una
+/// esquina, la mitad (sin esperar, la mitad cambia el tamaño y el acorde de
+/// esquina a esquina ya no se podría animar).
 #[derive(Debug, Clone)]
 struct Deferred {
     due_us: u64,
@@ -219,10 +222,15 @@ struct Deferred {
     obs: Obs,
     what: String,
     key_us: u64,
+    to: DeferredTo,
+}
+
+#[derive(Debug, Clone)]
+enum DeferredTo {
+    /// Una ubicación en el mismo monitor.
+    Here(Spot),
     /// `Some`: al monitor vecino; `None`: no hay vecino (solo se informa).
-    to: Option<Spot>,
-    dir: Dir,
-    from: Placement,
+    Push { to: Option<Spot>, dir: Dir, from: Placement },
 }
 
 /// Identificador de un pedido del modelo a la plataforma.
@@ -712,7 +720,7 @@ impl World {
             g.seen = seen;
             self.gesture = Some(g);
             if self.deferred.as_ref().is_some_and(|d| d.obs.key == obs.key) {
-                self.deferred = None; // el empuje de la primera tecla queda sin efecto
+                self.deferred = None; // la primera tecla sola queda sin efecto
             }
             let what = format!("Caps + Alt + {}", chord_name(g.seen));
             self.chord(g, what, key_us, &obs, now_us, out);
@@ -735,6 +743,13 @@ impl World {
         });
         let before = Entry { win: obs.key, frame: here_rect, maximized: origin_max, tag: id };
         match step(here.placement, dir) {
+            // Desde una esquina, una tecla puede ser la primera de un acorde
+            // a otra esquina (mismo tamaño: se anima): esperar la segunda.
+            Move::Stay(p) if is_corner(here.placement) && !obs.maximized => {
+                let to = DeferredTo::Here(Spot { monitor: here.monitor, placement: p });
+                let due_us = now_us + CHORD_WAIT_US;
+                self.deferred = Some(Deferred { due_us, before, obs, what, key_us, to });
+            }
             Move::Stay(p) => {
                 let to = Spot { monitor: here.monitor, placement: p };
                 let what = format!("{what} → {} ({})", placement_name(p), obs.app);
@@ -745,16 +760,9 @@ impl World {
                 let n = index_of(&obs.monitors, here.monitor)
                     .and_then(|i| neighbor(&obs.monitors, i, push));
                 let to = n.map(|n| Spot { monitor: obs.monitors[n], placement: enter });
-                self.deferred = Some(Deferred {
-                    due_us: now_us + CHORD_WAIT_US,
-                    before,
-                    obs,
-                    what,
-                    key_us,
-                    to,
-                    dir: push,
-                    from: here.placement,
-                });
+                let to = DeferredTo::Push { to, dir: push, from: here.placement };
+                let due_us = now_us + CHORD_WAIT_US;
+                self.deferred = Some(Deferred { due_us, before, obs, what, key_us, to });
             }
         }
     }
@@ -809,12 +817,22 @@ impl World {
     }
 
     fn run_deferred(&mut self, d: Deferred, now_us: u64, out: &mut Vec<Effect>) {
-        match d.to {
+        let (to, dir, from) = match d.to {
+            DeferredTo::Here(to) => {
+                let p = to.placement;
+                let what = format!("{} → {} ({})", d.what, placement_name(p), d.obs.app);
+                self.record = Some(d.before);
+                self.go(&d.obs, to, place(to.monitor.work, p), what, d.key_us, now_us, out);
+                return;
+            }
+            DeferredTo::Push { to, dir, from } => (to, dir, from),
+        };
+        match to {
             Some(to) => {
                 let what = format!(
                     "{} → monitor {}, {} ({})",
                     d.what,
-                    d.dir.of_side(),
+                    dir.of_side(),
                     placement_name(to.placement),
                     d.obs.app
                 );
@@ -825,9 +843,9 @@ impl World {
             None => out.push(Effect::Log(format!(
                 "{} → {} ({}): no hay otro monitor {}.",
                 d.what,
-                placement_name(d.from),
+                placement_name(from),
                 d.obs.app,
-                d.dir.toward()
+                dir.toward()
             ))),
         }
     }
@@ -1339,6 +1357,13 @@ impl World {
 /// identifica por su rectángulo).
 fn index_of(monitors: &[MonitorObs], m: MonitorObs) -> Option<usize> {
     monitors.iter().position(|x| x.bounds == m.bounds)
+}
+
+fn is_corner(p: Placement) -> bool {
+    matches!(
+        p,
+        Placement::TopLeft | Placement::TopRight | Placement::BottomLeft | Placement::BottomRight
+    )
 }
 
 fn next_check_us(j: &Job) -> u64 {
