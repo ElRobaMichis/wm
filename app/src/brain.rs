@@ -1,0 +1,273 @@
+//! El brain: ejecuta el modelo ([`World`]) con la plataforma real
+//! (plan-core.md §2).
+//!
+//! Traduce en los dos sentidos: los eventos de Windows (teclas del hook,
+//! resultados de los carriles de [`Ops`]) a [`Event`], y los [`Effect`] del
+//! modelo a pedidos de `ops` o líneas de log. No decide nada: las decisiones
+//! están en `wm_model::world`, con pruebas.
+
+use std::collections::HashMap;
+use std::io::Write;
+use std::path::PathBuf;
+use std::sync::mpsc::{self, Sender};
+use std::time::{Duration, Instant};
+
+use wm_model::world::{Effect, Event, FocusReport, Req, WinInfo, WinKey, World};
+use wm_platform::input::{self, InputEvent, ReinstallReason};
+use wm_platform::ops::{Op, Ops, OpsEvent, Output, Ticket};
+use wm_platform::windows_list::{self, WindowId};
+
+/// Teclas de prueba (solo con `WM_TEST=1`).
+const VK_F10: u8 = 0x79;
+const VK_F11: u8 = 0x7A;
+const VK_F12: u8 = 0x7B;
+
+/// Tamaño a partir del cual el log se rota al arrancar.
+const LOG_MAX_BYTES: u64 = 1024 * 1024;
+
+/// Log en un hilo aparte: el brain solo manda líneas. `println!` puede
+/// trabarse (por ejemplo, si el usuario selecciona texto en la terminal) y
+/// escribir a disco también, así que el brain nunca escribe directo.
+///
+/// Escribe en la consola (si hay) y en `%LOCALAPPDATA%\wm\wm.log`, con la
+/// hora desde el arranque.
+#[derive(Clone)]
+pub struct Log(Sender<String>);
+
+impl Log {
+    pub fn start() -> (Self, std::thread::JoinHandle<()>) {
+        let (tx, rx) = mpsc::channel::<String>();
+        let handle = std::thread::Builder::new()
+            .name("wm-log".into())
+            .spawn(move || {
+                let started = Instant::now();
+                let mut file = open_log_file();
+                for line in rx {
+                    println!("{line}");
+                    if let Some(f) = file.as_mut() {
+                        let t = started.elapsed().as_secs_f64();
+                        if writeln!(f, "[{t:9.3}] {line}").is_err() {
+                            file = None; // disco lleno o sin permiso: solo consola
+                        }
+                    }
+                }
+            })
+            .expect("no se pudo crear el hilo de log");
+        (Self(tx), handle)
+    }
+
+    pub fn line(&self, s: impl Into<String>) {
+        let _ = self.0.send(s.into());
+    }
+}
+
+/// `%LOCALAPPDATA%\wm\wm.log` (el anterior pasa a `wm.1.log` si es grande).
+pub fn log_path() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("wm").join("wm.log"))
+}
+
+fn open_log_file() -> Option<std::fs::File> {
+    let path = log_path()?;
+    std::fs::create_dir_all(path.parent()?).ok()?;
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > LOG_MAX_BYTES) {
+        let _ = std::fs::rename(&path, path.with_file_name("wm.1.log"));
+    }
+    std::fs::OpenOptions::new().create(true).append(true).open(path).ok()
+}
+
+/// Qué espera el brain de cada pedido en vuelo.
+enum Wait {
+    Scan(Req),
+    Focus(Req),
+    Launch(Req),
+    RestoreAtStart,
+    RestoreAtExit,
+}
+
+pub struct Brain {
+    pub world: World,
+    pub ops: Ops,
+    pub log: Log,
+    test_mode: bool,
+    started: Instant,
+    waits: HashMap<Ticket, Wait>,
+    /// El modelo pidió terminar.
+    pub quit: bool,
+}
+
+impl Brain {
+    pub fn new(world: World, ops: Ops, log: Log, test_mode: bool) -> Self {
+        Self {
+            world,
+            ops,
+            log,
+            test_mode,
+            started: Instant::now(),
+            waits: HashMap::new(),
+            quit: false,
+        }
+    }
+
+    fn now_us(&self) -> u64 {
+        self.started.elapsed().as_micros() as u64
+    }
+
+    /// Le pasa un evento al modelo y ejecuta lo que pida.
+    pub fn feed(&mut self, event: Event) {
+        let effects = self.world.step(event, self.now_us());
+        for effect in effects {
+            match effect {
+                Effect::Scan { req } => {
+                    let t = self.ops.submit(Op::Scan);
+                    self.waits.insert(t, Wait::Scan(req));
+                }
+                Effect::Focus { req, win } => {
+                    let t = self.ops.submit(Op::Focus(WindowId(win.hwnd), win.pid));
+                    self.waits.insert(t, Wait::Focus(req));
+                }
+                Effect::Launch { req, path } => {
+                    let t = self.ops.submit(Op::Launch(path));
+                    self.waits.insert(t, Wait::Launch(req));
+                }
+                Effect::Log(line) => self.log.line(line),
+                Effect::Quit => self.quit = true,
+            }
+        }
+    }
+
+    /// Mostrar todo lo que tenga nuestra marca (arranque = recuperación,
+    /// architecture.md §9.5).
+    pub fn restore_at_start(&mut self) {
+        let t = self.ops.submit(Op::RestoreAll);
+        self.waits.insert(t, Wait::RestoreAtStart);
+    }
+
+    /// Salida (limpia o tras un pánico): mostrar todo, esperando como mucho
+    /// `limit`.
+    pub fn restore_at_exit(&mut self, limit: Duration) {
+        let t = self.ops.submit(Op::RestoreAll);
+        self.waits.insert(t, Wait::RestoreAtExit);
+        let until = Instant::now() + limit;
+        while self.waits.values().any(|w| matches!(w, Wait::RestoreAtExit)) {
+            let deadline = self.ops.next_deadline().map_or(until, |d| d.min(until));
+            if matches!(input::wait(Some(deadline)), input::Wake::Quit) || Instant::now() >= until {
+                break;
+            }
+            self.collect();
+        }
+    }
+
+    /// Un evento del hilo de entrada.
+    pub fn on_input(&mut self, event: InputEvent) {
+        match event {
+            InputEvent::Action { action, held, time_ms, .. } => {
+                if self.test_mode && self.test_key(action) {
+                    return;
+                }
+                let age_ms = input::tick_ms().wrapping_sub(time_ms);
+                self.feed(Event::Action { action, held, age_ms });
+            }
+            InputEvent::Layer(layer) => self.feed(Event::Layer(layer)),
+            InputEvent::HookReinstalled(reason) => {
+                let why = match reason {
+                    ReinstallReason::Watchdog => "el vigía detectó que Windows lo había quitado",
+                    ReinstallReason::Resume => "la PC volvió del reposo",
+                    ReinstallReason::Unlock => "se desbloqueó la sesión",
+                };
+                self.log.line(format!("Hook reinstalado: {why}."));
+                self.feed(Event::KeyboardReset);
+            }
+            InputEvent::HookStalled { ms } => {
+                self.log.line(format!("El hook tardó {ms} ms: estado del teclado reiniciado."));
+                self.feed(Event::KeyboardReset);
+            }
+        }
+    }
+
+    /// Teclas de prueba (`WM_TEST=1`). Devuelve `true` si la consumió.
+    fn test_key(&mut self, action: wm_model::keyboard::HyperAction) -> bool {
+        use wm_model::keyboard::HyperAction;
+        match action {
+            HyperAction::Other { vk: VK_F10, .. } => {
+                panic!("prueba de pánico (Caps + F10)");
+            }
+            HyperAction::Other { vk: VK_F11, .. } => {
+                self.log.line("PRUEBA: el programa se traba 6 s. Pasados 2 s, Caps + B tiene que");
+                self.log.line("        escribir una B en vez de ir a Brave (modo seguro).");
+                std::thread::sleep(Duration::from_secs(6));
+                true
+            }
+            HyperAction::Other { vk: VK_F12, .. } => {
+                self.log.line("PRUEBA: el hook se trabó 1,5 s. Escribí unas letras:");
+                self.log.line("        tienen que salir normales (Caps no puede quedar trabado).");
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Resultados de los carriles (y plazos vencidos).
+    pub fn collect(&mut self) {
+        let mut events = self.ops.expire(Instant::now());
+        events.extend(self.ops.drain());
+        for event in events {
+            match event {
+                OpsEvent::Done { ticket, result, .. } => {
+                    if let Some(wait) = self.waits.remove(&ticket) {
+                        self.on_done(wait, result);
+                    }
+                }
+                OpsEvent::Late { lane, call_ms, .. } => {
+                    self.log.line(format!(
+                        "Aviso: una llamada del carril {} volvió tras {call_ms} ms.",
+                        lane.name()
+                    ));
+                }
+            }
+        }
+    }
+
+    fn on_done(&mut self, wait: Wait, result: Result<Output, String>) {
+        match wait {
+            Wait::Scan(req) => {
+                let result = result.and_then(|out| match out {
+                    Output::Windows(list) => {
+                        Ok((list.into_iter().map(win_info).collect(), focus()))
+                    }
+                    _ => Err("respuesta inesperada".to_owned()),
+                });
+                self.feed(Event::Windows { req, result });
+            }
+            Wait::Focus(req) => {
+                let result = result.and_then(|out| match out {
+                    Output::Activation(a) => Ok(FocusReport {
+                        ok: a.ok,
+                        neutral_key: a.used_neutral_key,
+                        elapsed_us: a.elapsed.as_micros() as u64,
+                    }),
+                    _ => Err("respuesta inesperada".to_owned()),
+                });
+                self.feed(Event::Focused { req, result });
+            }
+            Wait::Launch(req) => self.feed(Event::Launched { req, result: result.map(|_| ()) }),
+            Wait::RestoreAtStart => {
+                if let Ok(Output::Restored(r)) = result
+                    && !r.restored.is_empty()
+                {
+                    let n = r.restored.len();
+                    self.log.line(format!("Restauradas {n} ventanas de una sesión anterior."));
+                }
+            }
+            Wait::RestoreAtExit => {}
+        }
+    }
+}
+
+fn win_info(w: windows_list::WindowInfo) -> WinInfo {
+    WinInfo { key: WinKey { hwnd: w.id.0, pid: w.pid }, app: w.app, title: w.title }
+}
+
+/// La ventana con el foco ahora (lectura que no bloquea).
+fn focus() -> Option<WinKey> {
+    windows_list::foreground().map(|id| WinKey { hwnd: id.0, pid: windows_list::window_pid(id) })
+}

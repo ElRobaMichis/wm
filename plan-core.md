@@ -309,6 +309,9 @@ Latencia esperada: dos saltos de carril, como `Caps + letra` hoy (1,9-4,4 ms de 
 
 ## 7. Orden de implementación
 
+**Avance:**
+- **Hito 0 (15/11/2026): hecho, salvo `Inspect`, que pasa al hito 1a** (es su primer consumidor). Señales de capa y direcciones mantenidas en el teclado; `wm_model::world` con la capa de apps y una plataforma de mentira en sus pruebas; `app/src/brain.rs` y `core.rs` como cáscara; `WinKey` (HWND + proceso, verificado antes de traer al frente); `Scan` que incluye nuestras ventanas escondidas; log en `%LOCALAPPDATA%\wm\wm.log`; pánico → mostrar todo y salir con 3 (probado con `Caps + F10` en `WM_TEST=1`). En `wm ci-probe`, el chequeo "wm core" maneja el core real con teclas inyectadas.
+
 Pruebas: **P** = puras (`cargo test`, en la CI), **C** = `wm ci-probe` ampliado (job `ventanas`, x64 obligatorio), **M** = manual del autor, **U** = con la usuaria.
 
 Para C: mover el bucle a `app/src/brain.rs`, reutilizable por `core` y `ci_probe`, y manejarlo con `SendInput` real ampliando `session::send_hyper_chord` a secuencias (Caps + Alt + tecla). En ARM64 los escenarios con foco quedan informativos (§13.11).

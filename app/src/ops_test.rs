@@ -97,7 +97,7 @@ struct Brain {
 impl Brain {
     fn submit(&mut self, op: Op) {
         let on_hung = match &op {
-            Op::Focus(id) | Op::Unhide(id) => *id == self.hung,
+            Op::Focus(id, _) | Op::Unhide(id) => *id == self.hung,
             Op::Place { id, .. } | Op::Hide { id, .. } => *id == self.hung,
             _ => false,
         };
@@ -150,7 +150,7 @@ impl Brain {
                 all.push(self.hung);
                 let id = all[self.focus_next % all.len()];
                 self.focus_next += 1;
-                self.submit(Op::Focus(id));
+                self.submit(Op::Focus(id, 0));
             }
             _ => {}
         }

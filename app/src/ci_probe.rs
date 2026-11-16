@@ -10,7 +10,9 @@
 //! 3. **esconder**: las cuatro estrategias (cloak, minimizar, fuera de
 //!    pantalla, `SW_HIDE`), mirando DWM, y volver a mostrar;
 //! 4. **marco DWM**: colocar por el marco visible con error ≤ 1 px;
-//! 5. **overlay**: crear los overlays de Composition con el mapa de teclado.
+//! 5. **overlay**: crear los overlays de Composition con el mapa de teclado;
+//! 6. **`wm core`**: el core real, manejado con teclas inyectadas: `Caps` + W
+//!    lleva a otro títere (son `wm.exe`) y `Caps` + Esc lo cierra con código 0.
 //!
 //! Imprime una línea por chequeo y, con `--summary`, agrega una tabla en
 //! Markdown a ese archivo (en la CI, `$GITHUB_STEP_SUMMARY`). Sale con 0 si
@@ -151,11 +153,12 @@ pub fn run(args: &[String]) -> ExitCode {
     let puppets = open_puppets(&mut r);
     if puppets.len() >= PUPPETS {
         focus(&mut r, &puppets);
+        core(&mut r, &puppets);
         hook(&mut r, puppets[0]);
         hiding(&mut r, puppets[1]);
         frame(&mut r, puppets[2]);
     } else {
-        for name in ["foco", "hook + SendInput", "esconder", "marco DWM"] {
+        for name in ["foco", "wm core", "hook + SendInput", "esconder", "marco DWM"] {
             r.check(name, Status::Skip, "sin títeres".into());
         }
     }
@@ -285,6 +288,93 @@ fn focus(r: &mut Report, puppets: &[WindowId]) {
          {already}), p50 {p50}; al final, el foco lo tiene {fg}"
     );
     r.check("foco", status, detail);
+}
+
+/// El core real (`wm core`) en otro proceso, manejado con teclas inyectadas.
+fn core(r: &mut Report, puppets: &[WindowId]) {
+    use std::io::BufRead;
+    let name = "wm core";
+    let Ok(exe) = std::env::current_exe() else {
+        r.check(name, Status::Fail, "no se encontró el ejecutable".into());
+        return;
+    };
+    let child = Command::new(exe)
+        .arg("core")
+        .env_remove("WM_TEST")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn();
+    let mut child = match child {
+        Ok(c) => c,
+        Err(e) => {
+            r.check(name, Status::Fail, format!("no se pudo lanzar: {e}"));
+            return;
+        }
+    };
+    // Las líneas del core llegan por un canal: esperar el banner con plazo.
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    if let Some(out) = child.stdout.take() {
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+    let started = Instant::now();
+    let ready = loop {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(line) if line.starts_with("wm core activo") => break true,
+            Ok(_) => {}
+            Err(_) if started.elapsed() > Duration::from_secs(5) => break false,
+            Err(_) => {}
+        }
+    };
+    if !ready {
+        let _ = child.kill();
+        r.check(name, Status::Fail, "no arrancó en 5 s".into());
+        return;
+    }
+    let boot = started.elapsed();
+
+    let from = puppets[0];
+    let _ = windows_list::activate(from);
+    std::thread::sleep(Duration::from_millis(100));
+    session::send_hyper_chord(b'W');
+    let switch = Instant::now();
+    let moved = loop {
+        let fg = windows_list::foreground();
+        if fg.is_some_and(|id| id != from && puppets.contains(&id)) {
+            break Some(switch.elapsed());
+        }
+        if switch.elapsed() > Duration::from_secs(1) {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    };
+
+    session::send_hyper_chord(0x1B); // Caps + Esc: salir
+    let exit = Instant::now();
+    let code = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status.code(),
+            Ok(None) if exit.elapsed() > Duration::from_secs(3) => {
+                let _ = child.kill();
+                break None;
+            }
+            _ => std::thread::sleep(Duration::from_millis(10)),
+        }
+    };
+    let ok = moved.is_some() && code == Some(0);
+    let detail = format!(
+        "arrancó en {}; Caps + W → otro títere: {}; Caps + Esc → {}",
+        ms(boot),
+        moved.map_or_else(|| "no".into(), |d| format!("sí, en {}", ms(d))),
+        code.map_or_else(|| "no salió en 3 s".into(), |c| format!("código {c}")),
+    );
+    r.check(name, if ok { Status::Ok } else { Status::Fail }, detail);
 }
 
 fn hook(r: &mut Report, target: WindowId) {

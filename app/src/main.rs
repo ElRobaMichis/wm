@@ -8,6 +8,8 @@
 use std::process::ExitCode;
 
 #[cfg(windows)]
+mod brain;
+#[cfg(windows)]
 mod ci_probe;
 #[cfg(windows)]
 mod core;

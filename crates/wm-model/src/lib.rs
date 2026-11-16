@@ -10,6 +10,7 @@ pub mod i18n;
 pub mod keyboard;
 pub mod screens;
 pub mod settings_demo;
+pub mod world;
 
 /// Rectángulo en píxeles físicos de la pantalla virtual.
 ///

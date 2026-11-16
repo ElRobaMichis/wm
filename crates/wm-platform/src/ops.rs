@@ -74,8 +74,9 @@ impl Lane {
 /// Un pedido. `Stall` es solo para pruebas.
 #[derive(Debug, Clone)]
 pub enum Op {
-    /// Traer al frente.
-    Focus(WindowId),
+    /// Traer al frente. El `u32` es el proceso esperado (0 = cualquiera): si
+    /// el HWND ahora es de otro proceso, falla sin tocarlo.
+    Focus(WindowId, u32),
     /// Mover y redimensionar (asíncrono).
     Place { id: WindowId, rect: Rect },
     /// Esconder con un método.
@@ -97,7 +98,7 @@ impl Op {
     fn deadline(&self) -> Duration {
         match self {
             // `activate` puede esperar hasta 2 × 50 ms a que cambie el foco.
-            Op::Focus(_) => Duration::from_millis(300),
+            Op::Focus(..) => Duration::from_millis(300),
             Op::Place { .. } | Op::Scan => Duration::from_millis(50),
             Op::Hide { method: HideMethod::ShellCloak, .. } | Op::Unhide(_) => {
                 Duration::from_millis(250)
@@ -355,7 +356,7 @@ impl Ops {
 fn route(op: &Op) -> Lane {
     let cloaked = |id: &WindowId| hide::hidden_with(*id) == Some(HideMethod::ShellCloak);
     match op {
-        Op::Focus(_) => Lane::Focus,
+        Op::Focus(..) => Lane::Focus,
         Op::Place { .. } | Op::Scan | Op::Launch(_) => Lane::Win,
         Op::Hide { id, method } => {
             if *method == HideMethod::ShellCloak || cloaked(id) {
@@ -464,7 +465,12 @@ impl Context {
 
     fn run(&mut self, op: &Op) -> Result<Output, String> {
         match op {
-            Op::Focus(id) => Ok(Output::Activation(windows_list::activate(*id))),
+            Op::Focus(id, pid) => {
+                if *pid != 0 && windows_list::window_pid(*id) != *pid {
+                    return Err("la ventana ya no existe".to_owned());
+                }
+                Ok(Output::Activation(windows_list::activate(*id)))
+            }
             Op::Place { id, rect } => {
                 windows_list::place_async(*id, *rect).map(|()| Output::Nothing)
             }

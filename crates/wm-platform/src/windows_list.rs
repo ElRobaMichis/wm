@@ -29,13 +29,21 @@ impl WindowId {
 #[derive(Debug, Clone)]
 pub struct WindowInfo {
     pub id: WindowId,
+    /// Proceso dueño: con el HWND identifica la ventana aunque Windows
+    /// reutilice el HWND (plan-core.md §1.1).
+    pub pid: u32,
     pub title: String,
     /// Nombre del ejecutable sin extensión, en minúsculas (por ejemplo "chrome").
     pub app: String,
+    /// La escondimos nosotros (tiene nuestra marca): con cloak, minimizada,
+    /// fuera de pantalla u oculta. Sigue siendo del usuario.
+    pub hidden: bool,
 }
 
 /// Ventanas que un usuario consideraría "abiertas" (las del Alt+Tab), en
-/// orden Z: la primera es la de más arriba.
+/// orden Z: la primera es la de más arriba. Incluye las que escondimos
+/// nosotros (en otro escritorio), con `hidden`; no las que escondió otro
+/// (escritorios virtuales de Windows, apps UWP suspendidas).
 pub fn user_windows() -> Vec<WindowInfo> {
     let mut handles: Vec<HWND> = Vec::new();
 
@@ -59,7 +67,12 @@ pub fn user_windows() -> Vec<WindowInfo> {
             let mut pid = 0u32;
             // SAFETY: `h` es un HWND de EnumWindows; `pid` es una variable local.
             unsafe { GetWindowThreadProcessId(h, Some(&mut pid)) };
-            if pid == own_pid || !is_user_window(h) {
+            if pid == own_pid {
+                return None;
+            }
+            let id = WindowId(h.0 as isize);
+            let hidden = crate::hide::hidden_with(id).is_some();
+            if !hidden && !is_user_window(h) {
                 return None;
             }
             let title = title(h);
@@ -67,7 +80,7 @@ pub fn user_windows() -> Vec<WindowInfo> {
                 return None;
             }
             let app = process_name(pid)?;
-            Some(WindowInfo { id: WindowId(h.0 as isize), title, app })
+            Some(WindowInfo { id, pid, title, app, hidden })
         })
         .collect()
 }
@@ -178,6 +191,14 @@ fn process_name(pid: u32) -> Option<String> {
     let file = path.rsplit(['\\', '/']).next()?;
     let stem = file.strip_suffix(".exe").or_else(|| file.strip_suffix(".EXE")).unwrap_or(file);
     Some(stem.to_lowercase())
+}
+
+/// Proceso dueño de la ventana (0 si ya no existe).
+pub fn window_pid(id: WindowId) -> u32 {
+    let mut pid = 0u32;
+    // SAFETY: si la ventana ya no existe, `pid` queda en 0.
+    unsafe { GetWindowThreadProcessId(id.hwnd(), Some(&mut pid)) };
+    pid
 }
 
 pub fn foreground() -> Option<WindowId> {
