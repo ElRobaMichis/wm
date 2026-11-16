@@ -104,6 +104,45 @@ jobs:
           [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
           $bmp.Save("ci-artifacts\inicio.png")
 
+      # windows-11-arm arranca a veces con la configuración inicial de Windows
+      # ("Choose privacy settings") al frente: tapa los overlays y no deja
+      # tomar el primer plano. Si la ventana con foco es una CoreWindow que no
+      # es del shell, se informa de qué proceso es y se cierra (la máquina es
+      # descartable). En x64 no hace nada.
+      - name: Cerrar la configuración inicial si está al frente
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          Add-Type @'
+          using System; using System.Runtime.InteropServices; using System.Text;
+          public static class Fg {
+            [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+            [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+          }
+          '@
+          function Foreground {
+            $h = [Fg]::GetForegroundWindow(); $fgPid = 0
+            [void][Fg]::GetWindowThreadProcessId($h, [ref]$fgPid)
+            $class = New-Object System.Text.StringBuilder 256
+            [void][Fg]::GetClassName($h, $class, 256)
+            $proc = Get-Process -Id $fgPid -ErrorAction SilentlyContinue
+            [pscustomobject]@{ Class = "$class"; Pid = $fgPid; Name = $proc.ProcessName; Path = $proc.Path }
+          }
+          $fg = Foreground
+          Write-Output "Al frente: $($fg.Class) de $($fg.Name) ($($fg.Path))"
+          $shell = 'explorer', 'StartMenuExperienceHost', 'ShellExperienceHost', 'SearchHost'
+          if ($fg.Class -eq 'Windows.UI.Core.CoreWindow' -and $fg.Name -notin $shell) {
+            Stop-Process -Id $fg.Pid -Force
+            Start-Sleep -Seconds 3
+            $fg = Foreground
+            Write-Output "Cerrado. Ahora al frente: $($fg.Class) de $($fg.Name)"
+            $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+            [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+            $bmp.Save("ci-artifacts\despues-de-cerrar.png")
+          }
+
       - name: Sonda (wm ci-probe)
         shell: pwsh
         run: '& "$env:BIN\wm.exe" ci-probe --summary $env:GITHUB_STEP_SUMMARY'
