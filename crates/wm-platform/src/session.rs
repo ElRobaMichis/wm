@@ -170,6 +170,36 @@ pub fn send_keys(keys: &[(u8, bool)]) -> u32 {
     unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) }
 }
 
+/// Hito 5 (pruebas): un botón del mouse como si lo apretara el usuario, en la
+/// posición actual del cursor. Devuelve cuántos eventos aceptó `SendInput`.
+pub fn send_mouse_button(right: bool, down: bool) -> u32 {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        INPUT_MOUSE, MOUSE_EVENT_FLAGS, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+        MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEINPUT,
+    };
+    let flags: MOUSE_EVENT_FLAGS = match (right, down) {
+        (false, true) => MOUSEEVENTF_LEFTDOWN,
+        (false, false) => MOUSEEVENTF_LEFTUP,
+        (true, true) => MOUSEEVENTF_RIGHTDOWN,
+        (true, false) => MOUSEEVENTF_RIGHTUP,
+    };
+    let input = INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: windows::Win32::UI::Input::KeyboardAndMouse::INPUT_0 {
+            mi: MOUSEINPUT { dx: 0, dy: 0, mouseData: 0, dwFlags: flags, time: 0, dwExtraInfo: 0 },
+        },
+    };
+    // SAFETY: slice válido de una estructura INPUT completa.
+    unsafe { SendInput(&[input], size_of::<INPUT>() as i32) }
+}
+
+/// Hito 5 (pruebas): mover el cursor.
+pub fn set_cursor(x: i32, y: i32) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::SetCursorPos;
+    // SAFETY: sin precondiciones.
+    unsafe { SetCursorPos(x, y) }.is_ok()
+}
+
 /// ¿La tecla figura apretada en el estado asíncrono del sistema?
 pub fn key_down(vk: u8) -> bool {
     // SAFETY: sin precondiciones.

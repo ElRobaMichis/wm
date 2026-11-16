@@ -681,6 +681,7 @@ fn core(r: &mut Report, puppets: &[WindowId]) {
     hard_checks(r);
     hung_check(r);
     desks_check(r, puppets);
+    let drag = drag_check(puppets[1]);
 
     // "Salir" como en el menú de la bandeja (`Caps` + Esc ya no sale fuera
     // del modo prueba).
@@ -704,6 +705,15 @@ fn core(r: &mut Report, puppets: &[WindowId]) {
             .all(|&p| hide::fully_visible(hide::visibility(p)) && hide::desk_of(p).is_none())
     })
     .is_some();
+    // El hook de mouse se puso y se quitó la misma cantidad de veces (el
+    // resumen llega por la salida del core al terminar).
+    std::thread::sleep(Duration::from_millis(150));
+    let hooks = lines.try_iter().find_map(|l| {
+        let rest = l.split("Hook de mouse: puesto ").nth(1)?.to_owned();
+        let (a, b) = rest.split_once(" veces, quitado ")?;
+        Some((a.trim().parse::<u32>().ok()?, b.trim().parse::<u32>().ok()?))
+    });
+    drag(r, hooks);
     let ok = moved.is_some() && code == Some(0) && clean;
     let detail = format!(
         "arrancó en {}; Caps + W → otro títere: {}; Salir → {}; todo visible y sin wm.desk: {clean}",
@@ -1064,6 +1074,139 @@ fn fly_crash_check(r: &mut Report, id: WindowId) {
         back.map_or_else(|| "SIGUE ESCONDIDA".into(), |d| format!("se ve a los {}", ms(d))),
     );
     r.check(name, if ok { Status::Ok } else { Status::Fail }, detail);
+}
+
+/// Hito 5: `Caps` + arrastrar mueve, `Caps` + clic derecho + arrastrar cambia
+/// el tamaño desde la esquina más cercana, Bloq Mayús no cambia y Z deshace.
+/// Devuelve una función que informa el chequeo cuando se sabe si el hook de
+/// mouse quedó equilibrado (después de "Salir").
+fn drag_check(id: WindowId) -> impl FnOnce(&mut Report, Option<(u32, u32)>) {
+    const NAME: &str = "arrastre";
+    const CAPS: u8 = 0x14;
+    const ALT: u8 = 0xA4;
+    let mut parts: Vec<String> = Vec::new();
+    let mut ok = true;
+    let mut ran = true;
+    let monitors = wm_platform::monitors();
+    let work = monitors.iter().find(|m| m.primary).map(|m| m.work_area);
+    let frame_now = || wm_platform::ghost::frame_bounds(id);
+    if let (Some(work), Some(_)) = (work, frame_now()) {
+        let _ = windows_list::activate(id);
+        let start =
+            wm_model::Rect::new(work.left + 200, work.top + 150, work.left + 900, work.top + 650);
+        let _ = windows_list::place_async(id, start);
+        let _ = wait_for(Duration::from_secs(1), || {
+            frame_now().is_some_and(|f| f.left != 0 && (f.width() - start.width()).abs() < 40)
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        let f0 = frame_now().unwrap_or(start);
+        let caps_before = session::caps_lock_on();
+        let drag = |right: bool, from: (i32, i32), by: (i32, i32)| {
+            // Solo si bajo el cursor está el títere: nunca arrastrar una
+            // ventana del usuario.
+            // (durante el vuelo de Z tiene cloak y ahí se ve la de atrás).
+            if wait_for(Duration::from_millis(600), || {
+                windows_list::root_at(from.0, from.1) == Some(id)
+            })
+            .is_none()
+            {
+                return 0;
+            }
+            session::set_cursor(from.0, from.1);
+            session::send_keys(&[(CAPS, true)]);
+            std::thread::sleep(Duration::from_millis(40));
+            let sent = session::send_mouse_button(right, true);
+            for i in 1..=12 {
+                std::thread::sleep(Duration::from_millis(8));
+                session::set_cursor(from.0 + by.0 * i / 12, from.1 + by.1 * i / 12);
+            }
+            std::thread::sleep(Duration::from_millis(60));
+            session::send_mouse_button(right, false);
+            std::thread::sleep(Duration::from_millis(20));
+            session::send_keys(&[(CAPS, false)]);
+            sent
+        };
+        let undo = || {
+            session::send_keys(&[
+                (CAPS, true),
+                (ALT, true),
+                (b'Z', true),
+                (b'Z', false),
+                (ALT, false),
+                (CAPS, false),
+            ]);
+        };
+        let near = |a: wm_model::Rect, b: wm_model::Rect| {
+            (a.left - b.left).abs() <= 1
+                && (a.top - b.top).abs() <= 1
+                && (a.right - b.right).abs() <= 1
+                && (a.bottom - b.bottom).abs() <= 1
+        };
+
+        // Mover (120, 84) desde el centro.
+        let center = ((f0.left + f0.right) / 2, (f0.top + f0.bottom) / 2);
+        let t0 = Instant::now();
+        let sent = drag(false, center, (120, 84));
+        let want = wm_model::Rect::new(f0.left + 120, f0.top + 84, f0.right + 120, f0.bottom + 84);
+        let moved = wait_for(Duration::from_secs(1), || frame_now().is_some_and(|f| near(f, want)));
+        if moved.is_none() && sent == 0 {
+            ran = false;
+        }
+        ok &= moved.is_some();
+        parts.push(format!(
+            "Caps + arrastrar: {}",
+            moved.map_or_else(
+                || format!("NO (quedó en {:?})", frame_now()),
+                |_| format!("movida (120, 84) en {}", ms(t0.elapsed()))
+            )
+        ));
+        let caps_same = session::caps_lock_on() == caps_before;
+        ok &= caps_same;
+        parts.push(format!("Bloq Mayús igual: {caps_same}"));
+        undo();
+        let back = wait_for(Duration::from_secs(1), || frame_now().is_some_and(|f| near(f, f0)));
+        ok &= back.is_some();
+        parts.push(format!("Z la devuelve: {}", back.is_some()));
+
+        // Cambiar el tamaño desde la esquina de abajo a la derecha.
+        let corner = (f0.right - 30, f0.bottom - 30);
+        drag(true, corner, (60, 40));
+        let want = wm_model::Rect::new(f0.left, f0.top, f0.right + 60, f0.bottom + 40);
+        let resized =
+            wait_for(Duration::from_secs(1), || frame_now().is_some_and(|f| near(f, want)));
+        ok &= resized.is_some();
+        parts.push(format!(
+            "Caps + clic derecho: {}",
+            if resized.is_some() {
+                "crece (60, 40) con la otra esquina fija".to_owned()
+            } else {
+                format!("NO (quedó en {:?})", frame_now())
+            }
+        ));
+        undo();
+        let _ = wait_for(Duration::from_secs(1), || frame_now().is_some_and(|f| near(f, f0)));
+    } else {
+        ran = false;
+        parts.push("sin monitor o sin títere".into());
+    }
+    move |r: &mut Report, hooks: Option<(u32, u32)>| {
+        match hooks {
+            Some((a, b)) => {
+                ok &= a == b && a > 0;
+                parts.push(format!("hook de mouse puesto {a} veces y quitado {b}"));
+            }
+            None => parts.push("sin el resumen del hook".into()),
+        }
+        let status = if ok {
+            Status::Ok
+        } else if !ran {
+            // El mouse inyectado puede no llegar en el runner de CI (§13.11).
+            Status::Skip
+        } else {
+            Status::Fail
+        };
+        r.check(NAME, status, parts.join("; "));
+    }
 }
 
 /// Hito 4c (D4): una ventana en el escritorio 2, el core muere, el guardián

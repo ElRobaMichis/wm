@@ -109,6 +109,8 @@ pub enum Op {
     ForgetDesks,
     /// Hito 4: ¿está disponible el cloak del shell? (al arrancar).
     CloakProbe,
+    /// Hito 5: la ventana bajo el cursor (`Caps` + clic).
+    InspectAt { x: i32, y: i32 },
 }
 
 impl Op {
@@ -128,6 +130,7 @@ impl Op {
             Op::SetDesks(_) | Op::ForgetDesks => Duration::from_millis(200),
             Op::FocusShell => Duration::from_millis(300),
             Op::CloakProbe => Duration::from_millis(250),
+            Op::InspectAt { .. } => Duration::from_millis(50),
             Op::RestoreAll => Duration::from_secs(1),
             Op::Launch(_) => Duration::from_secs(2),
             Op::Stall { lane, .. } => match lane {
@@ -149,6 +152,8 @@ pub enum Output {
     Restored(RestoreReport),
     /// Resultado por ventana de un pedido en lote.
     Batch(Vec<(WindowId, Result<(), String>)>),
+    /// La ventana agarrada con el mouse.
+    Grab(windows_list::GrabInfo),
 }
 
 pub type Ticket = u64;
@@ -414,6 +419,7 @@ fn route(op: &Op) -> Lane {
         Op::SetDesks(_) | Op::ForgetDesks => Lane::Win,
         Op::FocusShell => Lane::Focus,
         Op::CloakProbe => Lane::Shell,
+        Op::InspectAt { .. } => Lane::Win,
         Op::HideMany { wins, method } => {
             if *method == HideMethod::ShellCloak || wins.iter().any(|(id, _)| cloaked(id)) {
                 Lane::Shell
@@ -598,6 +604,7 @@ impl Context {
                 Ok(Output::Nothing)
             }
             Op::CloakProbe => self.hider(HideMethod::ShellCloak).map(|_| Output::Nothing),
+            Op::InspectAt { x, y } => windows_list::inspect_at(*x, *y).map(Output::Grab),
         }
     }
 }

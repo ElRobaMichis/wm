@@ -19,6 +19,8 @@ pub mod display_watch;
 #[cfg(windows)]
 pub mod displays;
 #[cfg(windows)]
+pub mod drag;
+#[cfg(windows)]
 mod dynlib;
 #[cfg(windows)]
 pub mod geometry;

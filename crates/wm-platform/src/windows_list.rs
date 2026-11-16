@@ -347,6 +347,87 @@ pub fn inspect(target: Option<(WindowId, u32)>) -> Result<Inspection, String> {
     })
 }
 
+/// La ventana top-level visible bajo el punto (para pruebas).
+pub fn root_at(x: i32, y: i32) -> Option<WindowId> {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::{GA_ROOT, GetAncestor, WindowFromPoint};
+    // SAFETY: lecturas sin efectos.
+    let h = unsafe { WindowFromPoint(POINT { x, y }) };
+    if h.is_invalid() {
+        return None;
+    }
+    // SAFETY: ídem.
+    let root = unsafe { GetAncestor(h, GA_ROOT) };
+    Some(WindowId(if root.is_invalid() { h.0 as isize } else { root.0 as isize }))
+}
+
+/// Hito 5: la ventana que se agarra con `Caps` + clic en `(x, y)`.
+#[derive(Debug, Clone)]
+pub struct GrabInfo {
+    pub inspection: Inspection,
+    /// Si está maximizada: su tamaño normal (exterior), para restaurarla bajo
+    /// el cursor al arrastrarla.
+    pub restore: Option<(i32, i32)>,
+    /// Tiene borde para cambiar el tamaño (`WS_THICKFRAME`).
+    pub resizable: bool,
+}
+
+/// La ventana top-level bajo el punto (no el dueño: si se agarra un diálogo,
+/// se mueve el diálogo). Rechaza las nuestras, las escondidas, la barra, el
+/// escritorio y las de herramienta. Solo lecturas que no se traban.
+pub fn inspect_at(x: i32, y: i32) -> Result<GrabInfo, String> {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GA_ROOT, GWL_STYLE, GetAncestor, GetWindowPlacement, WINDOWPLACEMENT, WS_THICKFRAME,
+        WindowFromPoint,
+    };
+    // SAFETY: lectura sin efectos.
+    let h = unsafe { WindowFromPoint(POINT { x, y }) };
+    if h.is_invalid() {
+        return Err("no hay ninguna ventana ahí".to_owned());
+    }
+    // SAFETY: lectura sobre un HWND válido.
+    let root = unsafe { GetAncestor(h, GA_ROOT) };
+    let root = if root.is_invalid() { h } else { root };
+    let id = WindowId(root.0 as isize);
+    let pid = window_pid(id);
+    if pid == std::process::id() {
+        return Err("es una ventana de wm".to_owned());
+    }
+    let mut class = [0u16; 32];
+    // SAFETY: buffer local válido.
+    let len = unsafe { GetClassNameW(root, &mut class) };
+    let class = String::from_utf16_lossy(&class[..len.max(0) as usize]);
+    if matches!(class.as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd")
+    {
+        return Err("ahí no hay una ventana (escritorio o barra de tareas)".to_owned());
+    }
+    // SAFETY: lectura sin efectos.
+    let ex = unsafe { GetWindowLongPtrW(root, GWL_EXSTYLE) } as u32;
+    if ex & WS_EX_TOOLWINDOW.0 != 0 || class == "Ghost" {
+        return Err("esa ventana no se acomoda".to_owned());
+    }
+    if crate::hide::visibility(id).cloaked != 0 {
+        return Err("la ventana está escondida".to_owned());
+    }
+    let inspection = inspect(Some((id, pid)))?;
+    // SAFETY: lectura sin efectos.
+    let style = unsafe { GetWindowLongPtrW(root, GWL_STYLE) } as u32;
+    let resizable = style & WS_THICKFRAME.0 != 0;
+    let restore = if inspection.maximized {
+        let mut wp =
+            WINDOWPLACEMENT { length: size_of::<WINDOWPLACEMENT>() as u32, ..Default::default() };
+        // SAFETY: estructura local con su tamaño.
+        unsafe { GetWindowPlacement(root, &mut wp) }.ok().map(|()| {
+            let r = wp.rcNormalPosition;
+            (r.right - r.left, r.bottom - r.top)
+        })
+    } else {
+        None
+    };
+    Ok(GrabInfo { inspection, restore, resizable })
+}
+
 /// Saca una ventana de maximizada o minimizada sin activarla (asíncrono: se
 /// postea al hilo de la app, que lo aplica antes que un `place_async`
 /// posterior).

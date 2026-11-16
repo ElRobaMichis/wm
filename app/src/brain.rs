@@ -15,7 +15,8 @@ use std::time::{Duration, Instant};
 use wm_model::keyboard::Layer;
 use wm_model::place::MonitorObs;
 use wm_model::world::{
-    Effect, Event, FlyFail, FlyReport, FocusReport, Obs, Req, WinInfo, WinKey, World,
+    DragReport, Effect, Event, FlyFail, FlyReport, FocusReport, Grab, Obs, Req, WinInfo, WinKey,
+    World,
 };
 use wm_platform::anim::{Anim, AnimEvent};
 use wm_platform::input::{self, InputEvent, ReinstallReason};
@@ -105,6 +106,8 @@ enum Wait {
     Place(Req),
     RestoreAtStart,
     RestoreAtExit,
+    /// Hito 5: la ventana bajo el cursor.
+    Grab(Req),
     /// Hito 4.
     SetDesks(Req),
     Show(Req),
@@ -152,6 +155,8 @@ pub struct Brain {
     pub relaunched: bool,
     /// Ventana al frente y destapes (hito 4b.2), en este hilo.
     winevents: wm_platform::winevents::WinEvents,
+    /// Carril `wm-drag` (hito 5): se crea con el primer clic con Caps.
+    drag: Option<wm_platform::drag::Drag>,
 }
 
 impl Brain {
@@ -176,6 +181,7 @@ impl Brain {
             hide_method: wm_platform::hide::HideMethod::ShellCloak,
             relaunched: false,
             winevents: wm_platform::winevents::WinEvents::start(input::current_thread_id()),
+            drag: None,
         }
     }
 
@@ -188,6 +194,23 @@ impl Brain {
         }
         self.log.line(format!("apps.txt recargado: {} asignaciones.", bindings.len()));
         self.feed(Event::Bindings(bindings));
+    }
+
+    /// Respuestas del carril `wm-drag` (y su vigilante).
+    fn collect_drag(&mut self) {
+        use wm_platform::drag::DragEvent;
+        let Some(drag) = self.drag.as_mut() else { return };
+        let mut events = drag.expire(Instant::now());
+        events.extend(drag.drain());
+        for DragEvent::Done { win, result } in events {
+            let key = WinKey { hwnd: win.0, pid: windows_list::window_pid(win) };
+            let result = result.map(|r| DragReport {
+                moved: r.moved,
+                frame: r.frame,
+                ms: r.ms.round() as u32,
+            });
+            self.feed(Event::DragDone { win: key, result });
+        }
     }
 
     /// Avisos de Windows: ventana al frente y destapes (hito 4b.2).
@@ -279,7 +302,8 @@ impl Brain {
         let world = self.world.deadline().map(|us| self.started + Duration::from_micros(us));
         let anim = self.anim.as_ref().and_then(Anim::next_deadline);
         let ui = self.ui.as_ref().and_then(Ui::next_deadline);
-        [self.ops.next_deadline(), world, anim, ui].into_iter().flatten().min()
+        let drag = self.drag.as_ref().and_then(wm_platform::drag::Drag::next_deadline);
+        [self.ops.next_deadline(), world, anim, ui, drag].into_iter().flatten().min()
     }
 
     /// Si venció el plazo del modelo, lo despierta.
@@ -388,6 +412,30 @@ impl Brain {
                     let t = self.ops.submit(Op::FocusShell);
                     self.waits.insert(t, Wait::Focus(req));
                 }
+                Effect::InspectAt { req, x, y } => {
+                    let t = self.ops.submit(Op::InspectAt { x, y });
+                    self.waits.insert(t, Wait::Grab(req));
+                }
+                Effect::Raise { win } => {
+                    self.ops.submit(Op::Focus(WindowId(win.hwnd), win.pid));
+                }
+                Effect::DragStart { win, mode, grab, restore } => {
+                    if self.drag.is_none() {
+                        self.drag = wm_platform::drag::Drag::start(input::current_thread_id());
+                    }
+                    match self.drag.as_mut() {
+                        Some(d) => d.begin(WindowId(win.hwnd), win.pid, mode, grab, restore),
+                        None => {
+                            let result = Err("no se pudo crear el carril de arrastre".to_owned());
+                            self.feed(Event::DragDone { win, result });
+                        }
+                    }
+                }
+                Effect::DragStop { .. } => {
+                    if let Some(d) = self.drag.as_mut() {
+                        d.end();
+                    }
+                }
             }
         }
     }
@@ -456,6 +504,9 @@ impl Brain {
                 self.log.line(format!("Hook reinstalado: {why}."));
                 self.land_all();
                 self.feed(Event::KeyboardReset);
+            }
+            InputEvent::Pointer { button, down, x, y, .. } => {
+                self.feed(Event::Pointer { button, down, x, y });
             }
             InputEvent::KeyboardReset(_) => {
                 self.land_all();
@@ -531,6 +582,7 @@ impl Brain {
     pub fn collect(&mut self) {
         wm_platform::ops::rearm_wake();
         self.collect_winevents();
+        self.collect_drag();
         self.collect_tray();
         self.collect_watch();
         self.collect_anim();
@@ -616,6 +668,17 @@ impl Brain {
                 self.feed(Event::DesksSet { req, failed });
             }
             Wait::Show(req) => self.feed(Event::Shown { req, result: result.map(failed_of) }),
+            Wait::Grab(req) => {
+                let result = result.and_then(|out| match out {
+                    Output::Grab(g) => Ok(Grab {
+                        obs: obs(g.inspection),
+                        restore: g.restore,
+                        resizable: g.resizable,
+                    }),
+                    _ => Err("respuesta inesperada".to_owned()),
+                });
+                self.feed(Event::Grabbed { req, result });
+            }
             Wait::Hide(req) => self.feed(Event::Hidden { req, result: result.map(failed_of) }),
         }
     }

@@ -372,6 +372,44 @@ pub enum Event {
     Foreground(WinKey),
     /// Hito 4b.2: a esta ventana le quitaron el cloak.
     Uncloaked(WinKey),
+    /// Hito 5: con `Caps` se apretó (`down`) o soltó un botón del mouse en
+    /// `(x, y)`.
+    Pointer {
+        button: crate::mouse::Button,
+        down: bool,
+        x: i32,
+        y: i32,
+    },
+    /// Hito 5: la ventana bajo el cursor (respuesta de `InspectAt`).
+    Grabbed {
+        req: Req,
+        result: Result<Grab, String>,
+    },
+    /// Hito 5: terminó un arrastre.
+    DragDone {
+        win: WinKey,
+        result: Result<DragReport, String>,
+    },
+}
+
+/// La ventana agarrada con `Caps` + clic (hito 5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Grab {
+    pub obs: Obs,
+    /// Maximizada: su tamaño normal (exterior).
+    pub restore: Option<(i32, i32)>,
+    /// Tiene borde para cambiar el tamaño.
+    pub resizable: bool,
+}
+
+/// Cómo terminó un arrastre (hito 5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DragReport {
+    /// Se movió de verdad (no fue un clic quieto).
+    pub moved: bool,
+    /// Marco visible al terminar.
+    pub frame: Option<Rect>,
+    pub ms: u32,
 }
 
 /// Lo que el modelo le pide a la plataforma.
@@ -467,6 +505,28 @@ pub enum Effect {
     FocusShell {
         req: Req,
     },
+    /// Hito 5: qué ventana hay en `(x, y)`. Responde con `Grabbed`.
+    InspectAt {
+        req: Req,
+        x: i32,
+        y: i32,
+    },
+    /// Hito 5: traerla al frente (sin esperar respuesta).
+    Raise {
+        win: WinKey,
+    },
+    /// Hito 5: seguir al cursor desde `grab` (el carril `wm-drag`).
+    /// `restore`: maximizada, su tamaño normal.
+    DragStart {
+        win: WinKey,
+        mode: crate::drag::Mode,
+        grab: (i32, i32),
+        restore: Option<(i32, i32)>,
+    },
+    /// Hito 5: se soltó el botón. Responde con `DragDone`.
+    DragStop {
+        win: WinKey,
+    },
 }
 
 /// Antigüedad máxima de una acción para ejecutarla: una que llega tarde (el
@@ -549,6 +609,8 @@ enum Pending {
         job: u64,
         rect: Rect,
     },
+    /// Hito 5: la ventana bajo el cursor.
+    Grab,
     /// Hito 4: pasos de la transacción de escritorios.
     DeskScan,
     DeskSet,
@@ -610,6 +672,10 @@ pub struct World {
     queued: Option<(crate::desks::Goal, u64)>,
     /// Reconciliar a esta hora (un destape inesperado, hito 4b.2).
     verify_due: Option<u64>,
+    /// Un botón del mouse tragado con `Caps` (hito 5).
+    pointer: Option<world_drag::Pointer>,
+    /// El arrastre en curso: ventana, cómo estaba antes y desde cuándo.
+    dragging: Option<world_drag::Dragging>,
 }
 
 /// Tamaños que una ventana no aceptó. Antes se marcaba la ventana entera y
@@ -702,6 +768,7 @@ impl World {
         jobs.chain(self.deferred.as_ref().map(|d| d.due_us))
             .chain(self.map.deadline())
             .chain(self.verify_due)
+            .chain(self.pointer_deadline())
             .min()
     }
 
@@ -805,7 +872,10 @@ impl World {
                         _ => {}
                     }
                 }
-                if age_ms > MAX_ACTION_AGE_MS {
+                if self.pointer.is_some() {
+                    let what = describe(action);
+                    out.push(Effect::Log(format!("{what}: ignorada durante un arrastre.")));
+                } else if age_ms > MAX_ACTION_AGE_MS {
                     let what = describe(action);
                     out.push(Effect::Log(format!(
                         "Acción descartada: llegó {age_ms} ms tarde ({what})."
@@ -824,6 +894,7 @@ impl World {
                 }
             }
             Event::KeyboardReset => {
+                self.pointer_reset(&mut out);
                 self.layer = Layer::Off;
                 self.keys = None;
                 let mut m = Vec::new();
@@ -953,6 +1024,16 @@ impl World {
                 }
             }
             Event::Foreground(win) => self.on_foreground(win, now_us, &mut out),
+            Event::Pointer { button, down, x, y } => {
+                self.on_pointer(button, down, (x, y), now_us, &mut out)
+            }
+            Event::Grabbed { req, result } => {
+                if let Some(Pending::Grab) = self.pending.get(&req) {
+                    self.pending.remove(&req);
+                    self.on_grabbed(req, result, &mut out);
+                }
+            }
+            Event::DragDone { win, result } => self.on_drag_done(win, result, &mut out),
             Event::Uncloaked(win) => self.on_uncloaked(win, now_us, &mut out),
             Event::Launched { req, result } => {
                 let Some(Pending::Launch { letter, app, path }) = self.pending.remove(&req) else {
@@ -1365,6 +1446,7 @@ impl World {
         let Some(Pending::FlyCmd { win, job, rect }) = self.pending.remove(&req) else {
             return;
         };
+        self.drag_after_landing(out);
         if let Err(f) = &result
             && f.fatal
             && self.fly
@@ -1716,6 +1798,7 @@ impl World {
 
     /// Lanza los chequeos vencidos.
     fn tick(&mut self, now_us: u64, out: &mut Vec<Effect>) {
+        self.pointer_tick(now_us, out);
         if self.verify_due.is_some_and(|t| t <= now_us) {
             self.verify_due = None;
             self.start_sync(crate::desks::Goal::Verify, now_us, out);
@@ -1940,6 +2023,9 @@ impl World {
 #[path = "world_desks.rs"]
 mod world_desks;
 
+#[path = "world_drag.rs"]
+mod world_drag;
+
 /// Índice actual de un monitor (los índices no valen entre observaciones: se
 /// identifica por su rectángulo).
 fn index_of(monitors: &[MonitorObs], m: MonitorObs) -> Option<usize> {
@@ -2091,6 +2177,10 @@ mod tests {
                         Effect::Show { .. } | Effect::Hide { .. } | Effect::FocusShell { .. } => {
                             panic!("todo está en el escritorio 1")
                         }
+                        Effect::InspectAt { .. }
+                        | Effect::Raise { .. }
+                        | Effect::DragStart { .. }
+                        | Effect::DragStop { .. } => panic!("la capa de apps no arrastra"),
                         Effect::Inspect { .. }
                         | Effect::Place { .. }
                         | Effect::Fly { .. }

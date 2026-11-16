@@ -53,6 +53,7 @@ use windows::core::w;
 use wm_model::keyboard::{
     HyperAction, HyperKeyboard, Inject, KeyEvent, Layer, VK_CAPITAL, VK_LWIN, VK_RMENU, VK_RWIN,
 };
+use wm_model::mouse::{Button, HyperMouse, MouseEvent};
 
 /// Marca en `dwExtraInfo` de los eventos que inyectamos nosotros ("WMHY").
 pub const INJECTED_MARKER: usize = 0x574D_4859;
@@ -101,6 +102,8 @@ static STALLS: AtomicU32 = AtomicU32::new(0);
 static REINSTALLS_WATCHDOG: AtomicU32 = AtomicU32::new(0);
 static REINSTALLS_RESUME: AtomicU32 = AtomicU32::new(0);
 static REINSTALLS_UNLOCK: AtomicU32 = AtomicU32::new(0);
+static MOUSE_INSTALLS: AtomicU32 = AtomicU32::new(0);
+static MOUSE_REMOVES: AtomicU32 = AtomicU32::new(0);
 
 thread_local! {
     static MACHINE: RefCell<HyperKeyboard> = const { RefCell::new(HyperKeyboard::new()) };
@@ -109,6 +112,11 @@ thread_local! {
     static SEEN_BY_HOOK: Cell<bool> = const { Cell::new(true) };
     static MISSES: Cell<u32> = const { Cell::new(0) };
     static LAST_WATCHDOG_REINSTALL: Cell<u64> = const { Cell::new(0) };
+    /// Botones del mouse con Caps (hito 5).
+    static MOUSE: Cell<HyperMouse> = const { Cell::new(HyperMouse::new()) };
+    /// Hook de mouse, solo mientras Caps está abajo o un botón tragado sigue
+    /// abajo (0 = sin hook).
+    static MOUSE_HOOK: Cell<isize> = const { Cell::new(0) };
 }
 
 // ---------------------------------------------------------------------------
@@ -194,6 +202,9 @@ pub struct HookStats {
     pub safe_mode_entries: u32,
     /// Callbacks de más de 100 ms (tras los que se reinició el estado).
     pub stalls: u32,
+    /// Veces que se puso y se quitó el hook de mouse (tienen que coincidir).
+    pub mouse_installs: u32,
+    pub mouse_removes: u32,
 }
 
 pub fn hook_stats() -> HookStats {
@@ -205,6 +216,8 @@ pub fn hook_stats() -> HookStats {
         reinstalls_unlock: REINSTALLS_UNLOCK.load(Ordering::Relaxed),
         safe_mode_entries: SAFE_MODE_ENTRIES.load(Ordering::Relaxed),
         stalls: STALLS.load(Ordering::Relaxed),
+        mouse_installs: MOUSE_INSTALLS.load(Ordering::Relaxed),
+        mouse_removes: MOUSE_REMOVES.load(Ordering::Relaxed),
     }
 }
 
@@ -330,6 +343,7 @@ const KIND_REINSTALLED: usize = 5;
 const KIND_STALL: usize = 6;
 const KIND_LAYER: usize = 7;
 const KIND_RESET: usize = 8;
+const KIND_POINTER: usize = 9;
 
 /// Por qué el hilo de entrada reinició el teclado sin una tecla de por medio.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -380,6 +394,15 @@ pub enum InputEvent {
     /// El teclado se reinició sin pasar por `Layer::Off` (Hyper ya no está
     /// abajo): el mapa se oculta (plan-core.md §5.2).
     KeyboardReset(ResetReason),
+    /// Hito 5: con Caps se apretó (`down`) o se soltó un botón del mouse, en
+    /// `(x, y)` (píxeles físicos de la pantalla virtual).
+    Pointer {
+        button: Button,
+        down: bool,
+        x: i32,
+        y: i32,
+        time_ms: u32,
+    },
 }
 
 fn post_raw(kind: usize, data: isize) {
@@ -421,6 +444,16 @@ fn post_action(action: HyperAction, held: u8, time_ms: u32, qpc: i64) {
     let _ = PENDING_SINCE.compare_exchange(0, time_ms.max(1), Ordering::AcqRel, Ordering::Relaxed);
     let (kind, data) = encode_action(action, held, time_ms);
     post_raw(kind_with_qpc(kind, qpc), data);
+}
+
+/// Avisa al brain un botón del mouse con Caps. Marca pendiente, como una
+/// acción: el modo seguro cubre también el mouse.
+fn post_pointer(button: Button, down: bool, x: i32, y: i32, time_ms: u32) {
+    let _ = PENDING_SINCE.compare_exchange(0, time_ms.max(1), Ordering::AcqRel, Ordering::Relaxed);
+    let b = usize::from(button == Button::Right);
+    let kind = KIND_POINTER | (b << 8) | (usize::from(down) << 9) | ((time_ms as usize) << 16);
+    let xy = (x as u32 as u64) | ((y as u32 as u64) << 32);
+    post_raw(kind, xy as isize);
 }
 
 /// Avisa al brain que cambió la capa. No marca pendiente: no hace falta que
@@ -549,6 +582,17 @@ fn decode(msg: &MSG) -> Option<InputEvent> {
     let held = ((msg.lParam.0 >> 9) & 0x0F) as u8;
     let time_ms = (msg.lParam.0 >> 16) as u32;
     let qpc = (msg.wParam.0 >> 8) as i64;
+    if msg.wParam.0 & 0xFF == KIND_POINTER {
+        let w = msg.wParam.0;
+        let xy = msg.lParam.0 as u64;
+        return Some(InputEvent::Pointer {
+            button: if w & 0x100 != 0 { Button::Right } else { Button::Left },
+            down: w & 0x200 != 0,
+            x: xy as u32 as i32,
+            y: (xy >> 32) as u32 as i32,
+            time_ms: (w >> 16) as u32,
+        });
+    }
     let action = match msg.wParam.0 & 0xFF {
         KIND_LETTER => HyperAction::Letter { letter: value, thumb },
         KIND_DIGIT => HyperAction::Digit { digit: value, thumb },
@@ -622,6 +666,11 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         }
         if let Some(layer) = decision.layer {
             post_layer(layer);
+            if layer == Layer::Off {
+                request_mouse_sync();
+            } else {
+                arm_mouse_hook();
+            }
         }
         if let Some(action) = decision.action {
             post_action(action, decision.held, info.time, start);
@@ -640,7 +689,7 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         // Windows pudo haber dejado pasar eventos sin consultarnos mientras
         // tanto (por ejemplo, soltar Caps): volver a reposo para no quedar
         // con Hyper "trabado". Ver architecture.md §13.3.
-        MACHINE.with(|m| m.borrow_mut().reset());
+        reset_machines();
         STALLS.fetch_add(1, Ordering::Relaxed);
         post_raw(KIND_STALL, (ns / 1_000_000) as isize);
     }
@@ -666,7 +715,7 @@ fn brain_alive(now_ms: u32) -> bool {
             return false;
         }
         SAFE_MODE.store(false, Ordering::Release);
-        MACHINE.with(|m| m.borrow_mut().reset());
+        reset_machines();
         post_raw(KIND_RESET, 2);
         return true;
     }
@@ -674,11 +723,158 @@ fn brain_alive(now_ms: u32) -> bool {
         SAFE_MODE_SINCE.store(now_ms, Ordering::Relaxed);
         SAFE_MODE.store(true, Ordering::Release);
         SAFE_MODE_ENTRIES.fetch_add(1, Ordering::Relaxed);
-        MACHINE.with(|m| m.borrow_mut().reset());
+        reset_machines();
         post_raw(KIND_RESET, 2);
         return false;
     }
     true
+}
+
+/// Vuelve a reposo teclado y mouse, y quita el hook de mouse si sobra (por
+/// mensaje: nunca dentro de su propio callback).
+fn reset_machines() {
+    MACHINE.with(|m| m.borrow_mut().reset());
+    MOUSE.with(|m| m.set(HyperMouse::new()));
+    request_mouse_sync();
+}
+
+// ---------------------------------------------------------------------------
+// Hook de mouse temporal (hito 5, plan-hito5.md §5a)
+// ---------------------------------------------------------------------------
+
+/// Mensaje a la ventana oculta: poner o quitar el hook de mouse según el
+/// estado (idempotente).
+const WM_SYNC_MOUSE: u32 = WM_APP + 0x32;
+
+fn request_mouse_sync() {
+    use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
+    let sink = SINK.load(Ordering::Acquire);
+    // SAFETY: PostMessageW no bloquea; ventana propia.
+    let posted = sink != 0
+        && unsafe {
+            PostMessageW(
+                Some(HWND(sink as *mut core::ffi::c_void)),
+                WM_SYNC_MOUSE,
+                WPARAM(0),
+                LPARAM(0),
+            )
+        }
+        .is_ok();
+    if !posted {
+        sync_mouse_hook();
+    }
+}
+
+/// ¿Tiene que estar el hook de mouse? Mientras Caps está abajo (y no en
+/// pausa) o mientras un botón tragado sigue abajo (su "arriba" se traga).
+fn want_mouse_hook() -> bool {
+    let hyper = MACHINE.with(|m| m.borrow().is_hyper_down()) && !PAUSED.load(Ordering::Relaxed);
+    hyper || MOUSE.with(|m| m.get().held())
+}
+
+fn sync_mouse_hook() {
+    let installed = MOUSE_HOOK.with(Cell::get) != 0;
+    match (want_mouse_hook(), installed) {
+        (true, false) => install_mouse_hook(),
+        (false, true) => remove_mouse_hook(),
+        _ => {}
+    }
+}
+
+/// Caps bajó: poner el hook. Si ya estaba y no hay botón retenido, se quita y
+/// se pone de nuevo (1,7 µs): uno que Windows haya quitado en silencio dura
+/// una pulsación como mucho.
+fn arm_mouse_hook() {
+    if PAUSED.load(Ordering::Relaxed) {
+        return;
+    }
+    let installed = MOUSE_HOOK.with(Cell::get) != 0;
+    if installed && MOUSE.with(|m| m.get().held()) {
+        return;
+    }
+    if installed {
+        remove_mouse_hook();
+    }
+    install_mouse_hook();
+}
+
+fn install_mouse_hook() {
+    use windows::Win32::UI::WindowsAndMessaging::WH_MOUSE_LL;
+    // SAFETY: `mouse_proc` cumple la firma de HOOKPROC; el módulo es el
+    // ejecutable actual.
+    let hook = unsafe {
+        let module = GetModuleHandleW(None).map(|m| HINSTANCE(m.0)).ok();
+        SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), module, 0)
+    };
+    if let Ok(h) = hook {
+        MOUSE_HOOK.with(|c| c.set(h.0 as isize));
+        MOUSE_INSTALLS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+fn remove_mouse_hook() {
+    let h = MOUSE_HOOK.with(|c| c.replace(0));
+    if h != 0 {
+        // SAFETY: handle propio; si Windows ya lo quitó, falla sin efectos.
+        let _ = unsafe { UnhookWindowsHookEx(HHOOK(h as *mut _)) };
+        MOUSE_REMOVES.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        MSLLHOOKSTRUCT, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONDOWN, WM_RBUTTONUP,
+    };
+    if code < 0 {
+        // SAFETY: reenvío estándar.
+        return unsafe { CallNextHookEx(None, code, wparam, lparam) };
+    }
+    // El movimiento y la rueda pasan sin tocar nada (el arrastre lee el
+    // cursor por cuadro en su propio carril).
+    let event = match wparam.0 as u32 {
+        WM_LBUTTONDOWN => MouseEvent::Down(Button::Left),
+        WM_LBUTTONUP => MouseEvent::Up(Button::Left),
+        WM_RBUTTONDOWN => MouseEvent::Down(Button::Right),
+        WM_RBUTTONUP => MouseEvent::Up(Button::Right),
+        // SAFETY: reenvío estándar.
+        _ => return unsafe { CallNextHookEx(None, code, wparam, lparam) },
+    };
+    // SAFETY: con `code >= 0`, `lparam` apunta a un MSLLHOOKSTRUCT válido
+    // durante el callback (contrato de WH_MOUSE_LL).
+    let info = unsafe { &*(lparam.0 as *const MSLLHOOKSTRUCT) };
+    let pass = if PAUSED.load(Ordering::Relaxed) || !brain_alive(info.time) {
+        true
+    } else {
+        let hyper = MACHINE.with(|m| m.borrow().is_hyper_down());
+        let d = MOUSE.with(|m| {
+            let mut mm = m.get();
+            let d = mm.on_event(event, hyper);
+            m.set(mm);
+            d
+        });
+        if let Some(sig) = d.signal {
+            let (button, down) = match sig {
+                MouseEvent::Down(b) => (b, true),
+                MouseEvent::Up(b) => (b, false),
+            };
+            if down {
+                // Un clic con Caps cuenta como acorde: soltar Caps no cambia
+                // Bloq Mayús.
+                MACHINE.with(|m| m.borrow_mut().mark_used());
+            }
+            post_pointer(button, down, info.pt.x, info.pt.y, info.time);
+        }
+        if !hyper && !MOUSE.with(|m| m.get().held()) {
+            request_mouse_sync();
+        }
+        d.pass
+    };
+    if pass {
+        // SAFETY: reenvío estándar.
+        unsafe { CallNextHookEx(None, code, wparam, lparam) }
+    } else {
+        LRESULT(1)
+    }
 }
 
 fn install_hook() -> windows::core::Result<HHOOK> {
@@ -699,7 +895,7 @@ fn reinstall(reason: ReinstallReason) {
     }
     let Ok(hook) = install_hook() else { return };
     HOOK.with(|h| h.set(hook.0 as isize));
-    MACHINE.with(|m| m.borrow_mut().reset());
+    reset_machines();
     SEEN_BY_HOOK.with(|s| s.set(true));
     MISSES.with(|m| m.set(0));
     let counter = match reason {
@@ -738,18 +934,19 @@ unsafe extern "system" fn sink_proc(
         }
         WM_WTSSESSION_CHANGE if wparam.0 == WTS_SESSION_LOCK => {
             // Las teclas soltadas con la sesión bloqueada no llegan al hook.
-            MACHINE.with(|m| m.borrow_mut().reset());
+            reset_machines();
             post_raw(KIND_RESET, 0);
         }
         WM_RESET_KEYBOARD => {
-            MACHINE.with(|m| m.borrow_mut().reset());
+            reset_machines();
             post_raw(KIND_RESET, 3);
         }
+        WM_SYNC_MOUSE => sync_mouse_hook(),
         WM_SET_PAUSED => {
             // En el hilo del hook: el atómico y el reinicio, sin carrera con
             // un callback a medias.
             PAUSED.store(wparam.0 != 0, Ordering::Relaxed);
-            MACHINE.with(|m| m.borrow_mut().reset());
+            reset_machines();
             post_raw(KIND_RESET, 3);
         }
         _ => {}
@@ -823,7 +1020,7 @@ unsafe extern "system" fn desktop_switched(
     _thread: u32,
     _time: u32,
 ) {
-    MACHINE.with(|m| m.borrow_mut().reset());
+    reset_machines();
     post_raw(KIND_RESET, 1);
 }
 
@@ -972,6 +1169,7 @@ pub fn start_keyboard_hook(brain_thread_id: u32, test_mode: bool) -> std::io::Re
             }
             let _ = UnhookWindowsHookEx(HHOOK(HOOK.with(Cell::get) as *mut _));
         }
+        remove_mouse_hook();
     })?;
     rx.recv().map_err(|e| std::io::Error::other(e.to_string()))?
 }

@@ -183,6 +183,10 @@ fn print_summary(brain: &Brain) {
         stats.reinstalls_watchdog, stats.reinstalls_resume, stats.reinstalls_unlock
     ));
     log.line(format!("Veces en modo seguro: {}", stats.safe_mode_entries));
+    log.line(format!(
+        "Hook de mouse: puesto {} veces, quitado {}",
+        stats.mouse_installs, stats.mouse_removes
+    ));
     log.line(format!("Callbacks lentos (> 100 ms) con estado reiniciado: {}", stats.stalls));
     log.line(format!(
         "Hilos de trabajo abandonados: {} (volvieron tarde: {})",

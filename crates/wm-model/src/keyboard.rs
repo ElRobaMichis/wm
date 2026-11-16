@@ -275,6 +275,21 @@ impl HyperKeyboard {
         Decision::PASS
     }
 
+    /// Con Hyper abajo se usó el mouse (hito 5): cuenta como una tecla del
+    /// acorde. Soltar Caps ya no cambia Bloq Mayús, y Alt/Win que habían
+    /// pasado se enmascaran al soltarse (no abren menús).
+    pub fn mark_used(&mut self) {
+        if !self.caps_down {
+            return;
+        }
+        self.chord = true;
+        for m in MASKED_MODIFIERS {
+            if self.passed.get(m) {
+                self.need_mask.set(m);
+            }
+        }
+    }
+
     /// Vuelve al estado de reposo sin dejar teclas trabadas del lado nuestro
     /// (al reinstalar el hook, al bloquear la sesión, etc.).
     pub fn reset(&mut self) {
