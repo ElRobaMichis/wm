@@ -17,7 +17,12 @@
 //!    izquierda, W = mitad de arriba, D + S juntas = esquina, con
 //!    el marco visible a ≤ 1 px;
 //! 8. **empujar** (solo con dos monitores o más): repetir la dirección lleva
-//!    la ventana al monitor vecino, entrando por la mitad opuesta, y vuelve.
+//!    la ventana al monitor vecino, entrando por la mitad opuesta, y vuelve;
+//! 9. **ventanas difíciles** (`wm puppet-hard`): tamaño mínimo y fijo (quedan
+//!    pegadas al borde), lenta, que se reacomoda sola (no se pelea), sin borde
+//!    y sin DPI awareness;
+//! 10. **colgada**: con una app congelada, `wm` sigue respondiendo y la ventana
+//!     llega a su lugar cuando la app despierta.
 //!
 //! Imprime una línea por chequeo y, con `--summary`, agrega una tabla en
 //! Markdown a ese archivo (en la CI, `$GITHUB_STEP_SUMMARY`). Sale con 0 si
@@ -169,6 +174,8 @@ pub fn run(args: &[String]) -> ExitCode {
             "capa de ventana",
             "F, C y Z",
             "empujar",
+            "ventanas difíciles",
+            "colgada",
             "hook + SendInput",
             "esconder",
             "marco DWM",
@@ -376,6 +383,9 @@ fn core(r: &mut Report, puppets: &[WindowId]) {
         r.check("capa de ventana", Status::Skip, "no quedó un títere al frente".into());
     }
 
+    hard_checks(r);
+    hung_check(r);
+
     session::send_hyper_chord(0x1B); // Caps + Esc: salir
     let exit = Instant::now();
     let code = loop {
@@ -513,6 +523,171 @@ fn fcz_checks(r: &mut Report, id: WindowId, work: wm_model::Rect) {
         std::thread::sleep(Duration::from_millis(250));
     }
     r.check("F, C y Z", if all_ok { Status::Ok } else { Status::Fail }, parts.join("; "));
+}
+
+const CAPS: u8 = 0x14;
+const ALT: u8 = 0xA4;
+
+fn window_chord(k: u8) {
+    session::send_keys(&[
+        (CAPS, true),
+        (ALT, true),
+        (k, true),
+        (k, false),
+        (ALT, false),
+        (CAPS, false),
+    ]);
+}
+
+/// Espera hasta `limit` a que `done` dé verdadero; devuelve cuánto tardó.
+fn wait_for(limit: Duration, mut done: impl FnMut() -> bool) -> Option<Duration> {
+    let start = Instant::now();
+    loop {
+        if done() {
+            return Some(start.elapsed());
+        }
+        if start.elapsed() > limit {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// Cada títere difícil, con el core real: `Caps` + Alt + D (mitad derecha).
+fn hard_checks(r: &mut Report) {
+    use wm_model::place::{MonitorObs, anchor, edge_error, monitor_of};
+    use wm_model::{Placement, place};
+    use wm_platform::puppet::{HardKind, RELOCATE_BY, find_hard_puppet};
+    let name = "ventanas difíciles";
+    let Ok(exe) = std::env::current_exe() else {
+        r.check(name, Status::Fail, "no se encontró el ejecutable".into());
+        return;
+    };
+    let frame = |id| wm_platform::ghost::frame_bounds(id);
+    let mut parts = Vec::new();
+    let mut all_ok = true;
+    for kind in HardKind::ALL {
+        let Ok(mut child) = Command::new(&exe)
+            .args(["puppet-hard", kind.name()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            all_ok = false;
+            parts.push(format!("{}: no se pudo abrir", kind.name()));
+            continue;
+        };
+        let pid = child.id();
+        let mut id = None;
+        let _ = wait_for(Duration::from_secs(3), || {
+            id = find_hard_puppet(pid);
+            id.is_some()
+        });
+        let Some(id) = id else {
+            let _ = child.kill();
+            all_ok = false;
+            parts.push(format!("{}: no apareció", kind.name()));
+            continue;
+        };
+        let _ = windows_list::activate(id);
+        std::thread::sleep(Duration::from_millis(250));
+        let monitors: Vec<MonitorObs> = wm_platform::monitors()
+            .iter()
+            .map(|m| MonitorObs { bounds: m.bounds, work: m.work_area, dpi: m.dpi })
+            .collect();
+        let Some(start_frame) = frame(id) else { continue };
+        let Some(m) = monitor_of(&monitors, start_frame) else { continue };
+        let work = monitors[m].work;
+        let target = place(work, Placement::RightHalf);
+        window_chord(b'D');
+        let limit = Duration::from_millis(1500);
+        let reached = match kind {
+            HardKind::MinSize | HardKind::Fixed => wait_for(limit, || {
+                frame(id).is_some_and(|f| {
+                    f != start_frame
+                        && edge_error(f, anchor(target, work, f.width(), f.height())) <= 1
+                })
+            }),
+            HardKind::Relocate => {
+                let moved = wm_model::Rect::new(
+                    target.left + RELOCATE_BY.0,
+                    target.top + RELOCATE_BY.1,
+                    target.right + RELOCATE_BY.0,
+                    target.bottom + RELOCATE_BY.1,
+                );
+                // Que llegue a donde la movió la app y se quede (wm no se pelea).
+                let got = wait_for(limit, || frame(id).is_some_and(|f| edge_error(f, moved) <= 1));
+                std::thread::sleep(Duration::from_millis(400));
+                got.filter(|_| frame(id).is_some_and(|f| edge_error(f, moved) <= 1))
+            }
+            _ => wait_for(limit, || frame(id).is_some_and(|f| edge_error(f, target) <= 1)),
+        };
+        all_ok &= reached.is_some();
+        parts.push(match reached {
+            Some(d) => format!("{} en {}", kind.name(), ms(d)),
+            None => format!(
+                "{}: NO ({:?} → {:?})",
+                kind.name(),
+                frame(id).map(|f| (f.left, f.top, f.width(), f.height())),
+                (target.left, target.top, target.width(), target.height())
+            ),
+        });
+        let _ = child.kill();
+        let _ = child.wait();
+        std::thread::sleep(Duration::from_millis(150));
+    }
+    r.check(name, if all_ok { Status::Ok } else { Status::Fail }, parts.join("; "));
+}
+
+/// Con el títere colgable congelado: `Caps` + Alt + D no traba a wm (un
+/// `Caps` + W inmediato cambia de ventana) y la ventana llega a la mitad
+/// derecha cuando la app despierta.
+fn hung_check(r: &mut Report) {
+    use wm_model::place::edge_error;
+    use wm_model::{Placement, place};
+    let name = "colgada";
+    let Ok(exe) = std::env::current_exe() else { return };
+    let Ok(mut child) =
+        Command::new(&exe).arg("hang-puppet").stdout(Stdio::null()).stderr(Stdio::null()).spawn()
+    else {
+        r.check(name, Status::Fail, "no se pudo abrir el títere colgable".into());
+        return;
+    };
+    let mut id = None;
+    let _ = wait_for(Duration::from_secs(3), || {
+        id = puppet::find_hang_puppet();
+        id.is_some()
+    });
+    let Some(id) = id else {
+        let _ = child.kill();
+        r.check(name, Status::Fail, "el títere colgable no apareció".into());
+        return;
+    };
+    let _ = windows_list::activate(id);
+    std::thread::sleep(Duration::from_millis(250));
+    let monitors = wm_platform::monitors();
+    let Some(primary) = monitors.iter().find(|m| m.primary).or(monitors.first()) else { return };
+    let target = place(primary.work_area, Placement::RightHalf);
+    let _ = puppet::hang(id, 2500, false);
+    std::thread::sleep(Duration::from_millis(100));
+    window_chord(b'D');
+    std::thread::sleep(Duration::from_millis(30));
+    session::send_hyper_chord(b'W'); // otra ventana de wm.exe: el core sigue vivo
+    let responsive = wait_for(Duration::from_millis(500), || {
+        windows_list::foreground().is_some_and(|fg| fg != id)
+    });
+    let arrived = wait_for(Duration::from_secs(5), || {
+        wm_platform::ghost::frame_bounds(id).is_some_and(|f| edge_error(f, target) <= 1)
+    });
+    let _ = child.kill();
+    let _ = child.wait();
+    let ok = responsive.is_some() && arrived.is_some();
+    let detail = format!(
+        "con la app congelada 2,5 s, Caps + W cambió de ventana {}; la colgada llegó a la mitad derecha {}",
+        responsive.map_or_else(|| "NO".into(), |d| format!("en {}", ms(d))),
+        arrived.map_or_else(|| "NUNCA".into(), |d| format!("a los {}", ms(d))),
+    );
+    r.check(name, if ok { Status::Ok } else { Status::Fail }, detail);
 }
 
 /// Con dos monitores o más: llevar la ventana a la mitad del lado que tiene

@@ -30,8 +30,8 @@ use std::collections::{HashMap, VecDeque};
 use crate::apps::{AppBinding, Target, resolve};
 use crate::keyboard::{HyperAction, Layer};
 use crate::place::{
-    Dir, MonitorObs, Move, centered, centered_percent, chord, chord_name, chord_pushes, edge_error,
-    mirror, monitor_of, neighbor, outer_for, placement_name, slot_of, step,
+    Dir, MonitorObs, Move, anchor, centered, centered_percent, chord, chord_name, chord_pushes,
+    edge_error, mirror, monitor_of, neighbor, outer_for, placement_name, slot_of, step,
 };
 use crate::{Placement, Rect, place};
 
@@ -117,6 +117,8 @@ struct Job {
     want_dpi: u32,
     /// Adónde va (para que la tecla siguiente cuente desde ahí).
     spot: Spot,
+    /// Ya se hizo la pasada de anclaje (tamaño mínimo o fijo).
+    anchored: bool,
 }
 
 /// Dónde está (o va) una ventana: un monitor y una ubicación en él (`Full`
@@ -813,6 +815,7 @@ impl World {
             from_frame: obs.frame,
             want_dpi: spot.monitor.dpi,
             spot,
+            anchored: false,
         };
         // La última tecla gana: la colocación anterior de esta ventana se olvida.
         self.jobs.insert(obs.key, job);
@@ -1006,9 +1009,18 @@ impl World {
         let exhausted = j.check >= CHECKS_MS.len();
         let since = |j: &Job| now_us.saturating_sub(j.key_us) as f64 / 1000.0;
         if error <= TOLERANCE_PX {
-            let passes = if j.pass == 1 { "1 pasada" } else { "2 pasadas" };
-            let line =
-                format!("{}: {error} px en {passes}, {:.1} ms desde la tecla", j.what, since(j));
+            let passes =
+                if j.pass == 1 { "1 pasada".to_owned() } else { format!("{} pasadas", j.pass) };
+            let line = if j.anchored {
+                let (w, h) = (obs.frame.width(), obs.frame.height());
+                format!(
+                    "{}: la app no se achica ({w}×{h}); quedó pegada al borde en {passes}, {:.1} ms",
+                    j.what,
+                    since(j)
+                )
+            } else {
+                format!("{}: {error} px en {passes}, {:.1} ms desde la tecla", j.what, since(j))
+            };
             let spot = j.spot;
             self.jobs.remove(&win);
             self.placed.insert(win, (spot, obs.frame));
@@ -1019,8 +1031,28 @@ impl World {
         // Al cruzar de escala, la app se reescala sola al recibir el DPI nuevo:
         // hasta que lo informe, el marco todavía no es el final.
         let dpi_pending = obs.dpi != j.want_dpi;
-        if !(stable && moved && !dpi_pending || exhausted) {
+        // En la primera pasada, "quieta en otro lugar" exige que se haya movido
+        // (si no, la app todavía no aplicó el pedido). Desde la segunda, quieta
+        // alcanza: una app con tamaño mínimo o fijo no cambia al repetirle el
+        // pedido, y esperar a que "se mueva" costaba hasta el último chequeo.
+        let settled = stable && (moved || j.pass >= 2) && !dpi_pending;
+        if !(settled || exhausted) {
             return; // la app todavía no aplicó el pedido o se está acomodando
+        }
+        if j.pass == 1 && !moved {
+            // A los 600 ms ni se movió: la app no responde (colgada). El
+            // pedido ya está en su cola y se aplica solo cuando despierte; no
+            // se reintenta ni se ancla (plan-core.md §3.3).
+            let line = format!(
+                "{}: la app no responde; va a llegar sola cuando despierte ({:.1} ms)",
+                j.what,
+                since(j)
+            );
+            let (spot, target) = (j.spot, j.target);
+            self.jobs.remove(&win);
+            self.placed.insert(win, (spot, target));
+            out.push(Effect::Log(line));
+            return;
         }
         if j.pass == 1 {
             // Segunda pasada con los márgenes que tiene ahora (cambian al
@@ -1036,11 +1068,40 @@ impl World {
             return;
         }
         let (w, h) = (obs.frame.width(), obs.frame.height());
-        let line = format!(
-            "{}: quedó a {error} px ({w}×{h}; tamaño mínimo o app que no responde), {:.1} ms",
-            j.what,
-            since(j)
-        );
+        // La app no tomó el tamaño (mínimo o fijo): una pasada más, con el
+        // tamaño que logró, pegada al borde exterior del lugar pedido.
+        let resized = (w - j.target.width()).abs() > TOLERANCE_PX
+            || (h - j.target.height()).abs() > TOLERANCE_PX;
+        if resized && !j.anchored && stable {
+            let anchored = anchor(j.target, j.spot.monitor.work, w, h);
+            j.anchored = true;
+            if edge_error(obs.frame, anchored) > TOLERANCE_PX {
+                j.target = anchored;
+                j.pass += 1;
+                j.placed_us = now_us;
+                j.check = 0;
+                j.last_frame = None;
+                j.from_frame = obs.frame;
+                let rect = outer_for(obs.frame, obs.outer, anchored, obs.dpi, obs.dpi);
+                self.send_place(win, rect, out);
+                return;
+            }
+            j.target = anchored;
+        }
+        let error = edge_error(obs.frame, j.target);
+        let line = if j.anchored && error <= TOLERANCE_PX {
+            format!(
+                "{}: la app no se achica ({w}×{h}); quedó pegada al borde, {:.1} ms",
+                j.what,
+                since(j)
+            )
+        } else {
+            format!(
+                "{}: quedó a {error} px ({w}×{h}; tamaño mínimo o app que no responde), {:.1} ms",
+                j.what,
+                since(j)
+            )
+        };
         let spot = j.spot;
         self.jobs.remove(&win);
         self.placed.insert(win, (spot, obs.frame));

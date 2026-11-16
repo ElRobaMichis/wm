@@ -51,6 +51,24 @@ fn main() -> ExitCode {
         #[cfg(windows)]
         Some("max-test") => hide_test::max_test(),
         #[cfg(windows)]
+        Some("puppet-hard") => {
+            use wm_platform::puppet::{HardKind, run_hard_puppet};
+            match args.first().and_then(|k| HardKind::from_name(k)) {
+                Some(kind) => match run_hard_puppet(kind) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(e) => {
+                        eprintln!("No se pudo abrir el títere: {e}");
+                        ExitCode::FAILURE
+                    }
+                },
+                None => {
+                    let names: Vec<&str> = HardKind::ALL.iter().map(|k| k.name()).collect();
+                    eprintln!("Uso: wm puppet-hard <{}>", names.join("|"));
+                    ExitCode::from(2)
+                }
+            }
+        }
+        #[cfg(windows)]
         Some("hang-puppet") => hang_test::run_hang_puppet(),
         #[cfg(windows)]
         Some("hang-probe") => hang_test::probe(&args),

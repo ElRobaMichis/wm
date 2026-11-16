@@ -24,6 +24,8 @@ struct FakeWin {
     /// DPI con el que se dibuja ahora (los bordes crecen con la escala).
     dpi: u32,
     maximized: bool,
+    /// Tamaño fijo (la app no se deja redimensionar).
+    fixed: Option<(i32, i32)>,
     /// Marco al que vuelve al restaurarla (Windows lo recuerda).
     restore: Rect,
     min_width: i32,
@@ -79,6 +81,7 @@ impl Sim {
             margins: (7, 0, 7, 7),
             dpi: 96,
             maximized: false,
+            fixed: None,
             restore: Rect::new(300, 200, 1100, 800),
             min_width: 0,
             lag_ms: 0,
@@ -120,6 +123,10 @@ impl Sim {
                 Rect::new(outer.left + l, outer.top + t, outer.right - r, outer.bottom - b);
             if frame.width() < self.win.min_width {
                 frame.right = frame.left + self.win.min_width;
+            }
+            if let Some((fw, fh)) = self.win.fixed {
+                frame.right = frame.left + fw;
+                frame.bottom = frame.top + fh;
             }
             self.win.frame = frame;
             self.win.maximized = false;
@@ -335,6 +342,23 @@ fn slow_apps_are_checked_until_they_arrive() {
 }
 
 #[test]
+fn a_hung_app_gets_one_request_and_no_retries() {
+    // La app no atiende mensajes por 2,5 s: el pedido queda en su cola. No se
+    // reintenta ni se ancla con el tamaño viejo (eso pisaría el pedido bueno
+    // cuando la app despierte).
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.win.lag_ms = 2_500;
+    sim.key(&mut w, b'D');
+    assert_eq!(sim.places, 1, "un solo pedido: {:?}", sim.logs);
+    assert!(sim.logs.last().unwrap().contains("no responde"), "{:?}", sim.logs);
+    assert_eq!(w.deadline(), None);
+    sim.now += 3_000 * MS;
+    sim.settle(); // la app despierta y aplica lo que tenía en cola
+    assert!(sim.is_at(0, P::RightHalf));
+}
+
+#[test]
 fn minimum_size_is_accepted_after_a_second_pass() {
     let mut w = World::new(Vec::new());
     let mut sim = Sim::new();
@@ -342,8 +366,38 @@ fn minimum_size_is_accepted_after_a_second_pass() {
     sim.run(&mut w, arrange(b'A', HELD_A));
     assert_eq!(sim.places, 2);
     assert_eq!(sim.win.frame.width(), 1200);
-    assert!(sim.logs[0].contains("tamaño mínimo"), "{:?}", sim.logs);
+    assert!(sim.logs[0].contains("no se achica"), "{:?}", sim.logs);
     assert_eq!(w.deadline(), None);
+}
+
+#[test]
+fn a_minimum_size_on_the_right_half_sticks_to_the_right_edge() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.win.min_width = 1200;
+    let start = sim.now;
+    sim.key(&mut w, b'D');
+    assert!(sim.now - start < 300 * MS, "tardó {} ms", (sim.now - start) / MS);
+    let work = work();
+    assert_eq!(sim.win.frame.right, work.right, "no se sale por la derecha: {:?}", sim.logs);
+    assert_eq!(sim.win.frame.width(), 1200);
+    assert!(sim.logs.last().unwrap().contains("quedó pegada al borde"), "{:?}", sim.logs);
+    assert_eq!(w.deadline(), None);
+}
+
+#[test]
+fn a_fixed_size_window_goes_into_the_corner_it_was_sent_to() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.win.fixed = Some((800, 400));
+    sim.chord(&mut w, b"SD", true);
+    let work = work();
+    assert_eq!(
+        sim.win.frame,
+        Rect::new(work.right - 800, work.bottom - 400, work.right, work.bottom)
+    );
+    sim.key(&mut w, b'D'); // cuenta como la esquina: D da la mitad derecha (fija igual)
+    assert_eq!(sim.win.frame.right, work.right, "{:?}", sim.logs);
 }
 
 #[test]

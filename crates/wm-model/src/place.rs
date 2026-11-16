@@ -274,6 +274,25 @@ pub fn chord_name(dirs: u8) -> String {
         .join(" + ")
 }
 
+/// Para una ventana que no tomó el tamaño pedido (tamaño mínimo o fijo): el
+/// tamaño que logró (`w` × `h`), **pegado al borde exterior** del lugar
+/// pedido. Por eje: si el lugar toca solo el borde derecho (o de abajo) del
+/// área, se alinea a ese borde; si toca los dos, o ninguno, se centra; si
+/// toca solo el izquierdo (o de arriba), se alinea a ese. Así una mitad
+/// derecha que no puede achicarse no se sale de la pantalla por la derecha.
+pub fn anchor(target: Rect, work: Rect, w: i32, h: i32) -> Rect {
+    let axis = |lo: i32, hi: i32, wlo: i32, whi: i32, size: i32| -> i32 {
+        match (lo == wlo, hi == whi) {
+            (false, true) => hi - size,
+            (true, false) => lo,
+            _ => lo + (hi - lo - size) / 2,
+        }
+    };
+    let left = axis(target.left, target.right, work.left, work.right, w);
+    let top = axis(target.top, target.bottom, work.top, work.bottom, h);
+    Rect::new(left, top, left + w, top + h)
+}
+
 /// Un rectángulo de `w` × `h` centrado en `work` (achicado si no entra).
 pub fn centered(work: Rect, w: i32, h: i32) -> Rect {
     let (w, h) = (w.min(work.width()), h.min(work.height()));
@@ -673,6 +692,22 @@ mod tests {
         assert_eq!(chord(HELD_W | HELD_A | HELD_S | HELD_D), None);
         assert_eq!(chord_pushes(P::TopLeft), vec![Dir::Left, Dir::Up]);
         assert_eq!(chord_name(HELD_A | HELD_W), "W + A");
+    }
+
+    #[test]
+    fn anchoring_sticks_to_the_outer_edge_of_the_slot() {
+        let work = Rect::new(0, 0, 1920, 1040);
+        let right = place_in(work, P::RightHalf);
+        // Más ancha que media pantalla: pegada a la derecha, no afuera.
+        assert_eq!(anchor(right, work, 1200, 1040), Rect::new(720, 0, 1920, 1040));
+        let left = place_in(work, P::LeftHalf);
+        assert_eq!(anchor(left, work, 1200, 1040), Rect::new(0, 0, 1200, 1040));
+        // Fija y más chica, en la esquina de abajo a la derecha: en la esquina.
+        let br = place_in(work, P::BottomRight);
+        assert_eq!(anchor(br, work, 800, 400), Rect::new(1120, 640, 1920, 1040));
+        // Centrada (no toca bordes): sigue centrada.
+        let c = centered(work, 800, 600);
+        assert_eq!(anchor(c, work, 900, 700), centered(work, 900, 700));
     }
 
     #[test]

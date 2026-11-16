@@ -4,6 +4,10 @@
 //!
 //! El títere "colgable" (spike 4) vive solo en su propio proceso y deja de
 //! atender mensajes cuando se le pide, como una app colgada de verdad.
+//!
+//! Los títeres **difíciles** ([`HardKind`], hito 1d de plan-core.md) imitan
+//! apps que no se dejan acomodar fácil: tamaño mínimo, tamaño fijo, lentas,
+//! que se reacomodan solas, sin borde y sin DPI awareness.
 
 use std::mem::size_of;
 
@@ -214,6 +218,260 @@ pub fn run_hang_puppet() -> windows::core::Result<()> {
         }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Títeres difíciles
+// ---------------------------------------------------------------------------
+
+const HARD_CLASS: PCWSTR = w!("wm-puppet-hard");
+
+/// Un títere difícil (plan-core.md §3.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HardKind {
+    /// Tamaño mínimo: 60 % del área de trabajo (`WM_GETMINMAXINFO`).
+    MinSize,
+    /// Tamaño fijo: 40 % del área; ignora los cambios de tamaño.
+    Fixed,
+    /// Tarda 120 ms en atender cada cambio de posición.
+    Slow,
+    /// 200 ms después de que la muevan, se corre 60 × 40 px por su cuenta.
+    Relocate,
+    /// Sin borde (`WS_POPUP`): no tiene bordes invisibles.
+    Borderless,
+    /// Sin DPI awareness: Windows la estira según la escala.
+    Unaware,
+}
+
+impl HardKind {
+    pub const ALL: [HardKind; 6] = [
+        HardKind::MinSize,
+        HardKind::Fixed,
+        HardKind::Slow,
+        HardKind::Relocate,
+        HardKind::Borderless,
+        HardKind::Unaware,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            HardKind::MinSize => "minsize",
+            HardKind::Fixed => "fixed",
+            HardKind::Slow => "slow",
+            HardKind::Relocate => "relocate",
+            HardKind::Borderless => "borderless",
+            HardKind::Unaware => "unaware",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.name() == name)
+    }
+
+    fn index(self) -> isize {
+        Self::ALL.iter().position(|k| *k == self).unwrap_or(0) as isize
+    }
+}
+
+/// Desplazamiento que se aplica sola la ventana `Relocate`.
+pub const RELOCATE_BY: (i32, i32) = (60, 40);
+const RELOCATE_TIMER: usize = 1;
+
+thread_local! {
+    /// Tamaño fijo y mínimo (px físicos), calculados al crear la ventana.
+    static HARD_SIZE: std::cell::Cell<(i32, i32)> = const { std::cell::Cell::new((0, 0)) };
+    /// La ventana `Relocate` se está moviendo sola (no reprogramar el timer).
+    static SELF_MOVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+unsafe extern "system" fn hard_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowRect, KillTimer, MINMAXINFO, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SetTimer,
+        SetWindowPos, WINDOWPOS, WM_GETMINMAXINFO, WM_TIMER, WM_WINDOWPOSCHANGED,
+        WM_WINDOWPOSCHANGING,
+    };
+    // SAFETY: lectura del tipo que guardamos al crear la ventana.
+    let kind = HardKind::ALL[unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as usize % 6];
+    match (kind, msg) {
+        (HardKind::MinSize, WM_GETMINMAXINFO) => {
+            let (w, h) = HARD_SIZE.with(std::cell::Cell::get);
+            // SAFETY: con WM_GETMINMAXINFO, `lparam` apunta a un MINMAXINFO.
+            let info = unsafe { &mut *(lparam.0 as *mut MINMAXINFO) };
+            info.ptMinTrackSize.x = w;
+            info.ptMinTrackSize.y = h;
+            LRESULT(0)
+        }
+        (HardKind::Fixed, WM_WINDOWPOSCHANGING) => {
+            let (w, h) = HARD_SIZE.with(std::cell::Cell::get);
+            // SAFETY: con WM_WINDOWPOSCHANGING, `lparam` apunta a un WINDOWPOS.
+            let pos = unsafe { &mut *(lparam.0 as *mut WINDOWPOS) };
+            if pos.flags.0 & SWP_NOSIZE.0 == 0 && w > 0 {
+                pos.cx = w;
+                pos.cy = h;
+            }
+            LRESULT(0)
+        }
+        (HardKind::Slow, WM_WINDOWPOSCHANGING) => {
+            std::thread::sleep(std::time::Duration::from_millis(120));
+            // SAFETY: procesamiento por defecto.
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
+        (HardKind::Relocate, WM_WINDOWPOSCHANGED) => {
+            if !SELF_MOVE.with(std::cell::Cell::get) {
+                // SAFETY: timer de esta ventana.
+                unsafe { SetTimer(Some(hwnd), RELOCATE_TIMER, 200, None) };
+            }
+            // SAFETY: procesamiento por defecto.
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
+        (HardKind::Relocate, WM_TIMER) if wparam.0 == RELOCATE_TIMER => {
+            // SAFETY: timer y ventana propios; mover la ventana propia.
+            unsafe {
+                let _ = KillTimer(Some(hwnd), RELOCATE_TIMER);
+                let mut r = RECT::default();
+                let _ = GetWindowRect(hwnd, &mut r);
+                SELF_MOVE.with(|m| m.set(true));
+                let _ = SetWindowPos(
+                    hwnd,
+                    None,
+                    r.left + RELOCATE_BY.0,
+                    r.top + RELOCATE_BY.1,
+                    0,
+                    0,
+                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+                SELF_MOVE.with(|m| m.set(false));
+            }
+            LRESULT(0)
+        }
+        (_, WM_PAINT) => {
+            // SAFETY: pintado estándar con objetos propios liberados al salir.
+            unsafe {
+                let mut ps = PAINTSTRUCT::default();
+                let hdc = BeginPaint(hwnd, &mut ps);
+                let mut rect = RECT::default();
+                let _ = GetClientRect(hwnd, &mut rect);
+                let brush = CreateSolidBrush(COLORREF(COLORS[kind.index() as usize]));
+                FillRect(hdc, &rect, brush);
+                SetBkMode(hdc, TRANSPARENT);
+                SetTextColor(hdc, COLORREF(0x00FF_FFFF));
+                let mut text: Vec<u16> = kind.name().encode_utf16().collect();
+                DrawTextW(hdc, &mut text, &mut rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                let _ = DeleteObject(HGDIOBJ(brush.0));
+                let _ = EndPaint(hwnd, &ps);
+            }
+            LRESULT(0)
+        }
+        (_, WM_DESTROY) => {
+            // SAFETY: sin precondiciones.
+            unsafe { PostQuitMessage(0) };
+            LRESULT(0)
+        }
+        // SAFETY: procesamiento por defecto.
+        _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+    }
+}
+
+/// Abre un títere difícil del tipo `kind` en el monitor principal y atiende
+/// sus mensajes hasta que se cierre. Bloquea.
+pub fn run_hard_puppet(kind: HardKind) -> windows::core::Result<()> {
+    use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_UNAWARE, SetThreadDpiAwarenessContext};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        WS_CAPTION, WS_EX_APPWINDOW, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU,
+    };
+    // SAFETY: registro de clase y creación de una ventana propia; la clase y
+    // el procedimiento viven mientras dura el proceso.
+    unsafe {
+        if kind == HardKind::Unaware {
+            // Solo para este hilo: la ventana se crea sin DPI awareness.
+            let _ = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_UNAWARE);
+        }
+        let instance = HINSTANCE(GetModuleHandleW(None)?.0);
+        let class = WNDCLASSW {
+            style: CS_HREDRAW | CS_VREDRAW,
+            lpfnWndProc: Some(hard_proc),
+            hInstance: instance,
+            lpszClassName: HARD_CLASS,
+            ..Default::default()
+        };
+        RegisterClassW(&class);
+        let monitor = MonitorFromWindow(HWND::default(), MONITOR_DEFAULTTOPRIMARY);
+        let mut info =
+            MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+        let _ = GetMonitorInfoW(monitor, &mut info);
+        let work = info.rcWork;
+        let (ww, wh) = (work.right - work.left, work.bottom - work.top);
+        HARD_SIZE.with(|c| {
+            c.set(match kind {
+                HardKind::MinSize => (ww * 60 / 100, wh * 60 / 100),
+                HardKind::Fixed => (ww * 40 / 100, wh * 40 / 100),
+                _ => (0, 0),
+            })
+        });
+        let (style, ex) = match kind {
+            HardKind::Borderless => (WS_POPUP | WS_VISIBLE, WS_EX_APPWINDOW),
+            HardKind::Fixed => {
+                (WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_VISIBLE, WINDOW_EX_STYLE(0))
+            }
+            _ => (WS_OVERLAPPEDWINDOW | WS_VISIBLE, WINDOW_EX_STYLE(0)),
+        };
+        let (w, h) = match kind {
+            HardKind::MinSize => (ww * 70 / 100, wh * 70 / 100),
+            HardKind::Fixed => (ww * 40 / 100, wh * 40 / 100),
+            _ => (ww / 3, wh / 3),
+        };
+        let title: Vec<u16> = format!("Títere difícil: {}\0", kind.name()).encode_utf16().collect();
+        let hwnd = CreateWindowExW(
+            ex,
+            HARD_CLASS,
+            PCWSTR(title.as_ptr()),
+            style,
+            work.left + (ww - w) / 2,
+            work.top + (wh - h) / 2,
+            w,
+            h,
+            None,
+            None,
+            Some(instance),
+            None,
+        )?;
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, kind.index());
+        let mut msg = MSG::default();
+        while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+    Ok(())
+}
+
+/// La ventana del títere difícil del proceso `pid`, si ya está abierta.
+pub fn find_hard_puppet(pid: u32) -> Option<WindowId> {
+    let mut found: Vec<HWND> = Vec::new();
+
+    unsafe extern "system" fn collect(hwnd: HWND, data: LPARAM) -> BOOL {
+        // SAFETY: `data` es el `&mut Vec` que pasamos abajo.
+        let found = unsafe { &mut *(data.0 as *mut Vec<HWND>) };
+        let mut name = [0u16; 32];
+        // SAFETY: buffer local válido.
+        let len = unsafe { GetClassNameW(hwnd, &mut name) };
+        if String::from_utf16_lossy(&name[..len.max(0) as usize]) == "wm-puppet-hard" {
+            found.push(hwnd);
+        }
+        true.into()
+    }
+
+    // SAFETY: el callback solo usa `data` como el `&mut Vec` que le pasamos.
+    let _ = unsafe { EnumWindows(Some(collect), LPARAM(&mut found as *mut Vec<HWND> as isize)) };
+    found
+        .into_iter()
+        .map(|h| WindowId(h.0 as isize))
+        .find(|&id| crate::windows_list::window_pid(id) == pid)
 }
 
 /// Le pide al títere colgable que se cuelgue `ms` milisegundos (no bloquea).
