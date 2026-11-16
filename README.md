@@ -2,7 +2,7 @@
 
 Gestor de ventanas para Windows, escrito en Rust. Pensado para que cualquiera lo use sin leer documentación: pocos atajos lógicos, mouse como opción de primera clase, consumo mínimo y animaciones fluidas a la frecuencia real del monitor.
 
-> **Estado:** en desarrollo, hitos 0 a 3 de la primera versión hechos ([plan-core.md](plan-core.md)): `Caps` + letra va a una app; `Caps` + Alt acomoda la ventana al frente (mitades, esquinas, otro monitor, maximizar, centrar, agrandar y achicar, deshacer) con animación; mantener `Caps` muestra el mapa de teclado. Arranca con `wmw` (sin consola, con ícono en la bandeja) y se puede iniciar con Windows. Faltan los escritorios 1–4 (hito 4) y el mouse (hito 5).
+> **Estado:** en desarrollo, hitos 0 a 4 de la primera versión hechos ([plan-core.md](plan-core.md)): `Caps` + letra va a una app; `Caps` + Alt acomoda la ventana al frente (mitades, esquinas, otro monitor, maximizar, centrar, agrandar y achicar, deshacer) con animación; mantener `Caps` muestra el mapa de teclado; `Caps` + 1–4 cambia de escritorio. Arranca con `wmw` (sin consola, con ícono en la bandeja) y se puede iniciar con Windows. Falta el mouse (hito 5).
 
 ## Probar
 
@@ -14,7 +14,7 @@ target/release/wmw
 `wmw.exe` es `wm` sin ventana de consola: arranca el guardián, que lanza el core y lo vuelve a lanzar si se cae (mostrando antes todas las ventanas que haya escondido). Aparece un ícono en la bandeja:
 
 - **clic:** abre los ajustes;
-- **clic derecho:** Ajustes, Pausar atajos, Deshacer el último movimiento, Iniciar con Windows y Salir.
+- **clic derecho:** Ajustes, Pausar atajos, Deshacer el último movimiento, Mostrar todas las ventanas, Iniciar con Windows y Salir.
 
 `wm.exe` es el mismo programa con consola (para ver el log en vivo y para la línea de comandos): `wm` sin argumentos hace lo mismo que `wmw`; `wm core` corre solo el core.
 
@@ -23,10 +23,12 @@ target/release/wmw
 | `Caps` + letra | Va a la app con esa inicial (por ejemplo `Caps` + `B` = Brave). Repetir = siguiente ventana de esa app |
 | `Caps` + Alt + W/A/S/D | Esa mitad; repetir = al otro monitor; dos juntas = esquina |
 | `Caps` + Alt + F / C / Z / G / V | Maximizar / centrar / deshacer / agrandar / achicar |
+| `Caps` + 1 / 2 / 3 / 4 | Ir a ese escritorio (las ventanas de los otros se esconden) |
+| `Caps` + Alt + 1 / 2 / 3 / 4 | Llevar la ventana al frente a ese escritorio (Z lo deshace) |
 | Mantener `Caps` | El mapa de teclado (con Alt, la capa de ventana) |
 | `Caps` (toque corto) | Bloq Mayús normal |
 
-Línea de comandos (con `wm` corriendo): `wm quit`, `wm pause`, `wm resume`, `wm undo`, `wm ajustes`; `wm autostart on|off` (iniciar con Windows); `wm apps` muestra a qué app apunta cada letra; `wm restore` muestra cualquier ventana que haya quedado escondida. El log está en `%LOCALAPPDATA%\wm\wm.log`.
+Línea de comandos (con `wm` corriendo): `wm quit`, `wm pause`, `wm resume`, `wm undo`, `wm ajustes`, `wm mostrar` (todas las ventanas al escritorio activo); `wm autostart on|off` (iniciar con Windows); `wm apps` muestra a qué app apunta cada letra; `wm restore` muestra cualquier ventana que haya quedado escondida. El log está en `%LOCALAPPDATA%\wm\wm.log`.
 
 Sin configuración, cada letra va a la app abierta más reciente cuyo nombre de ejecutable empieza con esa letra. Para fijar letras, usar los ajustes o editar `%APPDATA%\wm\apps.txt` (se recarga solo al guardar):
 
