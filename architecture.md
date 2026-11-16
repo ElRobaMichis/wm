@@ -624,10 +624,10 @@ Lectura de la latencia:
 - **Ventanas elevadas:** comportamiento documentado (el hook no las ve). UIAccess queda postergado (§14).
 - **Asignación automática por nombre visible** de la app, no por el nombre del ejecutable.
 
-**Pendientes originales** (criterios de §13.2, actualizados arriba):
-- **Medir con uso real:** tasa de éxito de `SetForegroundWindow` con más repeticiones (8/8 hasta ahora); latencia del hook con un histograma más fino y con CPU al 100 %; que Alt-antes-de-Caps no abra menús en Explorer, Office, Chrome y VS Code (en el Bloc de notas ya está verificado).
-- **Verificar con uso real** el vigía (`Caps` + F12), el modo seguro (`Caps` + F11) y la reinstalación al desbloquear.
-- **Documentar ventanas elevadas** (Administrador de tareas al frente) y la variante UIAccess.
+**Pendientes originales** (histórico; lo que sigue abierto está en "Queda como deuda", arriba):
+- ~~Medir con uso real la tasa de `SetForegroundWindow` y la latencia con CPU al 100 %~~: 80/80 y p99.9 ≤ 20 µs. Sigue abierta la máscara de Alt fuera del Bloc de notas.
+- ~~Verificar con uso real el vigía, el modo seguro y la reinstalación al desbloquear~~: probados por el usuario el 15/11/2026 (el vigía, sin un hook realmente quitado).
+- ~~Documentar ventanas elevadas~~: el hook no las ve, `Caps` queda como Bloq Mayús (probado con el Administrador de tareas). UIAccess, postergado (§14).
 - **Prueba de 24 h** y 0 cambios de contexto en reposo (WPR).
 
 ### 13.4 Estado del spike 2 (noviembre 2026)
