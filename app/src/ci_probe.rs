@@ -184,6 +184,7 @@ pub fn run(args: &[String]) -> ExitCode {
         focus(&mut r, &puppets);
         core(&mut r, &puppets);
         fly_crash_check(&mut r, puppets[1]);
+        recovery_check(&mut r, &puppets);
         hook(&mut r, puppets[0]);
         hiding(&mut r, puppets[1]);
         batch_check(&mut r, &puppets[..3]);
@@ -203,6 +204,7 @@ pub fn run(args: &[String]) -> ExitCode {
             "recarga",
             "vuelo",
             "vuelo + caída",
+            "recuperación",
             "hook + SendInput",
             "esconder",
             "lotes",
@@ -524,9 +526,21 @@ fn fullscreen_map_check(core_pid: u32) -> Option<bool> {
 /// Lanza `wm core` y espera su banner (plazo 5 s). Las líneas del core
 /// siguen llegando por el canal.
 fn spawn_core() -> Result<(std::process::Child, std::sync::mpsc::Receiver<String>), String> {
+    spawn_core_relaunched(false)
+}
+
+/// Como [`spawn_core`]; `relaunched`: como lo relanza el guardián tras una
+/// caída (`WM_RELAUNCH=1`, D4).
+fn spawn_core_relaunched(
+    relaunched: bool,
+) -> Result<(std::process::Child, std::sync::mpsc::Receiver<String>), String> {
     use std::io::BufRead;
     let exe = std::env::current_exe().map_err(|_| "no se encontró el ejecutable".to_owned())?;
-    let mut child = Command::new(exe)
+    let mut cmd = Command::new(exe);
+    if relaunched {
+        cmd.env("WM_RELAUNCH", "1");
+    }
+    let mut child = cmd
         .arg("core")
         // Su propia instancia: el usuario puede tener un core abierto.
         .env("WM_INSTANCE", "ci-probe")
@@ -535,7 +549,6 @@ fn spawn_core() -> Result<(std::process::Child, std::sync::mpsc::Receiver<String
         // Escritorios: solo esconde sus títeres (app "wm"), nunca las
         // ventanas del usuario.
         .env("WM_SCOPE", "wm")
-        .env_remove("WM_RELAUNCH")
         .env_remove("WM_TEST")
         .env_remove("WM_ANIM")
         .stdin(Stdio::null())
@@ -686,7 +699,9 @@ fn core(r: &mut Report, puppets: &[WindowId]) {
     // Salida limpia con una ventana en otro escritorio: todo visible y sin
     // `wm.desk` (hito 4c).
     let clean = wait_for(Duration::from_millis(500), || {
-        puppets.iter().all(|&p| hide::fully_visible(hide::visibility(p)) && hide::desk_of(p).is_none())
+        puppets
+            .iter()
+            .all(|&p| hide::fully_visible(hide::visibility(p)) && hide::desk_of(p).is_none())
     })
     .is_some();
     let ok = moved.is_some() && code == Some(0) && clean;
@@ -782,8 +797,17 @@ fn desks_check(r: &mut Report, puppets: &[WindowId]) {
     let t = wait_for(limit, || shown(a) && hide::desk_of(a) == Some(1));
     step("Caps + Alt + Z la trae", t, &mut parts, &mut ok);
 
+    // "Mostrar todas las ventanas" (menú de la bandeja o `wm mostrar`).
+    carry(b'3');
+    let _ = wait_for(limit, || hidden(a));
+    wm_platform::tray::send_order_in("ci-probe", wm_platform::tray::Order::ShowAll);
+    let t = wait_for(limit, || shown(a) && hide::desk_of(a) == Some(1));
+    step("Mostrar todas", t, &mut parts, &mut ok);
+
     // Como el clic en la barra de tareas: activar una escondida salta a su
     // escritorio (Windows la destapa y avisa FOREGROUND).
+    let _ = windows_list::activate(a);
+    std::thread::sleep(Duration::from_millis(100));
     carry(b'2');
     let _ = wait_for(limit, || hidden(a));
     let _ = windows_list::activate(a);
@@ -1030,6 +1054,66 @@ fn fly_crash_check(r: &mut Report, id: WindowId) {
         back.map_or_else(|| "SIGUE ESCONDIDA".into(), |d| format!("se ve a los {}", ms(d))),
     );
     r.check(name, if ok { Status::Ok } else { Status::Fail }, detail);
+}
+
+/// Hito 4c (D4): una ventana en el escritorio 2, el core muere, el guardián
+/// muestra todo y lo relanza: el core nuevo la vuelve a esconder por su
+/// `wm.desk`. Después, "Salir" deja todo visible y sin `wm.desk`.
+fn recovery_check(r: &mut Report, puppets: &[WindowId]) {
+    const NAME: &str = "recuperación";
+    const CAPS: u8 = 0x14;
+    const ALT: u8 = 0xA4;
+    let hidden = |id: WindowId| hide::visibility(id).cloaked == hide::DWM_CLOAKED_SHELL;
+    let shown = |id: WindowId| hide::fully_visible(hide::visibility(id));
+    let (a, others) = (puppets[0], &puppets[1..]);
+    let (mut child, _lines) = match spawn_core() {
+        Ok(x) => x,
+        Err(e) => return r.check(NAME, Status::Fail, e),
+    };
+    let _ = windows_list::activate(a);
+    std::thread::sleep(Duration::from_millis(100));
+    session::send_keys(&[
+        (CAPS, true),
+        (ALT, true),
+        (b'2', true),
+        (b'2', false),
+        (ALT, false),
+        (CAPS, false),
+    ]);
+    let carried =
+        wait_for(Duration::from_secs(1), || hidden(a) && hide::desk_of(a) == Some(2)).is_some();
+    let _ = child.kill();
+    let _ = child.wait();
+    // Lo que hace el guardián al morir el core.
+    let _ = hide::restore_all();
+    let all_visible = puppets.iter().all(|&p| shown(p));
+    let kept = hide::desk_of(a) == Some(2);
+    let start = Instant::now();
+    let (mut child, _lines) = match spawn_core_relaunched(true) {
+        Ok(x) => x,
+        Err(e) => return r.check(NAME, Status::Fail, e),
+    };
+    let rehidden =
+        wait_for(Duration::from_secs(2), || hidden(a) && others.iter().all(|&o| shown(o)))
+            .map(|_| start.elapsed());
+    let _ = wm_platform::tray::send_order_in("ci-probe", wm_platform::tray::Order::Quit);
+    let exited = wait_for(Duration::from_secs(3), || child.try_wait().ok().flatten().is_some());
+    if exited.is_none() {
+        let _ = child.kill();
+    }
+    let clean = wait_for(Duration::from_millis(500), || {
+        puppets.iter().all(|&p| shown(p) && hide::desk_of(p).is_none())
+    })
+    .is_some();
+    let ok = carried && all_visible && kept && rehidden.is_some() && clean;
+    r.check(
+        NAME,
+        if ok { Status::Ok } else { Status::Fail },
+        format!(
+            "llevada al 2: {carried}; core matado → restore_all la muestra: {all_visible} (wm.desk queda: {kept}); relanzado → la vuelve a esconder: {}; Salir → todo visible y sin wm.desk: {clean}",
+            rehidden.map_or_else(|| "NO".into(), |d| format!("a los {} desde el lanzamiento", ms(d)))
+        ),
+    );
 }
 
 /// F (maximizar y volver), C (centrar) y Z (deshacer) con el core real. Parte

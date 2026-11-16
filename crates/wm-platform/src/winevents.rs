@@ -12,8 +12,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EVENT_OBJECT_UNCLOAKED, EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT,
-    WINEVENT_SKIPOWNPROCESS,
+    EVENT_OBJECT_UNCLOAKED, EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
 };
 
 use crate::windows_list::WindowId;

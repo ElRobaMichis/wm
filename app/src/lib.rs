@@ -118,7 +118,7 @@ pub fn run() -> ExitCode {
         None => doctor(),
         Some("doctor") => doctor(),
         #[cfg(windows)]
-        Some(name @ ("quit" | "pause" | "resume" | "undo" | "ajustes")) => order(name),
+        Some(name @ ("quit" | "pause" | "resume" | "undo" | "ajustes" | "mostrar")) => order(name),
         #[cfg(windows)]
         Some("autostart") => autostart(args.first().map(String::as_str)),
         Some("version" | "--version" | "-V") => {

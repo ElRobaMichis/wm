@@ -57,6 +57,8 @@ pub enum Order {
     Undo = 4,
     Settings = 5,
     ToggleAutostart = 6,
+    /// Hito 4c: todas las ventanas al escritorio activo (el botón de pánico).
+    ShowAll = 7,
 }
 
 impl Order {
@@ -68,6 +70,7 @@ impl Order {
             4 => Self::Undo,
             5 => Self::Settings,
             6 => Self::ToggleAutostart,
+            7 => Self::ShowAll,
             _ => return None,
         })
     }
@@ -79,6 +82,7 @@ impl Order {
             "resume" | "reanudar" => Self::Resume,
             "undo" | "deshacer" => Self::Undo,
             "settings" | "ajustes" => Self::Settings,
+            "showall" | "mostrar" => Self::ShowAll,
             _ => return None,
         })
     }
@@ -349,6 +353,9 @@ impl Lane {
                 self.send(TrayEvent::Log(
                     "Explorer se reinició: ícono de la bandeja agregado de nuevo.".into(),
                 ));
+                // Las ventanas siguen con cloak, pero conviene revisar que
+                // cada una esté como su escritorio pide (hito 4c).
+                self.send(TrayEvent::Command(Command::Reconcile));
                 true
             }
             m if m == self.command_msg && m != 0 => {
@@ -378,6 +385,7 @@ impl Lane {
             Order::Pause => self.send(TrayEvent::Command(Command::SetPaused(true))),
             Order::Resume => self.send(TrayEvent::Command(Command::SetPaused(false))),
             Order::Undo => self.send(TrayEvent::Command(Command::Undo)),
+            Order::ShowAll => self.send(TrayEvent::Command(Command::ShowAll)),
             Order::Settings => self.open_settings(),
             Order::ToggleAutostart => {
                 let on = crate::autostart::status() != Some(true);
@@ -424,6 +432,7 @@ impl Lane {
         const UNDO: usize = 3;
         const AUTOSTART: usize = 4;
         const QUIT: usize = 5;
+        const SHOW_ALL: usize = 6;
         let paused = PAUSED.load(Ordering::Relaxed);
         let can_undo = CAN_UNDO.load(Ordering::Relaxed);
         let autostart = crate::autostart::status();
@@ -435,6 +444,7 @@ impl Lane {
             let _ = AppendMenuW(menu, MF_STRING, PAUSE, pause);
             let undo_flags = if can_undo { MF_STRING } else { MF_STRING | MF_GRAYED };
             let _ = AppendMenuW(menu, undo_flags, UNDO, w!("Deshacer el último movimiento"));
+            let _ = AppendMenuW(menu, MF_STRING, SHOW_ALL, w!("Mostrar todas las ventanas"));
             let auto_flags = match autostart {
                 Some(true) => MF_STRING | MF_CHECKED,
                 Some(false) => MF_STRING,
@@ -461,6 +471,7 @@ impl Lane {
                 SETTINGS => self.order(Order::Settings),
                 PAUSE => self.order(if paused { Order::Resume } else { Order::Pause }),
                 UNDO => self.order(Order::Undo),
+                SHOW_ALL => self.order(Order::ShowAll),
                 AUTOSTART => self.order(Order::ToggleAutostart),
                 QUIT => self.order(Order::Quit),
                 _ => {}

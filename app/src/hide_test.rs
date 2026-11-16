@@ -33,6 +33,12 @@ pub fn run_puppets(args: &[String]) -> ExitCode {
 }
 
 pub fn restore() -> ExitCode {
+    // Con un wm abierto, que lo haga él (así las ventanas pasan al escritorio
+    // activo y no vuelven a esconderse en el próximo cambio).
+    if wm_platform::tray::send_order(wm_platform::tray::Order::ShowAll) {
+        println!("Pedido al wm abierto: mostrar todas las ventanas en el escritorio activo.");
+        return ExitCode::SUCCESS;
+    }
     let report = hide::restore_all();
     if report.restored.is_empty() && report.failed.is_empty() {
         println!("No había ventanas escondidas por wm.");

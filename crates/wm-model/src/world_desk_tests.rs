@@ -426,6 +426,16 @@ fn a_new_window_that_takes_focus_is_adopted_at_once() {
     p.check(&world);
 }
 
+#[test]
+fn show_all_brings_every_window_to_the_active_desk() {
+    let (mut world, mut p) = boot(&["aaa", "bbb", "ccc"]);
+    p.carry(&mut world, 2);
+    p.carry(&mut world, 3);
+    p.run(&mut world, Event::Command(crate::world::Command::ShowAll));
+    p.check(&world);
+    assert!(p.wins.iter().all(|w| !w.cloaked && w.desk == Some(1)));
+}
+
 /// 10 000 secuencias al azar: ir, llevar, letras, deshacer, abrir, cerrar y
 /// minimizar. Después de cada paso valen las invariantes.
 #[test]

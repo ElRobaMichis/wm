@@ -1661,6 +1661,8 @@ impl World {
             // Igual que Z: la entrada del diario ya dice qué ventana era (no
             // hace falta que esté al frente). También en pausa: es un clic.
             Command::Undo => self.undo_next(now_us, out),
+            Command::ShowAll => self.start_sync(crate::desks::Goal::ShowAll, now_us, out),
+            Command::Reconcile => self.start_sync(crate::desks::Goal::Verify, now_us, out),
         }
     }
 
@@ -2283,6 +2285,11 @@ pub enum Command {
     Quit,
     SetPaused(bool),
     Undo,
+    /// "Mostrar todas las ventanas": todas al escritorio activo (hito 4c).
+    ShowAll,
+    /// Explorer se reinició: revisar que cada ventana esté como pide su
+    /// escritorio.
+    Reconcile,
 }
 
 #[cfg(test)]
