@@ -264,6 +264,12 @@ impl Brain {
                         ui.hide();
                     }
                 }
+                Effect::SetPaused(on) => {
+                    if on && let Some(anim) = self.anim.as_mut() {
+                        anim.land_all();
+                    }
+                    input::set_paused(on);
+                }
                 Effect::ResetKeyboard => {
                     self.log.line("El mapa estuvo visible 30 s: reinicio el teclado.");
                     input::request_reset();

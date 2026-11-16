@@ -334,6 +334,8 @@ pub enum Event {
     FlyEnabled(bool),
     /// Se puede mostrar el mapa (el hilo `ui` está listo) o ya no.
     MapEnabled(bool),
+    /// Una orden del menú de la bandeja (o de `wm quit|pause|resume|undo`).
+    Command(Command),
     /// Venció el plazo de [`World::deadline`].
     Tick,
 }
@@ -405,7 +407,11 @@ pub enum Effect {
         win: WinKey,
     },
     Log(String),
-    /// Terminar el core (Hyper + Esc, hasta que exista la bandeja).
+    /// Pausar (todas las teclas pasan, `Caps` vuelve a ser Bloq Mayús) o
+    /// reanudar el hook.
+    SetPaused(bool),
+    /// Terminar el core ("Salir" en la bandeja; `Caps` + Esc solo si
+    /// [`World::set_esc_quits`]).
     Quit,
 }
 
@@ -504,6 +510,12 @@ pub struct World {
     keys: Option<Keys>,
     next_gesture: u64,
     journal: VecDeque<Entry>,
+    /// Pausado desde la bandeja: no actúa sobre teclas ni capas.
+    paused: bool,
+    /// `Caps` + Esc sale del programa. Hasta la bandeja (hito 3b) era la
+    /// única salida; ahora solo en modo prueba: un toque accidental cerraba
+    /// todo en silencio (Fable, hito 3).
+    esc_quits: bool,
     /// Entrada a anotar si el próximo `go` mueve la ventana.
     record: Option<Entry>,
     centers: HashMap<WinKey, Centering>,
@@ -568,6 +580,21 @@ impl Limits {
 impl World {
     pub fn new(bindings: Vec<AppBinding>) -> Self {
         Self { bindings, ..Self::default() }
+    }
+
+    /// ¿Pausado desde la bandeja?
+    pub fn paused(&self) -> bool {
+        self.paused
+    }
+
+    /// ¿Hay algo para deshacer? (el ítem del menú va gris si no)
+    pub fn can_undo(&self) -> bool {
+        !self.journal.is_empty()
+    }
+
+    /// Que `Caps` + Esc salga del programa (modo prueba y `ci-probe`).
+    pub fn set_esc_quits(&mut self, on: bool) {
+        self.esc_quits = on;
     }
 
     pub fn layer(&self) -> Layer {
@@ -670,6 +697,9 @@ impl World {
     pub fn step(&mut self, event: Event, now_us: u64) -> Vec<Effect> {
         let mut out = Vec::new();
         match event {
+            // En pausa, el hook deja pasar todo; si igual llega algo (en
+            // vuelo al pausar), se ignora.
+            Event::Action { .. } | Event::Layer(_) if self.paused => {}
             Event::Action { action, held, age_ms } => {
                 // Cualquier acción (también una descartada) suprime el mapa si
                 // todavía no se ve; Esc con el mapa visible solo lo cierra.
@@ -797,6 +827,7 @@ impl World {
             }
             Event::Flown { req, result } => self.flown(req, result, now_us, &mut out),
             Event::FlyEnabled(on) => self.fly = on,
+            Event::Command(c) => self.command(c, now_us, &mut out),
             Event::Tick => self.tick(now_us, &mut out),
             Event::Launched { req, result } => {
                 let Some(Pending::Launch { letter, app, path }) = self.pending.remove(&req) else {
@@ -879,7 +910,8 @@ impl World {
                     "Caps + {digit}: {what} escritorio {digit}, pendiente."
                 )));
             }
-            HyperAction::Escape => out.push(Effect::Quit),
+            HyperAction::Escape if self.esc_quits => out.push(Effect::Quit),
+            HyperAction::Escape => {}
             HyperAction::Other { .. } => {}
         }
     }
@@ -1450,6 +1482,32 @@ impl World {
     }
 
     /// Z: toma la última entrada del historial y pide la ventana.
+    /// Una orden de la bandeja.
+    fn command(&mut self, c: Command, now_us: u64, out: &mut Vec<Effect>) {
+        match c {
+            Command::Quit => out.push(Effect::Quit),
+            Command::SetPaused(on) if on == self.paused => {}
+            Command::SetPaused(on) => {
+                self.paused = on;
+                // Lo que estaba a medio hacer se olvida: el mapa, la capa y
+                // un empuje demorado.
+                let mut m = Vec::new();
+                self.map.reset(&mut m);
+                self.map_effects(m, out);
+                self.layer = Layer::Off;
+                self.keys = None;
+                self.deferred = None;
+                out.push(Effect::SetPaused(on));
+                out.push(Effect::Log(
+                    if on { "Atajos en pausa." } else { "Atajos reanudados." }.to_owned(),
+                ));
+            }
+            // Igual que Z: la entrada del diario ya dice qué ventana era (no
+            // hace falta que esté al frente). También en pausa: es un clic.
+            Command::Undo => self.undo_next(now_us, out),
+        }
+    }
+
     fn undo_next(&mut self, key_us: u64, out: &mut Vec<Effect>) {
         match self.journal.pop_back() {
             Some(entry) => {
@@ -1856,6 +1914,7 @@ mod tests {
                         | Effect::MapLayer { .. }
                         | Effect::HideMap
                         | Effect::ResetKeyboard
+                        | Effect::SetPaused(_)
                         | Effect::Normalize { .. }
                         | Effect::Maximize { .. } => {
                             panic!("la capa de apps no coloca ventanas")
@@ -1949,6 +2008,7 @@ mod tests {
     #[test]
     fn escape_quits_and_layers_are_tracked() {
         let mut w = World::new(Vec::new());
+        w.set_esc_quits(true); // modo prueba
         let mut sim = Sim::new(&[]);
         sim.run(&mut w, Event::Layer(Layer::Window));
         assert_eq!(w.layer(), Layer::Window);
@@ -2019,5 +2079,85 @@ mod fullscreen_tests {
         w.undo(entry, full, 0, 0, &mut out);
         assert_eq!(out.len(), 1);
         assert_eq!(w.journal.len(), 1, "queda para deshacer después");
+    }
+}
+
+/// Una orden del menú de la bandeja que decide el modelo. Abrir los ajustes e
+/// iniciar con Windows los resuelve el hilo de la bandeja (son E/S).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Command {
+    Quit,
+    SetPaused(bool),
+    Undo,
+}
+
+#[cfg(test)]
+mod command_tests {
+    use super::*;
+    use crate::keyboard::{HyperAction, Layer};
+
+    fn letter(l: u8, thumb: bool) -> Event {
+        Event::Action { action: HyperAction::Letter { letter: l, thumb }, held: 0, age_ms: 0 }
+    }
+
+    #[test]
+    fn paused_ignores_keys_and_layers() {
+        let mut w = World::new(Vec::new());
+        w.step(Event::MapEnabled(true), 0);
+        let out = w.step(Event::Command(Command::SetPaused(true)), 0);
+        assert!(out.contains(&Effect::SetPaused(true)), "{out:?}");
+        assert!(w.paused());
+        for (i, e) in [
+            Event::Layer(Layer::Apps),
+            letter(b'B', false),
+            Event::Layer(Layer::Window),
+            letter(b'A', true),
+            Event::Action { action: HyperAction::Escape, held: 0, age_ms: 0 },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert!(w.step(e, i as u64 * 1000).is_empty(), "en pausa no hace nada");
+        }
+        assert_eq!(w.deadline(), None, "ni siquiera arma el mapa");
+        let out = w.step(Event::Command(Command::SetPaused(false)), 10_000);
+        assert!(out.contains(&Effect::SetPaused(false)));
+        assert!(!w.step(letter(b'B', false), 11_000).is_empty(), "reanudado, vuelve a actuar");
+    }
+
+    #[test]
+    fn pausing_with_the_map_visible_hides_it() {
+        let mut w = World::new(Vec::new());
+        w.step(Event::MapEnabled(true), 0);
+        w.step(Event::Layer(Layer::Apps), 0);
+        let out = w.step(Event::Tick, 500_000);
+        let Some(Effect::Scan { req }) = out.first().cloned() else { panic!("{out:?}") };
+        w.step(Event::Windows { req, result: Ok((Vec::new(), None)) }, 500_000);
+        assert!(w.map_visible());
+        let out = w.step(Event::Command(Command::SetPaused(true)), 600_000);
+        assert!(out.contains(&Effect::HideMap), "{out:?}");
+        assert!(!w.map_visible());
+    }
+
+    #[test]
+    fn quit_from_the_tray_and_escape_only_in_test_mode() {
+        let mut w = World::new(Vec::new());
+        assert_eq!(w.step(Event::Command(Command::Quit), 0), vec![Effect::Quit]);
+        let esc = || Event::Action { action: HyperAction::Escape, held: 0, age_ms: 0 };
+        let mut w = World::new(Vec::new());
+        assert!(!w.step(esc(), 0).contains(&Effect::Quit), "Caps + Esc ya no sale");
+        w.set_esc_quits(true);
+        assert!(w.step(esc(), 0).contains(&Effect::Quit), "en modo prueba sí");
+    }
+
+    #[test]
+    fn undo_from_the_tray_is_like_z() {
+        let mut w = World::new(Vec::new());
+        assert!(!w.can_undo());
+        let out = w.step(Event::Command(Command::Undo), 0);
+        assert!(
+            matches!(&out[..], [Effect::Log(l)] if l.contains("nada para deshacer")),
+            "{out:?}"
+        );
     }
 }

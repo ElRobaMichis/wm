@@ -63,7 +63,10 @@ pub fn run() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let mut brain = Brain::new(World::new(bindings), ops, log.clone(), test_mode);
+    let mut world = World::new(bindings);
+    // `Caps` + Esc sale hasta que exista "Salir" en la bandeja (hito 3b).
+    world.set_esc_quits(true);
+    let mut brain = Brain::new(world, ops, log.clone(), test_mode);
     brain.restore_at_start();
 
     input::quit_on_console_close(brain_thread);

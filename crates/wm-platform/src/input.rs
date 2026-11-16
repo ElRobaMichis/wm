@@ -610,7 +610,8 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
 
     let mut injected = false;
     let mut test_stall = false;
-    let pass = if ours || info.vkCode > 0xFF || !brain_alive(info.time) {
+    let paused = PAUSED.load(Ordering::Relaxed);
+    let pass = if ours || paused || info.vkCode > 0xFF || !brain_alive(info.time) {
         true
     } else {
         let event = KeyEvent { vk: info.vkCode as u8, down, time_ms: info.time };
@@ -744,6 +745,13 @@ unsafe extern "system" fn sink_proc(
             MACHINE.with(|m| m.borrow_mut().reset());
             post_raw(KIND_RESET, 3);
         }
+        WM_SET_PAUSED => {
+            // En el hilo del hook: el atómico y el reinicio, sin carrera con
+            // un callback a medias.
+            PAUSED.store(wparam.0 != 0, Ordering::Relaxed);
+            MACHINE.with(|m| m.borrow_mut().reset());
+            post_raw(KIND_RESET, 3);
+        }
         _ => {}
     }
     // SAFETY: procesamiento por defecto; para WM_INPUT además libera el buffer.
@@ -752,6 +760,34 @@ unsafe extern "system" fn sink_proc(
 
 /// Mensaje a la ventana oculta del hilo de entrada: reiniciar el teclado.
 const WM_RESET_KEYBOARD: u32 = WM_APP + 0x30;
+/// Ídem: pausar (wParam 1) o reanudar (0).
+const WM_SET_PAUSED: u32 = WM_APP + 0x31;
+
+/// En pausa (menú de la bandeja): el hook deja pasar todo, `Caps` vuelve a
+/// ser Bloq Mayús. El hook y su vigía siguen puestos.
+static PAUSED: AtomicBool = AtomicBool::new(false);
+
+/// Pausa o reanuda el hook (no bloquea).
+pub fn set_paused(on: bool) {
+    use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
+    let sink = SINK.load(Ordering::Acquire);
+    if sink != 0 {
+        // SAFETY: PostMessageW no bloquea; ventana propia.
+        let _ = unsafe {
+            PostMessageW(
+                Some(HWND(sink as *mut core::ffi::c_void)),
+                WM_SET_PAUSED,
+                WPARAM(usize::from(on)),
+                LPARAM(0),
+            )
+        };
+    }
+}
+
+/// ¿El hook está en pausa?
+pub fn paused() -> bool {
+    PAUSED.load(Ordering::Relaxed)
+}
 
 /// La ventana oculta del hilo de entrada (0 si todavía no existe).
 static SINK: AtomicIsize = AtomicIsize::new(0);

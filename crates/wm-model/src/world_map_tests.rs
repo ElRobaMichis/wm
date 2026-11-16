@@ -31,6 +31,8 @@ impl Rig {
     fn new() -> Self {
         let mut w = World::new(Vec::new());
         w.step(Event::MapEnabled(true), 0);
+        // Como en modo prueba: `Caps` + Esc sale (las pruebas lo usan).
+        w.set_esc_quits(true);
         Self {
             kb: HyperKeyboard::new(),
             w,
