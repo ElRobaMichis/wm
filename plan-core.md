@@ -165,7 +165,19 @@ Latencia esperada: dos saltos de carril, como `Caps + letra` hoy (1,9-4,4 ms de 
 
 ### 3.1 Acciones
 
-> **Versión 2 (15/11/2026), la vigente.** Tras la prueba del usuario con dos monitores, la semántica de W/A/S/D se rehízo con Fable 5.2 para que dependa de **dónde está la ventana** y no de la tecla anterior ni del tiempo. La tabla de abajo, "Primera vez / Repetir", queda como historia: la reemplaza esta.
+> **Versión 3 (15/11/2026), la vigente: "una tecla, una mitad".** Después de usar la versión 2, el usuario la encontró poco intuitiva: mezclaba una escalera en vertical con saltos en horizontal y no era simétrica (mitad lateral + W daba la mitad de arriba, pero mitad de arriba + A daba una esquina). Se compararon en un simulador dos reglas coherentes y el usuario eligió la **directa** (`place::Scheme::Direct`):
+> - **Una tecla = esa mitad**, de todo el alto o el ancho, **estés donde estés**: la misma tecla hace siempre lo mismo.
+> - **Repetirla** (la ventana ya está en esa mitad) = al monitor vecino, entrando por la mitad opuesta; sin vecino, nada.
+> - **Esquina = dos teclas juntas** (W + A…), en cualquier orden; repetir el acorde sobre su esquina la lleva al monitor vecino conservando arriba/abajo. Con teclas sueltas no hay esquinas.
+> - Se mantiene todo lo demás de la versión 2: el gesto con origen (el acorde no depende del orden de los dedos), la espera de 50 ms solo al empujar con una tecla sola, el lugar efectivo, F, C y Z.
+>
+> **La escalera queda como opción futura del menú de ajustes** (`place::Scheme::Ladder`, implementada y probada, todavía no se puede elegir): cada tecla mueve un paso en su eje (izquierda ↔ todo ↔ derecha, arriba ↔ todo ↔ abajo) conservando el otro, así las esquinas salen en secuencia (↙ + W = mitad izquierda, + W = ↖). Para quien la prefiera; ver `keyboard-design.md` §8.3.
+>
+> **Por qué la directa por defecto:** la misma tecla hace siempre lo mismo (memoria muscular; la escalera depende de dónde está la ventana); lo más frecuente (izquierda/derecha) queda a una tecla, mientras que en la escalera pasar de la mitad izquierda a la derecha cuesta dos (pasa por todo el ancho, como `Win + →`); y se explica en una línea del mapa, para la usuaria de prueba.
+>
+> ---
+>
+> **Versión 2 (15/11/2026), reemplazada por la 3.** Tras la prueba del usuario con dos monitores, la semántica de W/A/S/D se rehízo con Fable 5.2 para que dependa de **dónde está la ventana** y no de la tecla anterior ni del tiempo. La tabla de abajo, "Primera vez / Repetir", queda como historia: la reemplaza esta.
 >
 > **Por qué:** el usuario encontró que (1) una esquina se convertía en mitad al moverla de lado; (2) apretar W + A "a la vez" daba resultados distintos según qué dedo llegaba primero; (3) una mitad recién empujada + W iba a la esquina del otro lado. Las tres causas: la esquina por secuencia dependía de la tecla anterior y de un plazo de 1 s, recordaba la *tecla* y no el *lado* donde quedó la ventana, y un acorde eran dos acciones independientes.
 >

@@ -394,6 +394,22 @@ Los perfiles cambian **dos cosas independientes**: qué capa queda más a mano (
 
 ---
 
+### 8.3 Cómo se mueven las ventanas: directo o escalera (opción futura)
+
+Un ajuste para elegir cómo responden W/A/S/D en la capa de ventana. **Todavía no existe en el menú**; la lógica de las dos ya está implementada y probada (`wm_model::place::Scheme`).
+
+| | **Directo** (por defecto) | **Escalera** |
+|---|---|---|
+| Una tecla | Esa mitad, de todo el alto o el ancho, estés donde estés | Un paso en su eje: izquierda ↔ todo ↔ derecha, arriba ↔ todo ↔ abajo, conservando el otro eje |
+| Repetir contra el borde | Al monitor vecino | Al monitor vecino |
+| Esquinas | Dos teclas juntas (W + A) | En secuencia (W y después A) o dos juntas |
+| Ejemplo: ↙ + W | Mitad de arriba | Mitad izquierda; otra W, ↖ |
+| Ejemplo: mitad izquierda + D | Mitad derecha | Todo el ancho; otra D, mitad derecha |
+| A favor | La misma tecla hace siempre lo mismo; se explica en una línea | Orgánica: se va paso a paso y las esquinas salen solas |
+| En contra | Las esquinas piden el acorde | Lo que hace una tecla depende de dónde está la ventana |
+
+**Decisión (usuario, 15/11/2026):** directo por defecto, después de probar las dos en un simulador; la escalera queda como opción para quien la prefiera. En el menú iría, por ejemplo, en Ajustes → Capa de ventana: "Una tecla, una mitad" / "Escalera, paso a paso".
+
 ## 9. Conflictos con el sistema operativo
 
 La capa Hyper evita casi todos estos conflictos. La lista sirve si el usuario elige una alternativa a `Caps` (§5.2) y para no pisar los gestos nativos.
@@ -670,7 +686,7 @@ Hay dos expectativas que chocan:
 
 - Además de apretar dos teclas a la vez (W+A, §6.2), aceptar la **secuencia**: D y enseguida W = cuarto superior derecho.
 - Es lo que pidió un usuario de Raycast y lo que hace Swish con gestos (izquierda y después arriba = esquina superior izquierda).
-- ~~**Ventana de tiempo:** ~1 s desde el movimiento anterior **(a probar)**.~~ **Probado y reemplazado (15/11/2026):** el plazo hacía que el resultado dependiera del tiempo y del orden de los dedos. Ahora **cada tecla actúa según dónde está la ventana**, sin plazo: D y, cuando sea, W da la esquina; una esquina + A/D sigue siendo esquina; W/S suben o bajan un escalón como `Win + ↑/↓`. Las teclas juntas siguen funcionando y su resultado no depende del orden. Ver `plan-core.md` §3.1 (versión 2).
+- ~~**Ventana de tiempo:** ~1 s desde el movimiento anterior **(a probar)**.~~ **Probado y reemplazado (15/11/2026):** el plazo hacía que el resultado dependiera del tiempo y del orden de los dedos. Se probó una versión "según dónde está la ventana" y después se eligió la **directa**: una tecla = esa mitad, **esquina = dos teclas juntas** (en cualquier orden, sin plazos). La secuencia (D y después W = esquina) queda para el esquema **escalera**, opción futura (§8.3). Ver `plan-core.md` §3.1 (versión 3).
 
 ### 14.6 Importar los atajos que el usuario ya tiene
 

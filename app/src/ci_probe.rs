@@ -533,11 +533,11 @@ fn push_checks(r: &mut Report, id: WindowId, monitors: &[wm_model::place::Monito
     let n = neighbor(monitors, m, dir).expect("recién visto");
     // Pasado el tiempo de combinación, para que la primera tecla sea una mitad.
     std::thread::sleep(Duration::from_millis(200));
-    // Desde la esquina de abajo a la derecha (la deja `arrange_checks`), W sube
-    // un escalón: mitad derecha. De ahí en adelante, lado opuesto → mitad →
-    // empujar → volver → seguir dentro del monitor (plan-core.md §3.1).
+    // Desde la esquina de abajo a la derecha (la deja `arrange_checks`), D da
+    // la mitad derecha. De ahí en adelante, lado opuesto → mitad → empujar →
+    // volver → seguir dentro del monitor (plan-core.md §3.1).
     let steps = [
-        (b'W', place(monitors[m].work, Placement::RightHalf), "W → mitad"),
+        (b'D', place(monitors[m].work, Placement::RightHalf), "D → mitad"),
         (back_key, place(monitors[m].work, other_half), "al otro lado"),
         (key, place(monitors[m].work, half), "mitad"),
         (key, place(monitors[n].work, other_half), "empujada al vecino"),

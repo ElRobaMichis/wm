@@ -141,13 +141,17 @@ pub fn placement_for(dir: Dir, perp: Option<Dir>) -> Placement {
 // libre o maximizada. Las teclas actúan según dónde está la ventana, no según
 // la tecla anterior ni el tiempo:
 //
-// - **R1, una tecla sola** ([`step`]): A/D van a ese costado conservando la
-//   altura (una esquina sigue siendo esquina). W/S llevan a la mitad de
-//   arriba/abajo **de todo el ancho**, también desde una mitad lateral (lo
-//   pidió el usuario: una tecla, no F y después W); una esquina, en cambio,
-//   baja o sube a la mitad de su costado (↖ + S = mitad izquierda). Contra el
-//   borde, pasa al monitor vecino entrando por el borde opuesto y conservando
-//   el otro eje.
+// - **R1, una tecla sola** ([`step`], esquema [`Scheme::Direct`], el
+//   vigente): A/D/W/S llevan **siempre** a esa mitad (de todo el alto o de
+//   todo el ancho), estés donde estés. Si la ventana ya está en esa mitad,
+//   pasa al monitor vecino entrando por la mitad opuesta; sin vecino, nada.
+//   "Una tecla, una mitad; repetirla, al otro monitor."
+// - **Esquinas = dos teclas juntas** (R2). Con teclas sueltas no hay
+//   esquinas: la misma tecla hace siempre lo mismo (decisión del usuario,
+//   15/11/2026, después de probar la escalera; plan-core.md §3.1).
+// - **Escalera** ([`Scheme::Ladder`], opción futura del menú de ajustes):
+//   cada tecla mueve un paso en su eje (izquierda ↔ todo ↔ derecha, arriba ↔
+//   todo ↔ abajo) conservando el otro, así las esquinas salen en secuencia.
 // - **R2, teclas juntas** ([`chord`]): nombran los bordes que toca la
 //   ventana, calculado desde donde estaba antes de la primera tecla, así que
 //   el orden en que caen los dedos da igual. Dos opuestas se anulan.
@@ -193,23 +197,50 @@ pub enum Move {
     Push { dir: Dir, enter: Placement },
 }
 
-/// R1: una tecla sola desde la ubicación `slot` (`Full` = libre o maximizada).
+/// Cómo se mueven las ventanas con una tecla sola.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Scheme {
+    /// Una tecla, una mitad (la vigente): la misma tecla hace siempre lo
+    /// mismo; las esquinas, con dos teclas juntas.
+    #[default]
+    Direct,
+    /// Escalera en los dos ejes: un paso por tecla, conservando el otro eje;
+    /// las esquinas salen en secuencia. Pensada como opción del menú de
+    /// ajustes para quien la prefiera (plan-core.md §3.1); todavía no se
+    /// puede elegir.
+    Ladder,
+}
+
+/// R1: una tecla sola desde `slot` (`Full` = libre o maximizada), con el
+/// esquema vigente ([`Scheme::Direct`]).
 pub fn step(slot: Placement, key: Dir) -> Move {
-    let (h, v) = split(slot);
-    if key.vertical() {
-        if v == Some(key) {
-            Move::Push { dir: key, enter: join(h, Some(key.opposite())) }
-        } else if v == Some(key.opposite()) && h.is_some() {
-            // Una esquina que se aleja de su borde: la mitad de su costado.
-            Move::Stay(join(h, None))
-        } else {
-            // Libre, mitad lateral o la mitad opuesta: la mitad de todo el ancho.
-            Move::Stay(join(None, Some(key)))
+    step_with(Scheme::Direct, slot, key)
+}
+
+/// R1 con un esquema dado.
+pub fn step_with(scheme: Scheme, slot: Placement, key: Dir) -> Move {
+    match scheme {
+        Scheme::Direct => {
+            let half = if key.vertical() { join(None, Some(key)) } else { join(Some(key), None) };
+            if slot == half {
+                Move::Push { dir: key, enter: mirror(half, key) }
+            } else {
+                Move::Stay(half)
+            }
         }
-    } else if h == Some(key) {
-        Move::Push { dir: key, enter: join(Some(key.opposite()), v) }
-    } else {
-        Move::Stay(join(Some(key), v))
+        Scheme::Ladder => {
+            let (h, v) = split(slot);
+            let (axis, other) = if key.vertical() { (v, h) } else { (h, v) };
+            let join_axis =
+                |c: Option<Dir>| if key.vertical() { join(other, c) } else { join(c, other) };
+            if axis == Some(key) {
+                Move::Push { dir: key, enter: join_axis(Some(key.opposite())) }
+            } else if axis == Some(key.opposite()) {
+                Move::Stay(join_axis(None)) // un paso hacia "todo"
+            } else {
+                Move::Stay(join_axis(Some(key)))
+            }
+        }
     }
 }
 
@@ -555,135 +586,81 @@ mod tests {
     }
 
     #[test]
-    fn the_whole_single_key_table() {
-        let push = |dir, enter| Move::Push { dir, enter };
-        use Dir::{Down as S, Left as A, Right as D, Up as W};
-        use Move::Stay;
-        // (desde, [A, D, W, S]) — plan-core.md §3.1.
-        let table: [(Placement, [Move; 4]); 9] = [
-            (
-                P::Full,
-                [Stay(P::LeftHalf), Stay(P::RightHalf), Stay(P::TopHalf), Stay(P::BottomHalf)],
-            ),
-            (
-                P::LeftHalf,
-                [push(A, P::RightHalf), Stay(P::RightHalf), Stay(P::TopHalf), Stay(P::BottomHalf)],
-            ),
-            (
-                P::RightHalf,
-                [Stay(P::LeftHalf), push(D, P::LeftHalf), Stay(P::TopHalf), Stay(P::BottomHalf)],
-            ),
-            (
-                P::TopHalf,
-                [Stay(P::TopLeft), Stay(P::TopRight), push(W, P::BottomHalf), Stay(P::BottomHalf)],
-            ),
-            (
-                P::BottomHalf,
-                [Stay(P::BottomLeft), Stay(P::BottomRight), Stay(P::TopHalf), push(S, P::TopHalf)],
-            ),
-            (
-                P::TopLeft,
-                [
-                    push(A, P::TopRight),
-                    Stay(P::TopRight),
-                    push(W, P::BottomLeft),
-                    Stay(P::LeftHalf),
-                ],
-            ),
-            (
-                P::TopRight,
-                [
-                    Stay(P::TopLeft),
-                    push(D, P::TopLeft),
-                    push(W, P::BottomRight),
-                    Stay(P::RightHalf),
-                ],
-            ),
-            (
-                P::BottomLeft,
-                [
-                    push(A, P::BottomRight),
-                    Stay(P::BottomRight),
-                    Stay(P::LeftHalf),
-                    push(S, P::TopLeft),
-                ],
-            ),
-            (
-                P::BottomRight,
-                [
-                    Stay(P::BottomLeft),
-                    push(D, P::BottomLeft),
-                    Stay(P::RightHalf),
-                    push(S, P::TopRight),
-                ],
-            ),
+    fn direct_one_key_one_half_and_repeat_pushes() {
+        let halves = [
+            (Dir::Left, P::LeftHalf),
+            (Dir::Right, P::RightHalf),
+            (Dir::Up, P::TopHalf),
+            (Dir::Down, P::BottomHalf),
         ];
-        for (from, moves) in table {
-            for (key, want) in [A, D, W, S].into_iter().zip(moves) {
+        for from in ALL {
+            for (key, half) in halves {
+                let want = if from == half {
+                    Move::Push { dir: key, enter: mirror(half, key) }
+                } else {
+                    Move::Stay(half)
+                };
                 assert_eq!(step(from, key), want, "{from:?} + {key:?}");
             }
         }
     }
 
     #[test]
-    fn a_and_d_never_change_the_height() {
-        for p in ALL {
-            for key in [Dir::Left, Dir::Right] {
-                let to = match step(p, key) {
-                    Move::Stay(q) | Move::Push { enter: q, .. } => q,
-                };
-                assert_eq!(split(to).1, split(p).1, "{p:?} + {key:?}");
-            }
+    fn direct_the_same_key_always_does_the_same() {
+        // Salvo el empuje (ya estaba ahí), una tecla da siempre la misma mitad.
+        for key in Dir::ALL {
+            let results: std::collections::HashSet<Placement> = ALL
+                .into_iter()
+                .filter_map(|p| match step(p, key) {
+                    Move::Stay(q) => Some(q),
+                    Move::Push { .. } => None,
+                })
+                .collect();
+            assert_eq!(results.len(), 1, "{key:?}: {results:?}");
         }
     }
 
     #[test]
     fn every_push_comes_back_with_the_opposite_key() {
-        for p in ALL {
-            for key in Dir::ALL {
-                if let Move::Push { dir, enter } = step(p, key) {
-                    assert_eq!(
-                        step(enter, dir.opposite()),
-                        Move::Push { dir: dir.opposite(), enter: p },
-                        "{p:?} + {key:?}"
-                    );
+        for scheme in [Scheme::Direct, Scheme::Ladder] {
+            for p in ALL {
+                for key in Dir::ALL {
+                    if let Move::Push { dir, enter } = step_with(scheme, p, key) {
+                        assert_eq!(
+                            step_with(scheme, enter, dir.opposite()),
+                            Move::Push { dir: dir.opposite(), enter: p },
+                            "{scheme:?}: {p:?} + {key:?}"
+                        );
+                    }
                 }
             }
         }
     }
 
     #[test]
-    fn single_keys_reach_every_slot_from_a_free_window() {
-        let mut seen = std::collections::HashSet::from([P::Full]);
-        let mut frontier = vec![P::Full];
-        while let Some(p) = frontier.pop() {
-            for key in Dir::ALL {
-                if let Move::Stay(q) = step(p, key)
-                    && seen.insert(q)
-                {
-                    frontier.push(q);
-                }
-            }
-        }
-        assert_eq!(seen.len(), 9, "desde una ventana libre se llega a las 8 ubicaciones");
-    }
-
-    #[test]
-    fn from_any_slot_single_keys_reach_every_other_slot() {
-        // Sin pasar por F: todas las mitades y esquinas, desde cualquiera.
-        for start in ALL.into_iter().filter(|&p| p != P::Full) {
+    fn ladder_steps_one_axis_at_a_time() {
+        use Dir::{Down as S, Left as A, Right as D, Up as W};
+        let ladder = |p, k| step_with(Scheme::Ladder, p, k);
+        assert_eq!(ladder(P::BottomLeft, W), Move::Stay(P::LeftHalf));
+        assert_eq!(ladder(P::LeftHalf, W), Move::Stay(P::TopLeft));
+        assert_eq!(ladder(P::TopHalf, A), Move::Stay(P::TopLeft));
+        assert_eq!(ladder(P::LeftHalf, D), Move::Stay(P::Full), "pasa por todo el ancho");
+        assert_eq!(ladder(P::Full, S), Move::Stay(P::BottomHalf));
+        assert_eq!(ladder(P::TopLeft, A), Move::Push { dir: A, enter: P::TopRight });
+        // Desde cualquier lugar, la escalera llega a todo con teclas solas.
+        for start in ALL {
             let mut seen = std::collections::HashSet::from([start]);
             let mut frontier = vec![start];
             while let Some(p) = frontier.pop() {
-                for key in Dir::ALL {
-                    if let Move::Stay(q) = step(p, key)
+                for key in [A, D, W, S] {
+                    if let Move::Stay(q) = ladder(p, key)
                         && seen.insert(q)
                     {
                         frontier.push(q);
                     }
                 }
             }
-            assert_eq!(seen.len(), 8, "desde {start:?} se llega a las 8 ubicaciones");
+            assert_eq!(seen.len(), 9, "desde {start:?}");
         }
     }
 
