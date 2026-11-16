@@ -241,6 +241,10 @@ pub enum HardKind {
     Borderless,
     /// Sin DPI awareness: Windows la estira según la escala.
     Unaware,
+    /// Una ventana con un diálogo con dueño abierto (hito 4.0: ¿el cloak del
+    /// dueño arrastra al diálogo?). No está en [`HardKind::ALL`]: no es un
+    /// caso de colocación.
+    Owned,
 }
 
 impl HardKind {
@@ -261,15 +265,20 @@ impl HardKind {
             HardKind::Relocate => "relocate",
             HardKind::Borderless => "borderless",
             HardKind::Unaware => "unaware",
+            HardKind::Owned => "owned",
         }
     }
 
     pub fn from_name(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|k| k.name() == name)
+        Self::ALL.into_iter().chain([HardKind::Owned]).find(|k| k.name() == name)
     }
 
     fn index(self) -> isize {
-        Self::ALL.iter().position(|k| *k == self).unwrap_or(0) as isize
+        Self::ALL.iter().position(|k| *k == self).unwrap_or(Self::ALL.len()) as isize
+    }
+
+    fn from_index(i: usize) -> Self {
+        Self::ALL.get(i).copied().unwrap_or(HardKind::Owned)
     }
 }
 
@@ -296,7 +305,7 @@ unsafe extern "system" fn hard_proc(
         WM_WINDOWPOSCHANGING,
     };
     // SAFETY: lectura del tipo que guardamos al crear la ventana.
-    let kind = HardKind::ALL[unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as usize % 6];
+    let kind = HardKind::from_index(unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as usize);
     match (kind, msg) {
         (HardKind::MinSize, WM_GETMINMAXINFO) => {
             let (w, h) = HARD_SIZE.with(std::cell::Cell::get);
@@ -356,7 +365,8 @@ unsafe extern "system" fn hard_proc(
                 let hdc = BeginPaint(hwnd, &mut ps);
                 let mut rect = RECT::default();
                 let _ = GetClientRect(hwnd, &mut rect);
-                let brush = CreateSolidBrush(COLORREF(COLORS[kind.index() as usize]));
+                let brush =
+                    CreateSolidBrush(COLORREF(COLORS[kind.index() as usize % COLORS.len()]));
                 FillRect(hdc, &rect, brush);
                 SetBkMode(hdc, TRANSPARENT);
                 SetTextColor(hdc, COLORREF(0x00FF_FFFF));
@@ -367,6 +377,10 @@ unsafe extern "system" fn hard_proc(
             }
             LRESULT(0)
         }
+        (HardKind::Owned, WM_DESTROY) if has_owner(hwnd) => {
+            // El diálogo se cierra solo; el proceso sigue con su dueño.
+            LRESULT(0)
+        }
         (_, WM_DESTROY) => {
             // SAFETY: sin precondiciones.
             unsafe { PostQuitMessage(0) };
@@ -375,6 +389,12 @@ unsafe extern "system" fn hard_proc(
         // SAFETY: procesamiento por defecto.
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
+}
+
+fn has_owner(hwnd: HWND) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{GW_OWNER, GetWindow};
+    // SAFETY: lectura del dueño de una ventana propia.
+    unsafe { GetWindow(hwnd, GW_OWNER) }.is_ok_and(|h| !h.is_invalid())
 }
 
 /// Abre un títere difícil del tipo `kind` en el monitor principal y atiende
@@ -441,6 +461,24 @@ pub fn run_hard_puppet(kind: HardKind) -> windows::core::Result<()> {
             None,
         )?;
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, kind.index());
+        if kind == HardKind::Owned {
+            // El diálogo: ventana con dueño (no aparece en la barra de tareas).
+            let dialog = CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                HARD_CLASS,
+                w!("Diálogo del títere"),
+                WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
+                work.left + (ww - w / 2) / 2,
+                work.top + (wh - h / 2) / 2,
+                w / 2,
+                h / 2,
+                Some(hwnd),
+                None,
+                Some(instance),
+                None,
+            )?;
+            SetWindowLongPtrW(dialog, GWLP_USERDATA, kind.index());
+        }
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
             let _ = TranslateMessage(&msg);

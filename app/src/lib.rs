@@ -57,6 +57,8 @@ pub fn run() -> ExitCode {
         #[cfg(windows)]
         Some("max-test") => hide_test::max_test(),
         #[cfg(windows)]
+        Some("desk-check") => desk_check(args.first().map(String::as_str)),
+        #[cfg(windows)]
         Some("puppet-hard") => {
             use wm_platform::puppet::{HardKind, run_hard_puppet};
             match args.first().and_then(|k| HardKind::from_name(k)) {
@@ -274,6 +276,30 @@ fn doctor() -> ExitCode {
 fn doctor() -> ExitCode {
     eprintln!("Este programa solo funciona en Windows.");
     ExitCode::FAILURE
+}
+
+/// `wm desk-check [manual]`: verificaciones del hito 4.0 (plan-core.md §7).
+#[cfg(windows)]
+fn desk_check(mode: Option<&str>) -> ExitCode {
+    let Ok(exe) = std::env::current_exe() else { return ExitCode::FAILURE };
+    if mode == Some("manual") {
+        wm_platform::desk_check::manual(&exe, &mut |s| println!("{s}"));
+        return ExitCode::SUCCESS;
+    }
+    let checks = wm_platform::desk_check::run(&exe);
+    let mut failed = 0;
+    for c in &checks {
+        let mark = match c.ok {
+            Some(true) => "ok   ",
+            Some(false) => {
+                failed += 1;
+                "FALLA"
+            }
+            None => "info ",
+        };
+        println!("[{mark}] {}: {}", c.name, c.detail);
+    }
+    if failed == 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE }
 }
 
 /// Anota en `wm.log` los pánicos de cualquier hilo (sin consola, sería lo

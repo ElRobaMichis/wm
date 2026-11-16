@@ -21,7 +21,7 @@ use windows::core::{BOOL, PWSTR};
 pub struct WindowId(pub isize);
 
 impl WindowId {
-    fn hwnd(self) -> HWND {
+    pub(crate) fn hwnd(self) -> HWND {
         HWND(self.0 as *mut c_void)
     }
 }

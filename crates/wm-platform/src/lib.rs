@@ -13,6 +13,8 @@ pub mod clock;
 #[cfg(windows)]
 pub mod console;
 #[cfg(windows)]
+pub mod desk_check;
+#[cfg(windows)]
 pub mod display_watch;
 #[cfg(windows)]
 pub mod displays;
