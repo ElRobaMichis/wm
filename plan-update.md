@@ -9,6 +9,8 @@
 >
 > **Actualización real probada (16/11/2026):** en la PC del usuario, la v0.1.0 instalada con `wm-setup` encontró la v0.1.1 en GitHub, la bajó y verificó (~11 s), el usuario tocó "Actualizar ahora", el guardián la colocó en 14 ms, relanzó el core con los escritorios y a los 60 s la dio por buena ("la versión 0.1.1 anduvo 60 s: queda").
 >
+> **Segunda actualización real (16/11/2026):** 0.1.1 → 0.1.2 desde la bandeja, sin problemas; el borde de foco nuevo se ve en Terminal y Claude.
+>
 > **Cambio de U0/U7 (16/11/2026): la clave privada nunca se sube a GitHub.** Vive solo en la PC del autor (`%USERPROFILE%\.wm-release\wm-update-key.pem`; **hacer una copia**: sin ella, una versión nueva no llega y hay que reinstalar a mano). La CI compila y publica la pre-release **sin firmas**; `tools/sign-release.sh vX.Y.Z`, en esa PC, baja los assets, comprueba tamaño y SHA-256 contra el manifiesto, firma y sube los `.sig`. Sin `.sig`, ningún wm instalado acepta la versión. Así no hacen falta el environment ni el secret, y un robo de la cuenta de GitHub no alcanza para firmar.
 
 Diseño de Fable 5.2 (16/11/2026), pedido por el usuario: que la usuaria de prueba tenga `wm` instalado y que, cuando él publique una versión en GitHub, le llegue sola, sin descargar de nuevo ni tocar la terminal. **[V]** = verificado en el código; **[S]** = supuesto a comprobar.
