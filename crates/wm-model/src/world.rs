@@ -398,6 +398,10 @@ pub enum Event {
     Foreground(WinKey),
     /// Hito 4b.2: a esta ventana le quitaron el cloak.
     Uncloaked(WinKey),
+    /// v1.2 (plan-v1.2.md §6): pasó al frente una ventana del selector de
+    /// Windows (Alt+Tab, la barra de tareas, Win+Tab). Llega antes de su
+    /// `Foreground`.
+    ShellForeground(WinKey),
     /// Hito 5: con `Caps` se apretó (`down`) o soltó un botón del mouse en
     /// `(x, y)`.
     Pointer {
@@ -620,6 +624,8 @@ pub enum Effect {
         letter: u8,
         open: Option<crate::rules::OpenRule>,
     },
+    /// v1.2: escribir `aprendizaje.txt` ("Sugerir atajos", `teach.rs`).
+    SaveLearning(String),
 }
 
 /// Antigüedad máxima de una acción para ejecutarla: una que llega tarde (el
@@ -701,6 +707,10 @@ enum Pending {
     },
     /// Las ventanas abiertas, para el contenido del mapa.
     MapScan,
+    /// v1.2: la lista, para saber la letra de una ventana elegida a mano.
+    TeachScan {
+        win: WinKey,
+    },
     /// Respuesta del pedido de ubicación.
     PlaceCmd {
         win: WinKey,
@@ -836,6 +846,12 @@ pub struct World {
     /// v1.2: cuándo pidió el usuario el último cambio de escritorio (µs):
     /// después de abrirse una ventana, gana sobre "escritorio: N".
     user_desk_us: u64,
+    /// v1.2 §6: "Sugerir atajos".
+    teach: crate::teach::Teach,
+    /// La última ventana del selector de Windows al frente y cuándo.
+    shell_at: Option<(u64, WinKey)>,
+    /// La última ventana (no del selector) al frente.
+    prev_fg: Option<WinKey>,
 }
 
 /// La lista de una letra mientras `Caps` sigue abajo.
@@ -1235,6 +1251,14 @@ impl World {
                     self.sync_scanned(result, now_us, &mut out);
                     return out;
                 }
+                if let Some(&Pending::TeachScan { win }) = self.pending.get(&req) {
+                    self.pending.remove(&req);
+                    if let Ok((windows, fg)) = result {
+                        self.adopt_scan(&windows, fg, now_us, &mut out);
+                        self.teach_seen(win, &windows, now_us, &mut out);
+                    }
+                    return out;
+                }
                 if let Some(Pending::MapScan) = self.pending.get(&req) {
                     self.pending.remove(&req);
                     let (windows, fg) = result.unwrap_or_default();
@@ -1301,6 +1325,9 @@ impl World {
                             shorten(&title, 50),
                             f.elapsed_us as f64 / 1000.0,
                         )));
+                        if f.ok {
+                            self.teach_used(letter, &mut out);
+                        }
                     }
                     Err(e) => out.push(Effect::Log(format!("Caps + {key}: {e}"))),
                 }
@@ -1410,6 +1437,7 @@ impl World {
                 }
             }
             Event::Uncloaked(win) => self.on_uncloaked(win, now_us, &mut out),
+            Event::ShellForeground(win) => self.on_shell_foreground(win, now_us),
             Event::Launched { req, result } => match self.pending.remove(&req) {
                 Some(Pending::Launch { letter, app, path, retry }) => {
                     let key = letter as char;
@@ -2904,6 +2932,9 @@ mod world_screens;
 
 #[path = "world_rules.rs"]
 mod world_rules;
+
+#[path = "world_teach.rs"]
+mod world_teach;
 pub use world_screens::{ScreenStats, Survey, SurveyWin};
 
 /// Índice actual de un monitor (los índices no valen entre observaciones: se
@@ -2995,6 +3026,9 @@ mod tests {
         still_running: bool,
         /// Traer al frente esta ventana falla (pantalla de carga).
         unfocusable: Option<WinKey>,
+        /// v1.2 §6: avisos y lo que se mandó a `aprendizaje.txt`.
+        notices: Vec<String>,
+        learned: Vec<String>,
     }
 
     fn win(hwnd: isize, app: &str) -> WinInfo {
@@ -3024,6 +3058,8 @@ mod tests {
                 hit: None,
                 still_running: false,
                 unfocusable: None,
+                notices: Vec::new(),
+                learned: Vec::new(),
             }
         }
 
@@ -3079,7 +3115,8 @@ mod tests {
                         Effect::Show { .. } | Effect::Hide { .. } | Effect::FocusShell { .. } => {
                             panic!("todo está en el escritorio 1")
                         }
-                        Effect::Notice(_) | Effect::MovePointer { .. } => {}
+                        Effect::Notice(text) => self.notices.push(text),
+                        Effect::MovePointer { .. } => {}
                         // Sin pantallas en esta simulación: el Survey queda sin
                         // respuesta y no se rescata nada.
                         Effect::Survey { .. } | Effect::ScreensChanged => {}
@@ -3093,6 +3130,7 @@ mod tests {
                         }
                         Effect::Rescue { .. } => panic!("sin pantallas no hay rescate"),
                         Effect::SaveRule { .. } => panic!("la capa de apps no guarda reglas"),
+                        Effect::SaveLearning(text) => self.learned.push(text),
                         Effect::InspectAt { .. }
                         | Effect::Raise { .. }
                         | Effect::DragStart { .. }
@@ -3145,6 +3183,82 @@ mod tests {
         sim.run(&mut w, letter(b'B')); // la primera ya está al frente → la otra
         sim.run(&mut w, letter(b'B')); // y vuelve
         assert_eq!(sim.focused, vec![second, first]);
+    }
+
+    /// v1.2 §6: el usuario elige `win` con Alt+Tab (pasa primero el
+    /// selector de Windows, la ventana 99).
+    fn by_hand(w: &mut World, sim: &mut Sim, win: WinKey) {
+        let shell = WinKey { hwnd: 99, pid: 99 };
+        sim.run(w, Event::ShellForeground(shell));
+        sim.run(w, Event::Foreground(shell));
+        sim.foreground = Some(win);
+        sim.run(w, Event::Foreground(win));
+    }
+
+    #[test]
+    fn switching_by_hand_reminds_the_letter_from_the_third_time() {
+        let (b, _) = parse_bindings("b = brave");
+        let mut w = World::new(b);
+        let mut sim = Sim::new(&["code", "brave", "notion"]);
+        let (code, brave, notion) = (sim.windows[0].key, sim.windows[1].key, sim.windows[2].key);
+        by_hand(&mut w, &mut sim, brave);
+        by_hand(&mut w, &mut sim, code); // la C por la inicial
+        assert!(sim.notices.is_empty(), "los dos primeros no avisan");
+        by_hand(&mut w, &mut sim, notion);
+        assert_eq!(sim.notices, vec!["La próxima vez: Caps + N".to_owned()]);
+        assert!(sim.learned.last().is_some_and(|t| t.contains("N | usos 0 | avisos 1")));
+        let said: Vec<&String> = sim.logs.iter().filter(|l| l.starts_with("A mano")).collect();
+        assert_eq!(said.len(), 3, "{:?}", sim.logs);
+        assert_eq!(said[0], "A mano (Alt+Tab o la barra) → brave: tiene la B.");
+        // Volver a la misma ventana (Alt+Tab y soltar sin cambiar) no cuenta.
+        by_hand(&mut w, &mut sim, notion);
+        assert_eq!(sim.logs.iter().filter(|l| l.starts_with("A mano")).count(), 3);
+    }
+
+    #[test]
+    fn no_tips_when_off_or_after_using_the_letter() {
+        let (b, _) = parse_bindings("b = brave");
+        let mut w = World::new(b);
+        w.set_learning("B | usos 5 | avisos 0\n");
+        let mut sim = Sim::new(&["code", "brave"]);
+        let (code, brave) = (sim.windows[0].key, sim.windows[1].key);
+        for _ in 0..3 {
+            by_hand(&mut w, &mut sim, code);
+            by_hand(&mut w, &mut sim, brave);
+        }
+        assert!(sim.notices.iter().all(|n| !n.contains("Caps + B")), "{:?}", sim.notices);
+        // Apagado: nada, aunque la C no esté aprendida.
+        let mut w = World::new(Vec::new());
+        w.step(Event::Options(crate::options::Options { tips: false, ..Default::default() }), 0);
+        let mut sim = Sim::new(&["code", "brave"]);
+        for _ in 0..3 {
+            by_hand(&mut w, &mut sim, code);
+            by_hand(&mut w, &mut sim, brave);
+        }
+        assert!(sim.notices.is_empty(), "{:?}", sim.notices);
+        assert!(sim.logs.iter().any(|l| l.starts_with("A mano")), "el log sí");
+    }
+
+    #[test]
+    fn using_the_letter_is_counted_and_a_plain_switch_is_not_by_hand() {
+        let (b, _) = parse_bindings("b = brave");
+        let mut w = World::new(b);
+        let mut sim = Sim::new(&["code", "brave"]);
+        sim.run(&mut w, letter(b'B'));
+        assert_eq!(
+            sim.learned,
+            vec![
+                "# Sugerir atajos de wm: cuántas veces usaste Caps + cada letra y cuántos\n\
+             # avisos viste (con 5 de cualquiera, esa letra no avisa más).\n\
+             B | usos 1 | avisos 0\n"
+                    .to_owned()
+            ]
+        );
+        // Un clic en la ventana (sin el selector de Windows): no es "a mano".
+        let code = sim.windows.iter().find(|x| x.app == "code").unwrap().key;
+        sim.foreground = Some(code);
+        sim.run(&mut w, Event::Foreground(code));
+        assert!(!sim.logs.iter().any(|l| l.starts_with("A mano")), "{:?}", sim.logs);
     }
 
     #[test]

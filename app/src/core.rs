@@ -72,6 +72,12 @@ pub fn run() -> ExitCode {
     if let Some(app) = std::env::var("WM_SCOPE").ok().filter(|s| !s.is_empty()) {
         world.set_desk_scope(Some(app));
     }
+    // v1.2 §6: lo que "Sugerir atajos" ya sabe (usos y avisos por letra).
+    if let Some(text) =
+        wm_model::teach::learning_path().and_then(|p| std::fs::read_to_string(p).ok())
+    {
+        world.set_learning(&text);
+    }
     let mut brain = Brain::new(world, ops, log.clone(), test_mode);
     brain.relaunched = std::env::var("WM_RELAUNCH").ok().is_some_and(|n| n != "0" && !n.is_empty());
     brain.load_options();

@@ -146,7 +146,7 @@ impl Plat {
                         queue.push_back(Event::Inspected { req, result });
                     }
                     Effect::Log(line) => self.logs.push(line),
-                    Effect::Notice(_) | Effect::MovePointer { .. } => {}
+                    Effect::Notice(_) | Effect::MovePointer { .. } | Effect::SaveLearning(_) => {}
                     // Sin pantallas en esta simulación (hito 4d).
                     Effect::Survey { req } => queue.push_back(Event::Surveyed {
                         req,

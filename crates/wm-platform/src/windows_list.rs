@@ -301,6 +301,26 @@ pub fn root_owner(id: WindowId) -> WindowId {
     if h.is_invalid() { id } else { WindowId(h.0 as isize) }
 }
 
+/// v1.2 (plan-v1.2.md §6): ¿es una ventana del selector de Windows (Alt+Tab,
+/// la barra de tareas y sus miniaturas, Win+Tab)? Lo que se elige justo
+/// después se eligió a mano.
+pub fn is_shell_switcher(id: WindowId) -> bool {
+    let mut class = [0u16; 64];
+    // SAFETY: buffer local válido; un HWND inválido da 0.
+    let len = unsafe { GetClassNameW(id.hwnd(), &mut class) };
+    let class = String::from_utf16_lossy(&class[..len.max(0) as usize]);
+    matches!(
+        class.as_str(),
+        "Shell_TrayWnd"
+            | "Shell_SecondaryTrayWnd"
+            | "TaskListThumbnailWnd"
+            | "XamlExplorerHostIslandWindow"
+            | "MultitaskingViewFrame"
+            | "TaskSwitcherWnd"
+            | "ForegroundStaging"
+    )
+}
+
 /// La ventana del escritorio de Windows (`Progman`), para dejar el foco ahí
 /// cuando el escritorio de destino está vacío.
 pub fn shell_window() -> Option<WindowId> {

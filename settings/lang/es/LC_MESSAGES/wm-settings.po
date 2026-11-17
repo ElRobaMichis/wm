@@ -179,3 +179,9 @@ msgstr "Escritorio 3"
 
 msgid "Desk 4"
 msgstr "Escritorio 4"
+
+msgid "Shortcut tips"
+msgstr "Sugerir atajos"
+
+msgid "When you go to an app with Alt+Tab or the taskbar, it reminds you of its letter."
+msgstr "Cuando vas a una app con Alt+Tab o la barra de tareas, te recuerda su letra."

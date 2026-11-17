@@ -44,8 +44,13 @@ impl World {
     /// ¿El usuario pidió un cambio de escritorio (tecla, bandeja) desde
     /// `since_us`, o hay uno en curso o en espera?
     pub(super) fn user_desk_since(&self, since_us: u64) -> bool {
-        self.user_desk_us >= since_us
-            || self.sync.as_ref().is_some_and(|s| rank(s.goal) == 2)
+        self.user_desk_us >= since_us || self.user_desk_busy()
+    }
+
+    /// ¿Hay un cambio de escritorio del usuario en curso o en espera? (Los
+    /// automáticos, como reconciliar, no cuentan.)
+    pub(super) fn user_desk_busy(&self) -> bool {
+        self.sync.as_ref().is_some_and(|s| rank(s.goal) == 2)
             || self.queued.is_some_and(|(g, _)| rank(g) == 2)
     }
 
@@ -184,6 +189,7 @@ impl World {
     /// otro escritorio (clic en la barra, Alt+Tab, o Windows activó una
     /// escondida): saltar o rebotar ([`Goal::Foreign`]).
     pub(super) fn on_foreground(&mut self, win: WinKey, now_us: u64, out: &mut Vec<Effect>) {
+        self.maybe_chosen(win, now_us, out);
         self.came_forward(win, now_us, out);
         match self.desks.desk_of(win) {
             None => {

@@ -633,7 +633,10 @@ fn probe_appdata() -> std::path::PathBuf {
     let _ = std::fs::remove_file(&apps);
     // Sin avisos para los chequeos del mapa (un aviso usa la misma ventana
     // overlay); "opciones y avisos" los vuelve a prender.
-    let _ = std::fs::write(apps.with_file_name("settings.txt"), "avisos = no\n");
+    // Sin avisos ni "Sugerir atajos" (v1.2): la sonda cambia de ventana todo
+    // el tiempo.
+    let _ =
+        std::fs::write(apps.with_file_name("settings.txt"), "avisos = no\nsugerir_atajos = no\n");
     dir
 }
 
@@ -692,8 +695,9 @@ fn options_check(
     let file = std::env::temp_dir().join("wm-ci-probe-appdata").join("wm").join("settings.txt");
     while lines.try_recv().is_ok() {}
     let tmp = file.with_extension("tmp");
-    let written = std::fs::write(&tmp, "puntero_sigue_al_foco = sí\navisos = sí\n")
-        .and_then(|()| std::fs::rename(&tmp, &file));
+    let written =
+        std::fs::write(&tmp, "puntero_sigue_al_foco = sí\navisos = sí\nsugerir_atajos = no\n")
+            .and_then(|()| std::fs::rename(&tmp, &file));
     if let Err(e) = written {
         return r.check(name, Status::Fail, format!("no se pudo escribir {}: {e}", file.display()));
     }

@@ -183,6 +183,21 @@ fn save_rule(log: Log, letter: u8, open: Option<wm_model::rules::OpenRule>) {
     }
 }
 
+/// v1.2 (plan-v1.2.md §6): `aprendizaje.txt`, en un hilo (cambia pocas veces
+/// en toda la vida: los topes son de 5). Si falla, se pierde ese conteo.
+fn save_learning(text: String) {
+    let _ = std::thread::Builder::new().name("wm-save".into()).spawn(move || {
+        let Some(path) = wm_model::teach::learning_path() else { return };
+        let tmp = path.with_extension("txt.tmp");
+        let _ = path
+            .parent()
+            .map(std::fs::create_dir_all)
+            .unwrap_or(Ok(()))
+            .and_then(|()| std::fs::write(&tmp, text))
+            .and_then(|()| std::fs::rename(&tmp, &path));
+    });
+}
+
 /// Una línea al log desde fuera del core (el guardián, el hook de pánico):
 /// abre, agrega y cierra, para no trabar la rotación. Sin consola es la
 /// única salida que queda.
@@ -450,6 +465,11 @@ impl Brain {
                     self.paint_border(Some(windows_list::root_owner(id)));
                     let k = key(windows_list::root_owner(id));
                     if k.pid != 0 {
+                        // v1.2 §6: el selector de Windows, antes que su
+                        // `Foreground` (sugerir atajos).
+                        if windows_list::is_shell_switcher(id) {
+                            self.feed(Event::ShellForeground(k));
+                        }
                         self.feed(Event::Foreground(k));
                     }
                 }
@@ -821,6 +841,7 @@ impl Brain {
                     None => self.feed(Event::ListHit { req, row: None }),
                 },
                 Effect::SaveRule { letter, open } => save_rule(self.log.clone(), letter, open),
+                Effect::SaveLearning(text) => save_learning(text),
                 Effect::ScreensChanged => {
                     if let Some(ui) = self.ui.as_mut() {
                         ui.screens_changed();

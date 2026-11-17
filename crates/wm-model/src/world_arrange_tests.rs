@@ -325,6 +325,7 @@ impl Sim {
                             queue.push_back(Event::DesksSet { req, failed: Vec::new() })
                         }
                         Effect::SaveRule { letter, open } => self.saved.push((letter, open)),
+                        Effect::SaveLearning(_) => {}
                         other => panic!("efecto inesperado: {other:?}"),
                     }
                 }

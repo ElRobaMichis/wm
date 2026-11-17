@@ -440,6 +440,11 @@ export component SettingsWindow inherits Window {
                             checked <=> root.notices;
                         }
                         ToggleRow {
+                            text: @tr("Shortcut tips");
+                            detail: @tr("When you go to an app with Alt+Tab or the taskbar, it reminds you of its letter.");
+                            checked <=> root.tips;
+                        }
+                        ToggleRow {
                             text: @tr("Usage log");
                             detail: @tr("Counts which shortcuts you use, only on this PC. Nothing is sent anywhere.");
                             checked <=> root.usage-log;
