@@ -146,6 +146,14 @@ impl World {
         self.screen_hint("arranque", now_us, out);
     }
 
+    /// "Mostrar todas las ventanas": revisar ya, también las que se habían
+    /// dado por perdidas.
+    pub(crate) fn screens_show_all(&mut self, now_us: u64, out: &mut Vec<Effect>) {
+        self.screens.stubborn.clear();
+        self.screens.rescued.clear();
+        self.screen_hint("Mostrar todas", now_us, out);
+    }
+
     /// Una tecla con `Caps` prueba que la sesión está desbloqueada: cubre un
     /// desbloqueo perdido.
     pub(crate) fn screens_unblock(&mut self, now_us: u64, out: &mut Vec<Effect>) {

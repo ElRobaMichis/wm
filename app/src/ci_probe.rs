@@ -807,6 +807,7 @@ fn core(r: &mut Report, puppets: &[WindowId]) {
     hard_checks(r);
     hung_check(r);
     desks_check(r, puppets);
+    screens_check(r, &lines, puppets);
     let drag = drag_check(puppets[1]);
 
     // "Salir" como en el menú de la bandeja (`Caps` + Esc ya no sale fuera
@@ -855,6 +856,111 @@ fn core(r: &mut Report, puppets: &[WindowId]) {
 }
 
 /// Hito 4a: llevar, ir y deshacer con el core real y teclas inyectadas.
+/// Hito 4d: avisos de pantallas falsos, posteados solo a la ventana de
+/// avisos del core de la sonda (nada cambia en Windows). Títeres corridos
+/// fuera de pantalla (uno visible, otro escondido en el escritorio 2) → tras
+/// la calma vuelven, sin cambiar de tamaño, y la escondida sigue escondida;
+/// con la sesión "bloqueada" no se mueve nada hasta desbloquear.
+fn screens_check(r: &mut Report, lines: &std::sync::mpsc::Receiver<String>, puppets: &[WindowId]) {
+    use wm_model::screens::{min_visible, reachable};
+    use wm_platform::display_watch::{
+        MSG_DISPLAYCHANGE, MSG_SESSION, SESSION_LOCK, SESSION_UNLOCK, poke,
+    };
+    const NAME: &str = "pantallas";
+    if puppets.len() < 3 {
+        return r.check(NAME, Status::Skip, "hacen falta 3 títeres".into());
+    }
+    let Ok(monitors) = wm_platform::displays::topology() else {
+        return r.check(NAME, Status::Skip, "no pude leer las pantallas".into());
+    };
+    let areas: Vec<wm_model::Rect> = monitors.iter().map(|m| m.work).collect();
+    let min = min_visible(&monitors);
+    let on = |id: WindowId| {
+        wm_platform::ghost::frame_bounds(id).is_some_and(|f| reachable(f, &areas, min))
+    };
+    let far_left = monitors.iter().map(|m| m.bounds.left).min().unwrap_or(0) - 5000;
+    let away = |id: WindowId| {
+        let _ = windows_list::move_async(id, far_left, 200);
+    };
+    let size = |id: WindowId| wm_platform::ghost::frame_bounds(id).map(|f| (f.width(), f.height()));
+    let hidden = |id: WindowId| hide::visibility(id).cloaked == hide::DWM_CLOAKED_SHELL;
+    let instance = Some("ci-probe");
+    let (p, q, still) = (puppets[0], puppets[1], puppets[2]);
+
+    // Q al escritorio 2 (con cloak).
+    let _ = windows_list::activate(q);
+    std::thread::sleep(Duration::from_millis(100));
+    window_chord(b'2');
+    if wait_for(Duration::from_secs(1), || hidden(q)).is_none() {
+        return r.check(NAME, Status::Fail, "no se pudo llevar un títere al escritorio 2".into());
+    }
+    let before = (size(p), size(q), wm_platform::ghost::frame_bounds(still));
+    away(p);
+    away(q);
+    if wait_for(Duration::from_millis(500), || !on(p) && !on(q)).is_none() {
+        return r.check(NAME, Status::Fail, "no se pudieron correr los títeres".into());
+    }
+    while lines.try_recv().is_ok() {}
+    let mut poked = true;
+    for _ in 0..5 {
+        poked &= poke(instance, MSG_DISPLAYCHANGE, 0);
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    if !poked {
+        return r.check(NAME, Status::Fail, "no encontré la ventana de avisos del core".into());
+    }
+    let last = Instant::now();
+    std::thread::sleep(Duration::from_millis(250));
+    let early = on(p) || on(q);
+    let back = wait_for(Duration::from_secs(3), || on(p) && on(q)).map(|_| last.elapsed());
+    let still_hidden = hidden(q);
+    let sizes_kept = (size(p), size(q)) == (before.0, before.1);
+    let untouched = wm_platform::ghost::frame_bounds(still) == before.2;
+    std::thread::sleep(Duration::from_millis(100));
+    let calm: Vec<String> =
+        lines.try_iter().filter(|l| l.starts_with("Pantallas: en calma")).collect();
+
+    // Bloqueo simulado: nada se mueve hasta desbloquear.
+    let _ = poke(instance, MSG_SESSION, SESSION_LOCK);
+    std::thread::sleep(Duration::from_millis(100));
+    away(p);
+    let _ = poke(instance, MSG_DISPLAYCHANGE, 0);
+    std::thread::sleep(Duration::from_millis(1500));
+    let waited_locked = !on(p);
+    let _ = poke(instance, MSG_SESSION, SESSION_UNLOCK);
+    let unlocked = wait_for(Duration::from_secs(3), || on(p));
+
+    // "Mostrar todas" trae a Q al escritorio activo.
+    let shown_all = wm_platform::tray::send_order_in("ci-probe", wm_platform::tray::Order::ShowAll)
+        && wait_for(Duration::from_secs(2), || !hidden(q) && on(q)).is_some();
+
+    let ok = !early
+        && back.is_some()
+        && still_hidden
+        && sizes_kept
+        && untouched
+        && calm.len() == 1
+        && waited_locked
+        && unlocked.is_some()
+        && shown_all;
+    let b = |v: bool| if v { "sí" } else { "NO" };
+    let detail = format!(
+        "5 avisos falsos → antes de la calma se movió algo: {}; volvieron {}; la escondida sigue escondida: {}; \
+         mismo tamaño: {}; la otra quieta: {}; líneas de calma: {}; bloqueada sin mover: {}; \
+         al desbloquear volvió {}; Mostrar todas la trae: {}",
+        if early { "SÍ" } else { "no" },
+        back.map_or_else(|| "NUNCA".into(), |d| format!("a los {} del último aviso", ms(d))),
+        b(still_hidden),
+        b(sizes_kept),
+        b(untouched),
+        calm.len(),
+        b(waited_locked),
+        unlocked.map_or_else(|| "NUNCA".into(), |d| format!("a los {}", ms(d))),
+        b(shown_all),
+    );
+    r.check(NAME, if ok { Status::Ok } else { Status::Fail }, detail);
+}
+
 fn desks_check(r: &mut Report, puppets: &[WindowId]) {
     const NAME: &str = "escritorios";
     const CAPS: u8 = 0x14;

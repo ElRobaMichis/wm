@@ -1822,7 +1822,12 @@ impl World {
             // Igual que Z: la entrada del diario ya dice qué ventana era (no
             // hace falta que esté al frente). También en pausa: es un clic.
             Command::Undo => self.undo_next(now_us, out),
-            Command::ShowAll => self.start_sync(crate::desks::Goal::ShowAll, now_us, out),
+            Command::ShowAll => {
+                self.start_sync(crate::desks::Goal::ShowAll, now_us, out);
+                // Hito 4d.6: el botón de pánico también trae lo que quedó
+                // fuera de pantalla (sin excepciones por "tercas").
+                self.screens_show_all(now_us, out);
+            }
             Command::Reconcile => self.start_sync(crate::desks::Goal::Verify, now_us, out),
             Command::Desk(n) => self.start_sync(crate::desks::Goal::Desk(n), now_us, out),
         }

@@ -338,3 +338,18 @@ fn a_maximized_window_left_on_a_gone_monitor_is_maximized_again_on_one_that_is_t
     assert!(matches!(effects[i + 1], Effect::Place { .. }));
     assert!(matches!(effects[i + 2], Effect::Maximize { .. }));
 }
+
+#[test]
+fn show_all_brings_back_even_a_window_we_had_given_up_on() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    let runner = sim.add(1, Rect::new(4000, 100, 4800, 700));
+    sim.wander = Some(runner);
+    sim.screen(&mut w, ScreenEvent::Changed);
+    sim.wait(&mut w, 5_000);
+    assert!(!sim.reachable(runner), "se fue dos veces: terca");
+    sim.wander = None;
+    sim.run(&mut w, Event::Command(crate::world::Command::ShowAll));
+    sim.wait(&mut w, 2_000);
+    assert!(sim.reachable(runner), "{:?}", sim.logs);
+}
