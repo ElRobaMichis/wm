@@ -156,6 +156,19 @@ pub fn map_view_with(
     open: &[&str],
     desks: DeskSummary,
 ) -> MapView {
+    map_view_targets(layer, bindings, open, desks, &[])
+}
+
+/// Como [`map_view_with`], con la app a la que va **de verdad** cada letra
+/// ahora (`targets`: letra → app de la ventana a la que va el próximo toque;
+/// plan-apps.md §5). Una letra con destino se muestra como abierta.
+pub fn map_view_targets(
+    layer: Layer,
+    bindings: &[AppBinding],
+    open: &[&str],
+    desks: DeskSummary,
+    targets: &[(u8, String)],
+) -> MapView {
     let cell = |letter: char| -> KeyCell {
         let (label, tone) = match layer {
             Layer::Window => match WINDOW_KEYS.iter().find(|(l, _)| *l == letter) {
@@ -173,15 +186,19 @@ pub fn map_view_with(
                             && !bindings.iter().any(|b| b.names().any(|n| n == **app))
                     })
                 };
+                let target = targets.iter().find(|(l, _)| *l == letter as u8).map(|(_, a)| a);
                 match bound {
                     Some(b) => {
-                        let tone = if b.names().any(|n| open.contains(&n)) {
+                        let tone = if target.is_some() || b.names().any(|n| open.contains(&n)) {
                             Tone::Open
                         } else {
                             Tone::Normal
                         };
                         let name = b.label.clone().unwrap_or_else(|| display_name(&b.app));
                         (shorten(&name), tone)
+                    }
+                    None if target.is_some() => {
+                        (shorten(&display_name(target.expect("visto"))), Tone::Normal)
                     }
                     None => match auto() {
                         Some(app) => (shorten(&display_name(app)), Tone::Normal),

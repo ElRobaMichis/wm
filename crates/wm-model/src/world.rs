@@ -729,6 +729,10 @@ pub struct World {
     map_shown: bool,
     /// Las apps abiertas cuando se armó el mapa.
     map_open: Vec<String>,
+    /// Las ventanas (orden Z) y la del frente cuando se armó el mapa: para
+    /// mostrar a qué ventana va cada letra, y actualizarlo en cada toque.
+    map_wins: Vec<WinInfo>,
+    map_fg: Option<WinKey>,
     /// Lo que se sabe del tamaño mínimo o máximo de cada ventana (de las
     /// veces que no tomó el tamaño pedido): un cambio de tamaño que no
     /// respeta esos límites va sin animación.
@@ -948,11 +952,51 @@ impl World {
             active: self.desks.active(),
             counts: self.desks.counts(),
         };
+        let targets: Vec<(u8, String)> =
+            (b'A'..=b'Z').filter_map(|l| self.predict(l).map(|a| (l, a))).collect();
         let views = vec![
-            crate::mapview::map_view_with(Layer::Apps, &self.bindings, &open, desks),
-            crate::mapview::map_view_with(Layer::Window, &self.bindings, &open, desks),
+            crate::mapview::map_view_targets(Layer::Apps, &self.bindings, &open, desks, &targets),
+            crate::mapview::map_view_targets(Layer::Window, &self.bindings, &open, desks, &targets),
         ];
         out.push(Effect::ShowMap { layer: self.layer, views });
+    }
+
+    /// A qué app va el próximo toque de `letter` (lo mismo que `pick`, sin
+    /// cambiar nada), con las ventanas de cuando se armó el mapa.
+    fn predict(&self, letter: u8) -> Option<String> {
+        let list: Vec<(WinKey, crate::apps::AppId)> =
+            self.map_wins.iter().map(|w| (w.key, w.app_id())).collect();
+        let Target::Focus { windows: order, .. } = resolve(letter, &self.bindings, &list) else {
+            return None;
+        };
+        let fg = self.map_fg;
+        let next = match self.cycle.as_ref().filter(|c| c.letter == letter) {
+            Some(c) => {
+                let alive: Vec<WinKey> =
+                    c.order.iter().copied().filter(|w| order.contains(w)).collect();
+                let cur = c.order.get(c.pos).copied();
+                let i = cur.and_then(|w| alive.iter().position(|&x| x == w)).unwrap_or(0);
+                alive.get((i + 1) % alive.len().max(1)).copied()
+            }
+            None => match fg.filter(|f| order.contains(f)) {
+                Some(f) => order.iter().copied().find(|&w| w != f).or(Some(f)),
+                None => order.first().copied(),
+            },
+        }?;
+        self.map_wins.iter().find(|w| w.key == next).map(|w| w.app_id().name().to_owned())
+    }
+
+    /// Una ventana pasó al frente con el mapa visible: va arriba en el orden
+    /// guardado y el mapa se actualiza (el próximo toque va a otra).
+    fn map_focused(&mut self, win: WinKey, out: &mut Vec<Effect>) {
+        if let Some(i) = self.map_wins.iter().position(|w| w.key == win) {
+            let w = self.map_wins.remove(i);
+            self.map_wins.insert(0, w);
+        }
+        self.map_fg = Some(win);
+        if self.map_shown {
+            self.send_map(out);
+        }
     }
 
     fn req(&mut self) -> Req {
@@ -1059,8 +1103,10 @@ impl World {
                 }
                 if let Some(Pending::MapScan) = self.pending.get(&req) {
                     self.pending.remove(&req);
-                    let windows = result.map(|(w, _)| w).unwrap_or_default();
+                    let (windows, fg) = result.unwrap_or_default();
                     self.adopt_scan(&windows, &mut out);
+                    self.map_fg = fg;
+                    self.map_wins = windows.clone();
                     self.show_map(&windows, &mut out);
                     return out;
                 }
@@ -1094,6 +1140,9 @@ impl World {
                         self.activations.neutral_key += u32::from(f.neutral_key);
                         if f.ok && self.options.mouse_follows_focus {
                             out.push(Effect::MovePointer { win });
+                        }
+                        if f.ok {
+                            self.map_focused(win, &mut out);
                         }
                         let status = if f.ok { "ok" } else { "FALLÓ" };
                         let trick = if f.neutral_key { ", con tecla neutra" } else { "" };
@@ -2340,7 +2389,11 @@ impl World {
             self.start_sync_with(goal, key_us, windows, foreground, now_us, out);
             return;
         }
-        let title = windows.iter().find(|w| w.key == window).map_or("", |w| w.title.as_str());
+        let info = windows.iter().find(|w| w.key == window);
+        let title = info.map_or("", |w| w.title.as_str());
+        // El nombre de la app de **esa** ventana (en una letra sin asignar
+        // la lista mezcla apps: Nanofy y Notepad).
+        let app = info.map_or(app, |w| w.app_id().name());
         let req = self.req();
         let pending = Pending::Focus {
             letter,
@@ -2702,6 +2755,23 @@ mod tests {
         let result = Ok((sim.windows.clone(), sim.foreground));
         sim.run(&mut w, Event::Windows { req, result });
         assert_eq!(sim.focused, vec![steam.key], "{:?}", sim.logs);
+    }
+
+    #[test]
+    fn the_map_says_where_the_next_tap_goes() {
+        // Prueba del usuario: el mapa decía "notepad" y la tecla iba a Nanofy.
+        let mut w = World::new(Vec::new());
+        let mut sim = Sim::new(&["claude", "notepad", "nanofy"]);
+        w.map_wins = sim.windows.clone();
+        w.map_fg = sim.foreground;
+        assert_eq!(w.predict(b'N').as_deref(), Some("notepad"));
+        sim.run(&mut w, letter(b'N')); // va a Notepad; Caps sigue abajo
+        assert!(sim.logs.last().unwrap().contains("→ notepad «notepad»"), "{:?}", sim.logs);
+        assert_eq!(w.predict(b'N').as_deref(), Some("nanofy"), "el próximo toque va a Nanofy");
+        sim.run(&mut w, letter(b'N'));
+        assert!(sim.logs.last().unwrap().contains("→ nanofy «nanofy»"), "{:?}", sim.logs);
+        sim.run(&mut w, layer_off());
+        assert_eq!(w.predict(b'N').as_deref(), Some("notepad"), "soltado: la anterior");
     }
 
     #[test]
