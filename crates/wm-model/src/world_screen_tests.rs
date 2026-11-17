@@ -205,6 +205,11 @@ fn a_window_left_outside_comes_back_with_its_size_and_one_notice() {
     assert_eq!(sim.rescues, 1);
     assert!(sim.reachable(lost), "{:?}", sim.frame(lost));
     assert_eq!((sim.frame(lost).width(), sim.frame(lost).height()), (800, 600));
+    let (f, a) = (sim.frame(lost), monitor(0).work);
+    assert!(
+        f.left >= a.left && f.top >= a.top && f.right <= a.right && f.bottom <= a.bottom,
+        "vuelve entera, no apenas asomada: {f:?}"
+    );
     assert_eq!(sim.frame(ok), Rect::new(100, 100, 900, 700), "la que estaba bien no se toca");
     let line = sim.logs.iter().find(|l| l.starts_with("Pantallas: en calma")).expect("log");
     assert!(line.contains("1 fuera de pantalla") && line.contains("app2"), "{line}");

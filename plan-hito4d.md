@@ -132,7 +132,7 @@ Diseño de Fable 5.2 (16/11/2026) sobre el código real después de los hitos 0�
 | Pantalla completa (marco == límites de un monitor) | Nada, aunque haya una barra arriba |
 | Maximizada con el centro dentro de algún monitor | Nada. Así no depende de cómo informe DWM el marco de una maximizada [S] |
 | Maximizada perdida | `Normalize` + `Place` centrada en el monitor más cercano + `Maximize`, la misma secuencia que ya usa `undo` (`world.rs:1821-1845`) |
-| Normal, visible o **escondida con cloak en otro escritorio** | `Move` con el desplazamiento mínimo de `screens::rescue`; el tamaño no cambia. `SetWindowPos` funciona con cloak [V] plan-core §4 |
+| Normal, visible o **escondida con cloak en otro escritorio** | `Move` **entera** adentro del área del monitor más cercano (implementación, 16/11/2026: el desplazamiento mínimo de `screens::rescue` la dejaba apenas asomada, 120 × 48 px, y eso confunde a quien no sabe arrastrarla); el tamaño no cambia. `SetWindowPos` funciona con cloak [V] plan-core §4 |
 | Con colocación en curso (incluye en vuelo), en arrastre, fuera de `WM_SCOPE`, o `stubborn` | Nada (`skip`). Para el `ci-probe`, el alcance garantiza que solo se muevan sus títeres |
 
 **Límite:** los diálogos con dueño no se revisan (no están en `user_windows`); Windows los mueve con su dueño [S].

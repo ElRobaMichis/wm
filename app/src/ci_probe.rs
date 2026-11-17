@@ -895,6 +895,10 @@ fn screens_check(r: &mut Report, lines: &std::sync::mpsc::Receiver<String>, pupp
         return r.check(NAME, Status::Fail, "no se pudo llevar un títere al escritorio 2".into());
     }
     let before = (size(p), size(q), wm_platform::ghost::frame_bounds(still));
+    let home: Vec<(WindowId, wm_model::Rect)> = [p, q]
+        .iter()
+        .filter_map(|&id| wm_platform::ghost::window_rect(id).map(|r| (id, r)))
+        .collect();
     away(p);
     away(q);
     if wait_for(Duration::from_millis(500), || !on(p) && !on(q)).is_none() {
@@ -912,7 +916,15 @@ fn screens_check(r: &mut Report, lines: &std::sync::mpsc::Receiver<String>, pupp
     let last = Instant::now();
     std::thread::sleep(Duration::from_millis(250));
     let early = on(p) || on(q);
-    let back = wait_for(Duration::from_secs(3), || on(p) && on(q)).map(|_| last.elapsed());
+    // Vuelven enteras a una pantalla, no solo "alcanzables".
+    let whole = |id: WindowId| {
+        wm_platform::ghost::frame_bounds(id).is_some_and(|f| {
+            areas.iter().any(|a| {
+                f.left >= a.left && f.top >= a.top && f.right <= a.right && f.bottom <= a.bottom
+            })
+        })
+    };
+    let back = wait_for(Duration::from_secs(3), || whole(p) && whole(q)).map(|_| last.elapsed());
     let still_hidden = hidden(q);
     let sizes_kept = (size(p), size(q)) == (before.0, before.1);
     let untouched = wm_platform::ghost::frame_bounds(still) == before.2;
@@ -934,6 +946,14 @@ fn screens_check(r: &mut Report, lines: &std::sync::mpsc::Receiver<String>, pupp
     let shown_all = wm_platform::tray::send_order_in("ci-probe", wm_platform::tray::Order::ShowAll)
         && wait_for(Duration::from_secs(2), || !hidden(q) && on(q)).is_some();
 
+    // Los títeres vuelven a donde estaban (los chequeos siguientes los
+    // quieren enteros en pantalla).
+    for (id, r) in &home {
+        let _ = windows_list::move_async(*id, r.left, r.top);
+    }
+    let _ = wait_for(Duration::from_millis(500), || {
+        home.iter().all(|(id, r)| wm_platform::ghost::window_rect(*id) == Some(*r))
+    });
     let ok = !early
         && back.is_some()
         && still_hidden
@@ -945,7 +965,7 @@ fn screens_check(r: &mut Report, lines: &std::sync::mpsc::Receiver<String>, pupp
         && shown_all;
     let b = |v: bool| if v { "sí" } else { "NO" };
     let detail = format!(
-        "5 avisos falsos → antes de la calma se movió algo: {}; volvieron {}; la escondida sigue escondida: {}; \
+        "5 avisos falsos → antes de la calma se movió algo: {}; volvieron enteras {}; la escondida sigue escondida: {}; \
          mismo tamaño: {}; la otra quieta: {}; líneas de calma: {}; bloqueada sin mover: {}; \
          al desbloquear volvió {}; Mostrar todas la trae: {}",
         if early { "SÍ" } else { "no" },

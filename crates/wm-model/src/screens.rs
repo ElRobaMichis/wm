@@ -103,7 +103,7 @@ pub fn min_visible(monitors: &[MonitorObs]) -> MinVisible {
 }
 
 /// Plan de rescate tras la calma (plan-hito4d §3.2): solo las ventanas
-/// inalcanzables; las minimizadas, las de pantalla completa, las maximizadas
+/// inalcanzables, que vuelven enteras al área del monitor más cercano; las minimizadas, las de pantalla completa, las maximizadas
 /// con el centro en algún monitor y las marcadas `skip` no se tocan. Devuelve
 /// `(índice en seen, veredicto)`.
 pub fn rescue_plan(monitors: &[MonitorObs], seen: &[Seen]) -> Vec<(usize, Verdict)> {
@@ -131,8 +131,18 @@ pub fn rescue_plan(monitors: &[MonitorObs], seen: &[Seen]) -> Vec<(usize, Verdic
             }
             continue;
         }
-        if let Some(r) = rescue(f, &areas, min) {
-            plan.push((i, Verdict::Move { dx: r.left - f.left, dy: r.top - f.top }));
+        if !reachable(f, &areas, min)
+            && let Some(m) = monitor_of(monitors, f)
+        {
+            // Entera adentro del área más cercana (no solo "alcanzable"): una
+            // ventana apenas asomada confunde a quien no sabe arrastrarla
+            // (decisión de UX sobre plan-hito4d §3.2). Mismo tamaño; si es
+            // más grande que el área, la barra de título queda arriba a la
+            // izquierda.
+            let a = monitors[m].work;
+            let left = f.left.clamp(a.left, (a.right - f.width()).max(a.left));
+            let top = f.top.clamp(a.top, (a.bottom - f.height()).max(a.top));
+            plan.push((i, Verdict::Move { dx: left - f.left, dy: top - f.top }));
         }
     }
     plan
