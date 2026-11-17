@@ -561,8 +561,8 @@ impl Brain {
                     let t = self.ops.submit(Op::Focus(WindowId(win.hwnd), win.pid));
                     self.waits.insert(t, Wait::Focus(req));
                 }
-                Effect::Launch { req, path, names } => {
-                    let t = self.ops.submit(Op::Launch { path, names });
+                Effect::Launch { req, path, names, only_if_closed } => {
+                    let t = self.ops.submit(Op::Launch { path, names, only_if_closed });
                     self.waits.insert(t, Wait::Launch(req));
                 }
                 Effect::Revive { req, names } => {

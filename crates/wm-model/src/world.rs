@@ -460,9 +460,11 @@ pub enum Effect {
     Launch {
         req: Req,
         path: String,
-        /// Sus ejecutables: si ya hay uno con una ventana a la vista (la
-        /// pantalla de carga de AutoCAD o Revit), no se abre otra vez.
+        /// Sus ejecutables.
         names: Vec<String>,
+        /// Abrirla solo si ninguno de esos ejecutables corre (durante la
+        /// espera; si corre, responde [`LOADING`]).
+        only_if_closed: bool,
     },
     /// Abrir de nuevo una app que corre sin ventanas (en la bandeja), desde
     /// el ejecutable de su proceso. Responde con `Launched`.
@@ -634,6 +636,8 @@ enum Pending {
         letter: u8,
         app: String,
         path: String,
+        /// Pedido durante la espera: se abre solo si la app ya no corre.
+        retry: bool,
     },
     /// Abrir de nuevo una app viva sin ventanas (en la bandeja).
     Revive {
@@ -787,6 +791,8 @@ pub struct World {
     follow: Option<Follow>,
     /// La ventana al frente cuando se pidió abrir (pasa a `Follow`).
     follow_fg: Option<WinKey>,
+    /// El `Focus` del seguimiento en curso: si falla, se sigue esperando.
+    follow_focus: Option<(Req, Follow)>,
 }
 
 /// La lista de una letra mientras `Caps` sigue abajo.
@@ -828,11 +834,17 @@ struct Follow {
     /// cosa y no se le roba el foco.
     fg: Option<WinKey>,
     scanning: bool,
+    /// Ventanas que no se dejaron traer al frente (la pantalla de carga de
+    /// IntelliJ): se siguen esperando las demás.
+    skip: Vec<WinKey>,
 }
 
 /// Cuándo mirar si la app recién abierta ya tiene ventana (las pesadas,
 /// como AutoCAD o Revit, tardan cerca de un minuto).
 const FOLLOW_MS: [u64; 8] = [300, 800, 1500, 3000, 6000, 12_000, 30_000, 60_000];
+/// Respuesta de `Launch` con `only_if_closed` cuando la app sigue corriendo
+/// (cargando): no es un error, se sigue esperando su ventana.
+pub const LOADING: &str = "cargando";
 /// Cuánto dura la protección contra abrir dos veces: hasta que aparece su
 /// ventana o 90 s (AutoCAD y Revit tardan). Solo la que abrimos nosotros:
 /// una app que el usuario cerró se abre de nuevo al toque (antes se miraba
@@ -1204,6 +1216,15 @@ impl World {
                 else {
                     return out;
                 };
+                if let Some((r, next)) = self.follow_focus.take()
+                    && r == req
+                {
+                    if result.as_ref().is_ok_and(|f| f.ok) {
+                        self.launching.remove(&app);
+                    } else if next.step < FOLLOW_MS.len() {
+                        self.follow = Some(next);
+                    }
+                }
                 let key = letter as char;
                 match result {
                     Ok(f) => {
@@ -1325,9 +1346,21 @@ impl World {
             Event::Options(o) => self.options = o,
             Event::Uncloaked(win) => self.on_uncloaked(win, now_us, &mut out),
             Event::Launched { req, result } => match self.pending.remove(&req) {
-                Some(Pending::Launch { letter, app, path }) => {
+                Some(Pending::Launch { letter, app, path, retry }) => {
                     let key = letter as char;
                     match result {
+                        Err(e) if e.starts_with(LOADING) => {
+                            out.push(Effect::Log(format!(
+                                "Caps + {key}: abriendo {app}… (espera)"
+                            )));
+                        }
+                        Ok(()) if retry => {
+                            out.push(Effect::Log(format!(
+                                "Caps + {key} → abriendo {app} otra vez: no llegó a abrir ({path})"
+                            )));
+                            self.launching.insert(app.clone(), now_us + LAUNCH_GUARD_US);
+                            self.start_follow(letter, now_us);
+                        }
                         Ok(()) => {
                             out.push(Effect::Log(format!(
                                 "Caps + {key} → abriendo {app} ({path})"
@@ -2408,12 +2441,16 @@ impl World {
                 self.focus_window(letter, key_us, window, &app, windows, foreground, now_us, out);
             }
             Target::Launch { app, path } => {
-                if self.guarded(&app, key, now_us, out) {
-                    return;
+                // Durante la espera, se pide abrir "solo si ya no corre": si
+                // el intento anterior falló (la app no llegó a abrir), se
+                // abre de nuevo; si sigue cargando, solo se avisa.
+                let retry = self.launching.get(&app).is_some_and(|&until| until > now_us);
+                if !retry {
+                    self.launching.insert(app.clone(), now_us + LAUNCH_GUARD_US);
                 }
-                self.launching.insert(app.clone(), now_us + LAUNCH_GUARD_US);
                 let req = self.req();
-                let pending = Pending::Launch { letter, app: app.clone(), path: path.clone() };
+                let pending =
+                    Pending::Launch { letter, app: app.clone(), path: path.clone(), retry };
                 self.pending.insert(req, pending);
                 self.follow_fg = foreground;
                 let names = self
@@ -2422,7 +2459,7 @@ impl World {
                     .find(|b| b.letter == letter.to_ascii_uppercase())
                     .map(|b| b.names().map(str::to_owned).collect())
                     .unwrap_or_default();
-                out.push(Effect::Launch { req, path, names });
+                out.push(Effect::Launch { req, path, names, only_if_closed: retry });
             }
             Target::Revive { app, names } => {
                 if self.guarded(&app, key, now_us, out) {
@@ -2678,7 +2715,14 @@ impl World {
 
     fn start_follow(&mut self, letter: u8, now_us: u64) {
         let fg = self.follow_fg.take();
-        self.follow = Some(Follow { letter, launched_us: now_us, step: 0, fg, scanning: false });
+        self.follow = Some(Follow {
+            letter,
+            launched_us: now_us,
+            step: 0,
+            fg,
+            scanning: false,
+            skip: Vec::new(),
+        });
     }
 
     fn follow_deadline(&self) -> Option<u64> {
@@ -2711,11 +2755,17 @@ impl World {
         let Some(f) = self.follow.take() else { return };
         let list: Vec<(WinKey, crate::apps::AppId)> =
             windows.iter().map(|w| (w.key, w.app_id())).collect();
-        if let Target::Focus { windows: order, app } = resolve(f.letter, &self.bindings, &list) {
-            self.launching.remove(&app);
+        if let Target::Focus { windows: order, app } = resolve(f.letter, &self.bindings, &list)
+            && let Some(&window) = order.iter().find(|w| !f.skip.contains(w))
+        {
             if fg == f.fg && fg.is_none_or(|g| !order.contains(&g)) {
-                let window = order[0];
                 self.focus_window(f.letter, f.launched_us, window, &app, windows, fg, now_us, out);
+                // Si no se deja traer (pantalla de carga), se sigue esperando.
+                let mut next = Follow { scanning: false, ..f };
+                next.skip.push(window);
+                self.follow_focus = Some((self.next_req, next));
+            } else {
+                self.launching.remove(&app);
             }
             return;
         }
@@ -2820,6 +2870,10 @@ mod tests {
         list_shows: usize,
         /// La fila que "cae" bajo un clic (`None`: afuera de la lista).
         hit: Option<usize>,
+        /// La app que se abrió sigue corriendo (cargando).
+        still_running: bool,
+        /// Traer al frente esta ventana falla (pantalla de carga).
+        unfocusable: Option<WinKey>,
     }
 
     fn win(hwnd: isize, app: &str) -> WinInfo {
@@ -2847,6 +2901,8 @@ mod tests {
                 list: None,
                 list_shows: 0,
                 hit: None,
+                still_running: false,
+                unfocusable: None,
             }
         }
 
@@ -2861,7 +2917,8 @@ mod tests {
                             result: Ok((self.windows.clone(), self.foreground)),
                         }),
                         Effect::Focus { req, win } => {
-                            if self.focus_ok {
+                            let ok = self.focus_ok && self.unfocusable != Some(win);
+                            if ok {
                                 // Como Windows: la enfocada pasa arriba del orden Z.
                                 if let Some(i) = self.windows.iter().position(|w| w.key == win) {
                                     let w = self.windows.remove(i);
@@ -2870,14 +2927,17 @@ mod tests {
                                 self.foreground = Some(win);
                                 self.focused.push(win);
                             }
-                            let report = FocusReport {
-                                ok: self.focus_ok,
-                                neutral_key: false,
-                                elapsed_us: 1500,
-                            };
+                            let report = FocusReport { ok, neutral_key: false, elapsed_us: 1500 };
                             queue.push(Event::Focused { req, result: Ok(report) });
                         }
-                        Effect::Launch { req, path, .. } => {
+                        Effect::Launch { req, path, only_if_closed, .. } => {
+                            if only_if_closed && self.still_running {
+                                queue.push(Event::Launched {
+                                    req,
+                                    result: Err(format!("{LOADING}: sigue corriendo")),
+                                });
+                                continue;
+                            }
                             self.launched.push(path);
                             queue.push(Event::Launched { req, result: Ok(()) });
                         }
@@ -3185,6 +3245,50 @@ mod tests {
             Some("notepad"),
             "soltado: la anterior"
         );
+    }
+
+    /// Avanza el reloj hasta `at` (µs) y contesta el `Scan` del seguimiento.
+    fn follow_until(w: &mut World, sim: &mut Sim, at: u64) {
+        let effects = w.step(Event::Tick, at);
+        if let Some(Effect::Scan { req }) = effects.first().cloned() {
+            let result = Ok((sim.windows.clone(), sim.foreground));
+            sim.run(w, Event::Windows { req, result });
+        }
+    }
+
+    #[test]
+    fn a_splash_that_cannot_be_focused_does_not_stop_the_wait() {
+        let (b, _) = parse_bindings("i = idea64 | C:/wm-test/idea64.exe");
+        let mut w = World::new(b);
+        let mut sim = Sim::new(&["code"]);
+        sim.run(&mut w, letter(b'I'));
+        assert_eq!(sim.launched.len(), 1);
+        // Aparece la pantalla de carga: no se deja traer al frente.
+        let splash = win(20, "idea64");
+        sim.unfocusable = Some(splash.key);
+        sim.windows.push(splash.clone());
+        follow_until(&mut w, &mut sim, 1_000_000 + 300_000);
+        assert!(sim.focused.is_empty());
+        // Después, la ventana de verdad: se trae al frente sola.
+        let main = win(21, "idea64");
+        sim.windows.push(main.clone());
+        follow_until(&mut w, &mut sim, 1_000_000 + 800_000);
+        assert_eq!(sim.focused, vec![main.key], "{:?}", sim.logs);
+    }
+
+    #[test]
+    fn pressing_again_while_waiting_reopens_only_if_it_is_not_running() {
+        let (b, _) = parse_bindings("i = idea64 | C:/wm-test/idea64.exe");
+        let mut w = World::new(b);
+        let mut sim = Sim::new(&["code"]);
+        sim.run(&mut w, letter(b'I'));
+        sim.still_running = true; // cargando
+        sim.run(&mut w, letter(b'I'));
+        assert_eq!(sim.launched.len(), 1, "{:?}", sim.logs);
+        assert!(sim.logs.last().unwrap().contains("abriendo idea64… (espera)"), "{:?}", sim.logs);
+        sim.still_running = false; // no llegó a abrir (la cerraron, se negó)
+        sim.run(&mut w, letter(b'I'));
+        assert_eq!(sim.launched.len(), 2, "se abre otra vez: {:?}", sim.logs);
     }
 
     #[test]

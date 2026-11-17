@@ -94,8 +94,9 @@ pub enum Op {
     /// Mostrar todo lo marcado.
     RestoreAll,
     /// Abrir un programa (crear un proceso puede tardar: antivirus, disco).
-    /// `names`: sus ejecutables (si ya hay uno cargando, no se abre otro).
-    Launch { path: String, names: Vec<String> },
+    /// `names`: sus ejecutables; con `only_if_closed`, si alguno corre no se
+    /// abre (responde `LOADING`: sigue cargando).
+    Launch { path: String, names: Vec<String>, only_if_closed: bool },
     /// Abrir de nuevo una app viva sin ventanas, desde el ejecutable de su
     /// proceso (plan-apps.md §3).
     Revive(Vec<String>),
@@ -575,7 +576,10 @@ impl Context {
             }
             Op::Scan => Ok(Output::Windows(windows_list::user_windows())),
             Op::RestoreAll => Ok(Output::Restored(hide::restore_all())),
-            Op::Launch { path, .. } => {
+            Op::Launch { path, names, only_if_closed } => {
+                if *only_if_closed && crate::process_info::running(names) {
+                    return Err(format!("{}: sigue corriendo", wm_model::world::LOADING));
+                }
                 crate::launch::open(path).map(|()| Output::Nothing).map_err(|e| e.to_string())
             }
             Op::Revive(names) => {

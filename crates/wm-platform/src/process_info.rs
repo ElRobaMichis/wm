@@ -211,6 +211,11 @@ pub fn running_exe(names: &[String]) -> Option<String> {
         .next()
 }
 
+/// ¿Corre algún proceso con alguno de estos ejecutables?
+pub fn running(names: &[String]) -> bool {
+    !names.is_empty() && parents().values().any(|(_, name)| names.iter().any(|n| stem(name) == *n))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
