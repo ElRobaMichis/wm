@@ -5383,6 +5383,7 @@ dependencies = [
  "slint",
  "slint-build",
  "wm-model",
+ "wm-platform",
 ]
 
 [[package]]

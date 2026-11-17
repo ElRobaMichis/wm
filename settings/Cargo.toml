@@ -13,6 +13,8 @@ path = "src/main.rs"
 
 [dependencies]
 wm-model.workspace = true
+# Las apps abiertas y las del menú Inicio (plan-apps.md §4).
+wm-platform.workspace = true
 # Licencia de Slint: GPL-3.0-only OR royalty-free OR comercial; usamos GPL-3.0.
 slint = { version = "=1.18.1", default-features = false, features = [
     "std",

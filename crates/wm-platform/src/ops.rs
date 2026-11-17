@@ -95,6 +95,9 @@ pub enum Op {
     RestoreAll,
     /// Abrir un programa (crear un proceso puede tardar: antivirus, disco).
     Launch(String),
+    /// Abrir de nuevo una app viva sin ventanas, desde el ejecutable de su
+    /// proceso (plan-apps.md §3).
+    Revive(Vec<String>),
     /// Prueba: una llamada que tarda `ms` en el carril indicado.
     Stall { lane: Lane, ms: u32 },
     /// Hito 4: anotar el escritorio en cada ventana (HWND, proceso, 1-4).
@@ -139,7 +142,7 @@ impl Op {
             Op::Survey => Duration::from_millis(150),
             Op::MoveMany(_) => Duration::from_millis(200),
             Op::RestoreAll => Duration::from_secs(1),
-            Op::Launch(_) => Duration::from_secs(2),
+            Op::Launch(_) | Op::Revive(_) => Duration::from_secs(2),
             Op::Stall { lane, .. } => match lane {
                 Lane::Focus => Duration::from_millis(300),
                 Lane::Win => Duration::from_millis(50),
@@ -406,6 +409,7 @@ fn route(op: &Op) -> Lane {
         Op::Place { .. }
         | Op::Scan
         | Op::Launch(_)
+        | Op::Revive(_)
         | Op::Inspect(_)
         | Op::Normalize(_)
         | Op::Maximize(_) => Lane::Win,
@@ -570,10 +574,14 @@ impl Context {
             }
             Op::Scan => Ok(Output::Windows(windows_list::user_windows())),
             Op::RestoreAll => Ok(Output::Restored(hide::restore_all())),
-            Op::Launch(path) => std::process::Command::new(path)
-                .spawn()
-                .map(|_| Output::Nothing)
-                .map_err(|e| e.to_string()),
+            Op::Launch(path) => {
+                crate::launch::open(path).map(|()| Output::Nothing).map_err(|e| e.to_string())
+            }
+            Op::Revive(names) => {
+                let path = crate::process_info::running_exe(names)
+                    .ok_or_else(|| "no está corriendo y no tiene ruta".to_owned())?;
+                crate::launch::open(&path).map(|()| Output::Nothing).map_err(|e| e.to_string())
+            }
             Op::Stall { ms, .. } => {
                 std::thread::sleep(Duration::from_millis(u64::from(*ms)));
                 Ok(Output::Nothing)

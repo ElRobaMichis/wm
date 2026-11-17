@@ -32,7 +32,7 @@ target/release/wmw
 
 | Teclas | Qué hace |
 |---|---|
-| `Caps` + letra | Va a la app con esa inicial (por ejemplo `Caps` + `B` = Brave). Repetir = siguiente ventana de esa app |
+| `Caps` + letra | Va a la app con esa inicial (por ejemplo `Caps` + `B` = Brave), como un Alt+Tab de esa letra: la ventana más reciente, o la anterior si ya estás en una; sin soltar `Caps`, repetir la letra recorre las demás. Si la app está en la bandeja (Steam), la abre |
 | `Caps` + Alt + W/A/S/D | Esa mitad; repetir = al otro monitor; dos juntas = esquina |
 | `Caps` + Alt + F / C / Z / G / V | Maximizar / centrar / deshacer / agrandar / achicar |
 | `Caps` + 1 / 2 / 3 / 4 | Ir a ese escritorio (las ventanas de los otros se esconden) |

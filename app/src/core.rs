@@ -234,17 +234,39 @@ pub fn list_apps() -> ExitCode {
     );
     for w in &windows {
         let hidden = if w.hidden { "  (escondida por wm)" } else { "" };
-        println!("  {:<22} «{}»{hidden}", w.app, shorten(&w.title, 60));
+        let family = w.family.as_ref().map_or_else(String::new, |f| format!(" (familia {f})"));
+        let name = format!("{}{family}", w.app);
+        println!("  {name:<32} «{}»{hidden}", shorten(&w.title, 60));
     }
 
-    let list: Vec<(WindowId, &str)> = windows.iter().map(|w| (w.id, w.app.as_str())).collect();
+    let list: Vec<(WindowId, wm_model::apps::AppId)> = windows
+        .iter()
+        .map(|w| {
+            let id = wm_model::apps::AppId {
+                exe: &w.app,
+                family: w.family.as_deref(),
+                aumid: w.aumid.as_deref(),
+            };
+            (w.id, id)
+        })
+        .collect();
     println!();
-    println!("Caps + letra (con la ventana actual al frente):");
+    println!("Caps + letra (la ventana más reciente de cada lista):");
     for letter in b'A'..=b'Z' {
-        match resolve(letter, &bindings, &list, windows_list::foreground()) {
-            Target::Focus { app, .. } => println!("  {} → {app}", letter as char),
+        match resolve(letter, &bindings, &list) {
+            Target::Focus { app, windows } => {
+                let more = if windows.len() > 1 {
+                    format!(" ({} ventanas)", windows.len())
+                } else {
+                    String::new()
+                };
+                println!("  {} → {app}{more}", letter as char);
+            }
             Target::Launch { app, path } => {
                 println!("  {} → abrir {app} ({path})", letter as char);
+            }
+            Target::Revive { app, .. } => {
+                println!("  {} → {app} (sin ventanas: abrirla desde su proceso)", letter as char);
             }
             Target::Nothing => {}
         }

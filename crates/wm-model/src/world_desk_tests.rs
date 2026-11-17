@@ -76,6 +76,7 @@ impl Plat {
                 marked: w.marked,
                 concealed: w.cloaked || w.minimized,
                 minimized: w.minimized,
+                ..WinInfo::default()
             })
             .collect()
     }

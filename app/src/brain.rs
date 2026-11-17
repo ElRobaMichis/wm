@@ -564,6 +564,10 @@ impl Brain {
                     let t = self.ops.submit(Op::Launch(path));
                     self.waits.insert(t, Wait::Launch(req));
                 }
+                Effect::Revive { req, names } => {
+                    let t = self.ops.submit(Op::Revive(names));
+                    self.waits.insert(t, Wait::Launch(req));
+                }
                 Effect::Inspect { req, win } => {
                     let target = win.map(|k| (WindowId(k.hwnd), k.pid));
                     let t = self.ops.submit(Op::Inspect(target));
@@ -1014,6 +1018,8 @@ fn win_info(w: windows_list::WindowInfo) -> WinInfo {
         marked: w.hidden,
         concealed: w.cloaked || w.minimized,
         minimized: w.minimized,
+        family: w.family,
+        aumid: w.aumid,
     }
 }
 

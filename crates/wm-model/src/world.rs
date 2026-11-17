@@ -288,6 +288,21 @@ pub struct WinInfo {
     /// No se ve: con cloak o minimizada.
     pub concealed: bool,
     pub minimized: bool,
+    /// El ejecutable de su familia, si es otro (plan-apps.md §2).
+    pub family: Option<String>,
+    /// AUMID del proceso (apps MSIX y de la Store).
+    pub aumid: Option<String>,
+}
+
+impl WinInfo {
+    /// Quién es su app, para `apps::resolve`.
+    pub fn app_id(&self) -> crate::apps::AppId<'_> {
+        crate::apps::AppId {
+            exe: &self.app,
+            family: self.family.as_deref(),
+            aumid: self.aumid.as_deref(),
+        }
+    }
 }
 
 /// Resultado de traer una ventana al frente.
@@ -440,6 +455,12 @@ pub enum Effect {
     Launch {
         req: Req,
         path: String,
+    },
+    /// Abrir de nuevo una app que corre sin ventanas (en la bandeja), desde
+    /// el ejecutable de su proceso. Responde con `Launched`.
+    Revive {
+        req: Req,
+        names: Vec<String>,
     },
     /// Observar una ventana (`None` = la que tiene el foco, si se puede
     /// acomodar).
@@ -594,6 +615,13 @@ enum Pending {
         app: String,
         path: String,
     },
+    /// Abrir de nuevo una app viva sin ventanas (en la bandeja).
+    Revive {
+        letter: u8,
+        app: String,
+    },
+    /// Después de abrir una app: ¿ya tiene ventana? (para enfocarla)
+    FollowScan,
     /// Capa de ventana: esperando la ventana al frente.
     Arrange {
         dir: Dir,
@@ -723,7 +751,43 @@ pub struct World {
     options: crate::options::Options,
     /// Pantallas, reposo y bloqueo (hito 4d).
     screens: world_screens::Screens,
+    /// "El Alt+Tab de la letra" (plan-apps.md §5): la lista de la pulsación
+    /// en curso; se olvida al soltar `Caps`.
+    cycle: Option<Cycle>,
+    /// Apps abiertas hace poco (nombre → hasta cuándo, µs): otra pulsación
+    /// solo avisa "Abriendo…" (AutoCAD y Revit tardan; no abrir dos).
+    launching: HashMap<String, u64>,
+    /// Después de abrir: buscar su ventana y enfocarla.
+    follow: Option<Follow>,
+    /// La ventana al frente cuando se pidió abrir (pasa a `Follow`).
+    follow_fg: Option<WinKey>,
 }
+
+/// La lista de una letra mientras `Caps` sigue abajo.
+#[derive(Debug, Clone)]
+struct Cycle {
+    letter: u8,
+    order: Vec<WinKey>,
+    pos: usize,
+}
+
+/// Seguimiento de una app recién abierta.
+#[derive(Debug, Clone)]
+struct Follow {
+    letter: u8,
+    launched_us: u64,
+    /// Próximo chequeo (índice en `FOLLOW_MS`).
+    step: usize,
+    /// La ventana al frente al abrirla: si cambió, el usuario ya hizo otra
+    /// cosa y no se le roba el foco.
+    fg: Option<WinKey>,
+    scanning: bool,
+}
+
+/// Cuándo mirar si la app recién abierta ya tiene ventana.
+const FOLLOW_MS: [u64; 4] = [300, 800, 1500, 3000];
+/// Cuánto dura la protección contra abrir dos veces.
+const LAUNCH_GUARD_US: u64 = 30_000_000;
 
 /// Tamaños que una ventana no aceptó. Antes se marcaba la ventana entera y
 /// después de un solo V hasta el límite (Brave no baja de 502 px) ningún
@@ -817,6 +881,7 @@ impl World {
             .chain(self.verify_due)
             .chain(self.pointer_deadline())
             .chain(self.screens.deadline_us())
+            .chain(self.follow_deadline())
             .min()
     }
 
@@ -866,7 +931,10 @@ impl World {
         if !self.map.visible() {
             return;
         }
-        self.map_open = windows.iter().map(|w| w.app.clone()).collect();
+        self.map_open = windows
+            .iter()
+            .flat_map(|w| w.family.iter().cloned().chain(std::iter::once(w.app.clone())))
+            .collect();
         self.map_shown = true;
         self.send_map(out);
     }
@@ -955,8 +1023,12 @@ impl World {
                 if layer != Layer::Window {
                     self.keys = None; // las teclas siguientes empiezan otro gesto
                 }
+                if layer == Layer::Off {
+                    self.cycle = None; // soltar Caps confirma la ventana elegida
+                }
             }
             Event::KeyboardReset => {
+                self.cycle = None;
                 self.pointer_reset(&mut out);
                 self.layer = Layer::Off;
                 self.keys = None;
@@ -971,6 +1043,15 @@ impl World {
             }
             Event::Bindings(b) => self.bindings = b,
             Event::Windows { req, result } => {
+                if let Some(Pending::FollowScan) = self.pending.get(&req) {
+                    self.pending.remove(&req);
+                    if let Ok((windows, fg)) = result {
+                        self.follow_scanned(&windows, fg, now_us, &mut out);
+                    } else if let Some(f) = self.follow.as_mut() {
+                        f.scanning = false;
+                    }
+                    return out;
+                }
                 if let Some(Pending::DeskScan) = self.pending.get(&req) {
                     self.pending.remove(&req);
                     self.sync_scanned(result, now_us, &mut out);
@@ -1116,16 +1197,43 @@ impl World {
             Event::DragDone { win, result } => self.on_drag_done(win, result, &mut out),
             Event::Options(o) => self.options = o,
             Event::Uncloaked(win) => self.on_uncloaked(win, now_us, &mut out),
-            Event::Launched { req, result } => {
-                let Some(Pending::Launch { letter, app, path }) = self.pending.remove(&req) else {
-                    return out;
-                };
-                let key = letter as char;
-                out.push(Effect::Log(match result {
-                    Ok(()) => format!("Caps + {key} → abriendo {app} ({path})"),
-                    Err(e) => format!("Caps + {key} → no se pudo abrir {app} ({path}): {e}"),
-                }));
-            }
+            Event::Launched { req, result } => match self.pending.remove(&req) {
+                Some(Pending::Launch { letter, app, path }) => {
+                    let key = letter as char;
+                    match result {
+                        Ok(()) => {
+                            out.push(Effect::Log(format!(
+                                "Caps + {key} → abriendo {app} ({path})"
+                            )));
+                            self.start_follow(letter, now_us);
+                        }
+                        Err(e) => {
+                            self.launching.remove(&app);
+                            out.push(Effect::Log(format!(
+                                "Caps + {key} → no se pudo abrir {app} ({path}): {e}"
+                            )));
+                        }
+                    }
+                }
+                Some(Pending::Revive { letter, app }) => {
+                    let key = letter as char;
+                    match result {
+                        Ok(()) => {
+                            out.push(Effect::Log(format!(
+                                "Caps + {key} → {app} no tenía ventana (¿en la bandeja?): la abro de nuevo"
+                            )));
+                            self.start_follow(letter, now_us);
+                        }
+                        Err(e) => {
+                            self.launching.remove(&app);
+                            out.push(Effect::Log(format!(
+                                "Caps + {key}: no sé cómo abrir {app} ({e}); elegila de nuevo en Ajustes."
+                            )));
+                        }
+                    }
+                }
+                _ => {}
+            },
         }
         out
     }
@@ -1138,6 +1246,9 @@ impl World {
         now_us: u64,
         out: &mut Vec<Effect>,
     ) {
+        if !matches!(action, HyperAction::Letter { thumb: false, .. }) {
+            self.cycle = None;
+        }
         match action {
             HyperAction::Letter { letter, thumb: false } => {
                 let req = self.req();
@@ -1954,6 +2065,7 @@ impl World {
     /// Lanza los chequeos vencidos.
     fn tick(&mut self, now_us: u64, out: &mut Vec<Effect>) {
         self.pointer_tick(now_us, out);
+        self.follow_tick(now_us, out);
         self.screens_tick(now_us, out);
         if self.verify_due.is_some_and(|t| t <= now_us) {
             self.verify_due = None;
@@ -2143,40 +2255,160 @@ impl World {
         now_us: u64,
         out: &mut Vec<Effect>,
     ) {
-        let list: Vec<(WinKey, &str)> = windows.iter().map(|w| (w.key, w.app.as_str())).collect();
+        let list: Vec<(WinKey, crate::apps::AppId)> =
+            windows.iter().map(|w| (w.key, w.app_id())).collect();
         let key = letter as char;
-        match resolve(letter, &self.bindings, &list, foreground) {
-            Target::Focus { window, .. } if self.elsewhere(window) => {
-                // En otro escritorio: ir allá y enfocarla, en una transacción.
-                let goal = crate::desks::Goal::Window(window);
-                self.start_sync_with(goal, key_us, windows, foreground, now_us, out);
-            }
-            Target::Focus { window, app } => {
-                let title =
-                    windows.iter().find(|w| w.key == window).map_or("", |w| w.title.as_str());
-                let req = self.req();
-                let pending = Pending::Focus {
-                    letter,
-                    app: app.to_owned(),
-                    title: title.to_owned(),
-                    key_us,
-                    win: window,
+        match resolve(letter, &self.bindings, &list) {
+            Target::Focus { windows: order, app } => {
+                self.launching.remove(&app);
+                let Some(window) = self.pick(letter, order, foreground) else {
+                    out.push(Effect::Log(format!("Caps + {key}: {app} es la única ventana.")));
+                    return;
                 };
-                self.pending.insert(req, pending);
-                out.push(Effect::Focus { req, win: window });
+                self.focus_window(letter, key_us, window, &app, windows, foreground, now_us, out);
             }
             Target::Launch { app, path } => {
+                if self.guarded(&app, key, now_us, out) {
+                    return;
+                }
+                self.launching.insert(app.clone(), now_us + LAUNCH_GUARD_US);
                 let req = self.req();
-                let pending =
-                    Pending::Launch { letter, app: app.to_owned(), path: path.to_owned() };
+                let pending = Pending::Launch { letter, app: app.clone(), path: path.clone() };
                 self.pending.insert(req, pending);
-                out.push(Effect::Launch { req, path: path.to_owned() });
+                self.follow_fg = foreground;
+                out.push(Effect::Launch { req, path });
+            }
+            Target::Revive { app, names } => {
+                if self.guarded(&app, key, now_us, out) {
+                    return;
+                }
+                self.launching.insert(app.clone(), now_us + LAUNCH_GUARD_US);
+                let req = self.req();
+                self.pending.insert(req, Pending::Revive { letter, app });
+                self.follow_fg = foreground;
+                out.push(Effect::Revive { req, names });
             }
             Target::Nothing => {
                 out.push(Effect::Log(format!(
                     "Caps + {key}: no hay ninguna app abierta con la {key}."
                 )));
             }
+        }
+    }
+
+    /// "El Alt+Tab de la letra" (plan-apps.md §5): con `Caps` todavía abajo
+    /// desde la tecla anterior de esta letra, la siguiente de la lista
+    /// congelada; si no, la más reciente, o la anterior si ya estás en una.
+    /// `None`: es la única y ya está al frente.
+    fn pick(&mut self, letter: u8, order: Vec<WinKey>, fg: Option<WinKey>) -> Option<WinKey> {
+        if let Some(c) = self.cycle.as_mut().filter(|c| c.letter == letter) {
+            // Saltear las que se cerraron en el medio.
+            let alive: Vec<WinKey> =
+                c.order.iter().copied().filter(|w| order.contains(w)).collect();
+            if alive.len() > 1 {
+                let cur = c.order.get(c.pos).copied();
+                let i = cur.and_then(|w| alive.iter().position(|&x| x == w)).unwrap_or(0);
+                let next = alive[(i + 1) % alive.len()];
+                c.pos = c.order.iter().position(|&w| w == next).unwrap_or(0);
+                return Some(next);
+            }
+        }
+        let target = match fg.filter(|f| order.contains(f)) {
+            Some(f) => order.iter().copied().find(|&w| w != f)?,
+            None => *order.first()?,
+        };
+        let pos = order.iter().position(|&w| w == target).unwrap_or(0);
+        self.cycle = Some(Cycle { letter, order, pos });
+        Some(target)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn focus_window(
+        &mut self,
+        letter: u8,
+        key_us: u64,
+        window: WinKey,
+        app: &str,
+        windows: &[WinInfo],
+        foreground: Option<WinKey>,
+        now_us: u64,
+        out: &mut Vec<Effect>,
+    ) {
+        if self.elsewhere(window) {
+            // En otro escritorio: ir allá y enfocarla, en una transacción.
+            let goal = crate::desks::Goal::Window(window);
+            self.start_sync_with(goal, key_us, windows, foreground, now_us, out);
+            return;
+        }
+        let title = windows.iter().find(|w| w.key == window).map_or("", |w| w.title.as_str());
+        let req = self.req();
+        let pending = Pending::Focus {
+            letter,
+            app: app.to_owned(),
+            title: title.to_owned(),
+            key_us,
+            win: window,
+        };
+        self.pending.insert(req, pending);
+        out.push(Effect::Focus { req, win: window });
+    }
+
+    /// Se abrió hace poco y todavía no tiene ventana: solo avisar.
+    fn guarded(&mut self, app: &str, key: char, now_us: u64, out: &mut Vec<Effect>) -> bool {
+        match self.launching.get(app) {
+            Some(&until) if until > now_us => {
+                out.push(Effect::Log(format!("Caps + {key}: abriendo {app}… (espera)")));
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn start_follow(&mut self, letter: u8, now_us: u64) {
+        let fg = self.follow_fg.take();
+        self.follow = Some(Follow { letter, launched_us: now_us, step: 0, fg, scanning: false });
+    }
+
+    fn follow_deadline(&self) -> Option<u64> {
+        let f = self.follow.as_ref().filter(|f| !f.scanning)?;
+        FOLLOW_MS.get(f.step).map(|ms| f.launched_us + ms * 1000)
+    }
+
+    fn follow_tick(&mut self, now_us: u64, out: &mut Vec<Effect>) {
+        if self.follow_deadline().is_none_or(|d| d > now_us) {
+            return;
+        }
+        let req = self.req();
+        self.pending.insert(req, Pending::FollowScan);
+        if let Some(f) = self.follow.as_mut() {
+            f.scanning = true;
+            f.step += 1;
+        }
+        out.push(Effect::Scan { req });
+    }
+
+    /// ¿Ya apareció la ventana de la app recién abierta? Si el usuario no
+    /// cambió de ventana mientras tanto, se la trae al frente.
+    fn follow_scanned(
+        &mut self,
+        windows: &[WinInfo],
+        fg: Option<WinKey>,
+        now_us: u64,
+        out: &mut Vec<Effect>,
+    ) {
+        let Some(f) = self.follow.take() else { return };
+        let list: Vec<(WinKey, crate::apps::AppId)> =
+            windows.iter().map(|w| (w.key, w.app_id())).collect();
+        if let Target::Focus { windows: order, app } = resolve(f.letter, &self.bindings, &list) {
+            self.launching.remove(&app);
+            if fg == f.fg && fg.is_none_or(|g| !order.contains(&g)) {
+                let window = order[0];
+                self.focus_window(f.letter, f.launched_us, window, &app, windows, fg, now_us, out);
+            }
+            return;
+        }
+        if f.step < FOLLOW_MS.len() {
+            self.follow = Some(Follow { scanning: false, ..f });
         }
     }
 }
@@ -2329,6 +2561,10 @@ mod tests {
                             self.launched.push(path);
                             queue.push(Event::Launched { req, result: Ok(()) });
                         }
+                        Effect::Revive { req, names } => {
+                            self.launched.push(format!("(proceso) {}", names.join(",")));
+                            queue.push(Event::Launched { req, result: Ok(()) });
+                        }
                         Effect::Log(line) => self.logs.push(line),
                         Effect::Quit => self.quit = true,
                         Effect::SetDesks { req, items } => {
@@ -2409,6 +2645,63 @@ mod tests {
         sim.run(&mut w, letter(b'N'));
         assert_eq!(sim.launched, vec!["C:\\Notion.exe".to_owned()]);
         assert!(sim.logs[0].contains("abriendo notion"));
+    }
+
+    fn layer_off() -> Event {
+        Event::Layer(crate::keyboard::Layer::Off)
+    }
+
+    #[test]
+    fn the_letter_works_like_alt_tab() {
+        let mut w = World::new(Vec::new());
+        let mut sim = Sim::new(&["brave", "code", "brave", "brave"]);
+        let (b2, b3) = (sim.windows[2].key, sim.windows[3].key);
+        sim.run(&mut w, letter(b'B')); // ya en una de Brave: la anterior
+        sim.run(&mut w, letter(b'B')); // sin soltar Caps: la tercera
+        assert_eq!(sim.focused, vec![b2, b3]);
+        sim.run(&mut w, layer_off()); // soltar confirma
+        sim.run(&mut w, letter(b'B')); // de nuevo: vuelve a la anterior
+        assert_eq!(sim.focused, vec![b2, b3, b2]);
+    }
+
+    #[test]
+    fn unbound_letter_mixes_every_app_with_that_initial() {
+        let mut w = World::new(Vec::new());
+        let mut sim = Sim::new(&["nanofy", "notepad"]);
+        let notepad = sim.windows[1].key;
+        sim.run(&mut w, letter(b'N'));
+        assert_eq!(sim.focused, vec![notepad], "Notepad ya no queda detrás de Nanofy");
+    }
+
+    #[test]
+    fn the_only_window_says_so() {
+        let mut w = World::new(Vec::new());
+        let mut sim = Sim::new(&["brave", "code"]);
+        sim.run(&mut w, letter(b'B'));
+        assert!(sim.focused.is_empty());
+        assert!(sim.logs[0].contains("brave es la única ventana"), "{:?}", sim.logs);
+        assert!(crate::notices::notice_for(&sim.logs[0]).is_some());
+    }
+
+    #[test]
+    fn a_bound_app_in_the_tray_is_opened_again_once() {
+        let (b, _) = parse_bindings("s = steam");
+        let mut w = World::new(b);
+        let mut sim = Sim::new(&["code"]);
+        sim.run(&mut w, letter(b'S'));
+        assert_eq!(sim.launched, vec!["(proceso) steam".to_owned()]);
+        sim.run(&mut w, letter(b'S'));
+        assert_eq!(sim.launched.len(), 1, "no la abre dos veces: {:?}", sim.logs);
+        assert!(sim.logs.last().unwrap().contains("abriendo steam… (espera)"), "{:?}", sim.logs);
+        // Aparece su ventana (de steamwebhelper, familia steam): se enfoca.
+        let mut steam = win(9, "steamwebhelper");
+        steam.family = Some("steam".into());
+        sim.windows.push(steam.clone());
+        let effects = w.step(Event::Tick, 1_000_000 + 300_000);
+        let Some(Effect::Scan { req }) = effects.first().cloned() else { panic!("{effects:?}") };
+        let result = Ok((sim.windows.clone(), sim.foreground));
+        sim.run(&mut w, Event::Windows { req, result });
+        assert_eq!(sim.focused, vec![steam.key], "{:?}", sim.logs);
     }
 
     #[test]

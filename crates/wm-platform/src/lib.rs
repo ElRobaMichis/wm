@@ -9,6 +9,8 @@ pub mod anim;
 #[cfg(windows)]
 pub mod autostart;
 #[cfg(windows)]
+pub mod catalog;
+#[cfg(windows)]
 pub mod clock;
 #[cfg(windows)]
 pub mod console;
@@ -54,6 +56,7 @@ pub mod overlay_demo;
 pub mod overlay_text;
 #[cfg(windows)]
 pub mod probe;
+pub mod process_info;
 #[cfg(windows)]
 pub mod puppet;
 #[cfg(windows)]
@@ -68,7 +71,6 @@ pub mod ui;
 pub mod watch;
 #[cfg(windows)]
 mod win;
-#[cfg(windows)]
 pub mod windows_list;
 #[cfg(windows)]
 pub mod winevents;

@@ -71,6 +71,8 @@ export component SearchField inherits Rectangle {
     in-out property <string> text <=> input.text;
     out property <bool> has-focus: input.has-focus;
     callback edited(string);
+    // Enter.
+    callback accepted();
 
     height: Theme.h-field;
     border-radius: Theme.r-row;
@@ -116,6 +118,9 @@ export component SearchField inherits Rectangle {
         accessible-placeholder-text: root.placeholder;
         edited => {
             root.edited(self.text);
+        }
+        accepted => {
+            root.accepted();
         }
     }
 
@@ -675,5 +680,82 @@ export component LetterList {
                 }
             }
         }
+    }
+}
+
+// Una fila del selector de apps (plan-apps.md §4): título de sección
+// (kind 0), "Ninguna" (kind 2) o una app (kind 1).
+export struct PickerRow {
+    kind: int,
+    name: string,
+    detail: string,
+}
+
+// El valor de la letra elegida; un clic abre el selector.
+export component PickField {
+    in property <string> text;
+    in property <string> label;
+    callback open();
+
+    height: Theme.h-field;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-value: root.text;
+    accessible-action-default => {
+        root.open();
+    }
+    forward-focus: fs;
+
+    Rectangle {
+        border-radius: Theme.r-row;
+        background: ta.has-hover ? Theme.fill-strong : Theme.fill;
+        animate background { duration: Theme.motion; }
+    }
+    Text {
+        x: Theme.s3;
+        width: parent.width - Theme.s3 - 32px;
+        height: parent.height;
+        text: root.text;
+        color: Theme.text;
+        font-family: Theme.font;
+        font-size: Theme.t-body;
+        vertical-alignment: center;
+        overflow: elide;
+        accessible-role: none;
+    }
+    Path {
+        x: parent.width - 26px;
+        y: (parent.height - 16px) / 2;
+        width: 16px;
+        height: 16px;
+        viewbox-width: 16;
+        viewbox-height: 16;
+        stroke: Theme.text-2;
+        stroke-width: 1.5px;
+        fill: transparent;
+        commands: "M 4.5 6.5 L 8 10 L 11.5 6.5";
+        accessible-role: none;
+    }
+    ta := TouchArea {
+        clicked => {
+            root.open();
+        }
+    }
+    fs := FocusScope {
+        focus-on-click: false;
+        key-pressed(event) => {
+            if (event.text == " " || event.text == Key.Return || event.text == Key.DownArrow) {
+                root.open();
+                return accept;
+            }
+            reject
+        }
+    }
+    if fs.has-focus: FocusRing {
+        x: -3px;
+        y: -3px;
+        width: parent.width + 6px;
+        height: parent.height + 6px;
+        radius: Theme.r-row;
     }
 }

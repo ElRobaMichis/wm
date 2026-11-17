@@ -32,6 +32,7 @@ windows = { version = "=0.62.2", features = [
     "Win32_UI_Accessibility",
     "Win32_System_Com",
     "Win32_System_Console",
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_LibraryLoader",
     "Win32_System_Performance",
     "Win32_System_ProcessStatus",
@@ -41,6 +42,8 @@ windows = { version = "=0.62.2", features = [
     "Win32_System_RemoteDesktop",
     "Win32_System_Threading",
     "Win32_Storage_FileSystem",
+    "Win32_Storage_Packaging_Appx",
+    "Win32_Storage_EnhancedStorage",
     "Win32_System_WinRT",
     "Win32_System_WinRT_Composition",
     "Win32_System_WinRT_Graphics",
@@ -51,6 +54,7 @@ windows = { version = "=0.62.2", features = [
     "Win32_UI_Input_KeyboardAndMouse",
     # Solo tipos de la bandeja: Shell_NotifyIconW se resuelve con dynlib.
     "Win32_UI_Shell",
+    "Win32_UI_Shell_PropertiesSystem",
     "Win32_UI_WindowsAndMessaging",
 ] }
 # Necesario para declarar interfaces COM no documentadas con `#[interface]`.

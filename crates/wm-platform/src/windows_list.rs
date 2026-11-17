@@ -43,6 +43,10 @@ pub struct WindowInfo {
     /// Tiene cloak (de quien sea) ahora mismo.
     pub cloaked: bool,
     pub minimized: bool,
+    /// El ejecutable de su familia, si es otro (plan-apps.md §2).
+    pub family: Option<String>,
+    /// AUMID del proceso (apps MSIX y de la Store).
+    pub aumid: Option<String>,
 }
 
 /// Hito 4d: una ventana vista al reconciliar.
@@ -131,7 +135,7 @@ pub fn user_windows() -> Vec<WindowInfo> {
     // Primero se descartan las ventanas propias: leer algo de una ventana
     // nuestra desde otro hilo puede esperar a ese hilo.
     let own_pid = std::process::id();
-    handles
+    let mut list: Vec<WindowInfo> = handles
         .into_iter()
         .filter_map(|h| {
             let mut pid = 0u32;
@@ -166,9 +170,24 @@ pub fn user_windows() -> Vec<WindowInfo> {
                 desk: crate::hide::desk_of(id),
                 cloaked: v.cloaked != 0,
                 minimized: v.minimized,
+                family: None,
+                aumid: None,
             })
         })
-        .collect()
+        .collect();
+    // Familia y AUMID, con una sola foto de procesos (y solo si hay alguno
+    // nuevo: el resto sale de la caché).
+    let mut pids: Vec<u32> = list.iter().map(|w| w.pid).collect();
+    pids.sort_unstable();
+    pids.dedup();
+    let infos = crate::process_info::infos(&pids);
+    for w in &mut list {
+        if let Some(i) = infos.get(&w.pid) {
+            w.family = i.family.clone();
+            w.aumid = i.aumid.clone();
+        }
+    }
+    list
 }
 
 fn is_user_window(h: HWND) -> bool {

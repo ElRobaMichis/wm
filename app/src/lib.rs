@@ -156,6 +156,7 @@ pub fn run() -> ExitCode {
         #[cfg(windows)]
         Some("core") => core::run(),
         #[cfg(windows)]
+        Some("apps") if args.iter().any(|a| a == "--instaladas") => installed_apps(),
         Some("apps") => core::list_apps(),
         Some("burn") => burn(std::env::args().nth(2)),
         #[cfg(windows)]
@@ -355,6 +356,39 @@ fn display_poke() -> ExitCode {
         eprintln!("No hay un wm corriendo.");
         ExitCode::FAILURE
     }
+}
+
+/// `wm apps --instaladas`: las apps de "Todas las aplicaciones", como las
+/// ofrecen los ajustes (plan-apps.md §4).
+#[cfg(windows)]
+fn installed_apps() -> ExitCode {
+    let start = std::time::Instant::now();
+    let list = match wm_platform::catalog::installed() {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("No se pudo leer la lista de apps: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let elapsed = start.elapsed();
+    let mut choices: Vec<_> = list.iter().filter_map(wm_platform::catalog::choice).collect();
+    choices.sort_by_key(|c| c.label.to_lowercase());
+    for c in &choices {
+        println!(
+            "  {:<40} {:<24} {}",
+            c.label,
+            c.names.join(", "),
+            c.launch.as_deref().unwrap_or("")
+        );
+    }
+    println!(
+        "
+{} apps ({} entradas en el menú Inicio) en {:.0} ms.",
+        choices.len(),
+        list.len(),
+        elapsed.as_secs_f64() * 1000.0
+    );
+    ExitCode::SUCCESS
 }
 
 fn desk_check(mode: Option<&str>) -> ExitCode {

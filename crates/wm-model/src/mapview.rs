@@ -169,14 +169,19 @@ pub fn map_view_with(
                 // esté asignada a otra letra (igual que `apps::resolve`).
                 let auto = || {
                     open.iter().find(|app| {
-                        app.starts_with(lower) && !bindings.iter().any(|b| b.app == **app)
+                        app.starts_with(lower)
+                            && !bindings.iter().any(|b| b.names().any(|n| n == **app))
                     })
                 };
                 match bound {
                     Some(b) => {
-                        let tone =
-                            if open.contains(&b.app.as_str()) { Tone::Open } else { Tone::Normal };
-                        (shorten(&display_name(&b.app)), tone)
+                        let tone = if b.names().any(|n| open.contains(&n)) {
+                            Tone::Open
+                        } else {
+                            Tone::Normal
+                        };
+                        let name = b.label.clone().unwrap_or_else(|| display_name(&b.app));
+                        (shorten(&name), tone)
                     }
                     None => match auto() {
                         Some(app) => (shorten(&display_name(app)), Tone::Normal),

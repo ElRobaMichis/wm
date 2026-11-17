@@ -98,3 +98,15 @@ msgstr "Avisos en pantalla"
 
 msgid "A short message when a key can't do anything."
 msgstr "Un mensaje corto cuando una tecla no puede hacer nada."
+
+msgid "Open now"
+msgstr "Abiertas ahora"
+
+msgid "All apps"
+msgstr "Todas"
+
+msgid "Search an app"
+msgstr "Buscar una app"
+
+msgid "Loading the installed apps…"
+msgstr "Cargando las apps instaladas…"

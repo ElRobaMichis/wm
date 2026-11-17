@@ -44,6 +44,20 @@ pub fn notice_for(line: &str) -> Option<String> {
             n => format!("Traje {n} ventanas que habían quedado fuera de la pantalla"),
         });
     }
+    // plan-apps.md: el Alt+Tab de la letra y abrir apps.
+    if let Some(app) = l.split(": ").nth(1).and_then(|r| r.strip_suffix(" es la única ventana.")) {
+        return Some(format!("Es la única ventana de {}", display_name(app)));
+    }
+    if let Some(app) = l.split(": abriendo ").nth(1).and_then(|r| r.strip_suffix("… (espera)")) {
+        return Some(format!("Abriendo {}…", display_name(app)));
+    }
+    if let Some(rest) = l.split(": no sé cómo abrir ").nth(1) {
+        let app = rest.split(" (").next().unwrap_or(rest);
+        return Some(format!(
+            "No sé cómo abrir {}: elegila de nuevo en Ajustes",
+            display_name(app)
+        ));
+    }
     if l.contains("la app no responde") {
         return Some("La app no responde: se va a mover cuando despierte".into());
     }

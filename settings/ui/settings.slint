@@ -4,11 +4,11 @@
 
 import { Theme } from "theme.slint";
 import {
-    SearchField, Segmented, ToggleRow, Button, Select, LetterList, LetterItem, SectionLabel,
-    Keycap, KeyHint
+    SearchField, Segmented, ToggleRow, Button, LetterList, LetterItem, SectionLabel,
+    Keycap, KeyHint, PickerRow, PickField
 } from "components.slint";
 
-export { LetterItem, Theme }
+export { LetterItem, PickerRow, Theme }
 
 export component SettingsWindow inherits Window {
     title: @tr("wm settings");
@@ -21,7 +21,12 @@ export component SettingsWindow inherits Window {
     default-font-size: Theme.t-body;
 
     in property <[LetterItem]> items;
-    in property <[string]> apps;
+    // Selector de apps (plan-apps.md §4).
+    in property <[PickerRow]> picker-rows;
+    in property <string> choice-name;
+    in property <bool> catalog-loading;
+    in-out property <bool> picking: false;
+    in-out property <string> picker-query;
     in property <int> assigned;
     in property <int> total: 26;
     in property <bool> dirty;
@@ -31,7 +36,6 @@ export component SettingsWindow inherits Window {
     // vuelve a verse tal cual.
     in property <bool> show-unfinished: false;
     in-out property <int> selected: 0;
-    in-out property <int> choice: 0;
     in-out property <string> query;
     in-out property <int> profile: 0;
     in-out property <bool> focus-border: true;
@@ -45,7 +49,13 @@ export component SettingsWindow inherits Window {
 
     callback search(string);
     callback select(int);
-    callback choose(int);
+    callback picker-open();
+    callback picker-search(string);
+    callback picker-choose(int);
+    // Enter en la búsqueda: la primera app de la lista.
+    callback picker-enter();
+    out property <string> open-text: @tr("Open now");
+    out property <string> all-text: @tr("All apps");
     callback save();
     // Cambió una opción (para habilitar Guardar).
     callback options-changed();
@@ -213,14 +223,14 @@ export component SettingsWindow inherits Window {
                     color: Theme.text-2;
                     vertical-alignment: center;
                 }
-                Select {
+                PickField {
                     horizontal-stretch: 1;
-                    model: root.apps;
-                    window-height: root.height;
+                    text: root.choice-name;
                     label: @tr("App for “{}”", root.selected-letter);
-                    current <=> root.choice;
-                    selected(index) => {
-                        root.choose(index);
+                    open => {
+                        root.picker-query = "";
+                        root.picker-open();
+                        root.picking = true;
                     }
                 }
             }
@@ -309,6 +319,119 @@ export component SettingsWindow inherits Window {
                     enabled: root.dirty;
                     clicked => {
                         root.save();
+                    }
+                }
+            }
+        }
+    }
+
+    // Selector de apps: cubre la ventana (sin ventana flotante: lugar para
+    // una lista larga y foco simple). Esc o Cancelar lo cierran.
+    if root.picking: Rectangle {
+        background: Theme.bg;
+        TouchArea { }
+        picker-keys := FocusScope {
+            key-pressed(event) => {
+                if (event.text == Key.Escape) {
+                    root.picking = false;
+                    return accept;
+                }
+                reject
+            }
+            VerticalLayout {
+                padding: Theme.s6;
+                spacing: Theme.s3;
+                HorizontalLayout {
+                    spacing: Theme.s3;
+                    VerticalLayout {
+                        alignment: center;
+                        Keycap {
+                            letter: root.selected-letter;
+                        }
+                    }
+                    Text {
+                        text: @tr("App for “{}”", root.selected-letter);
+                        color: Theme.text;
+                        font-size: Theme.t-body;
+                        font-weight: Theme.w-strong;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    Button {
+                        text: @tr("Cancel");
+                        clicked => {
+                            root.picking = false;
+                        }
+                    }
+                }
+                picker-field := SearchField {
+                    init => {
+                        self.focus();
+                    }
+                    placeholder: @tr("Search an app");
+                    label: @tr("Search an app");
+                    text <=> root.picker-query;
+                    edited(text) => {
+                        root.picker-search(text);
+                    }
+                    accepted => {
+                        root.picker-enter();
+                        root.picking = false;
+                    }
+                }
+                if root.catalog-loading: Text {
+                    text: @tr("Loading the installed apps…");
+                    color: Theme.text-3;
+                    font-size: Theme.t-small;
+                }
+                Rectangle {
+                    vertical-stretch: 1;
+                    border-radius: Theme.r-card;
+                    background: Theme.surface;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    clip: true;
+                    Flickable {
+                        x: Theme.card-pad;
+                        y: Theme.card-pad;
+                        width: parent.width - 2 * Theme.card-pad;
+                        height: parent.height - 2 * Theme.card-pad;
+                        content-height: root.picker-rows.length * 32px;
+                        for row[i] in root.picker-rows: Rectangle {
+                            y: i * 32px;
+                            height: 32px;
+                            border-radius: Theme.r-row;
+                            background: row.kind != 0 && row-ta.has-hover ? Theme.fill : transparent;
+                            Text {
+                                x: Theme.s3;
+                                width: parent.width * 0.62;
+                                height: parent.height;
+                                text: row.name;
+                                color: row.kind == 0 ? Theme.text-2 : Theme.text;
+                                font-size: row.kind == 0 ? Theme.t-small : Theme.t-body;
+                                font-weight: row.kind == 0 ? Theme.w-strong : 400;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                            Text {
+                                x: parent.width * 0.62 + Theme.s3;
+                                width: parent.width * 0.38 - 2 * Theme.s3;
+                                height: parent.height;
+                                text: row.detail;
+                                color: Theme.text-3;
+                                font-size: Theme.t-small;
+                                vertical-alignment: center;
+                                horizontal-alignment: right;
+                                overflow: elide;
+                            }
+                            row-ta := TouchArea {
+                                enabled: row.kind != 0;
+                                clicked => {
+                                    root.picker-choose(i);
+                                    root.picking = false;
+                                }
+                            }
+                        }
                     }
                 }
             }
