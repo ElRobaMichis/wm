@@ -1904,7 +1904,7 @@ impl World {
         self.remember(Entry {
             win: obs.key,
             frame: obs.frame,
-            maximized: obs.maximized,
+            maximized: world_rules::looks_maximized(&obs),
             tag,
             desk: None,
         });
@@ -1913,13 +1913,17 @@ impl World {
         self.jobs.remove(&obs.key); // una colocación en curso ya no vale
         self.placed.remove(&obs.key);
         let since = now_us.saturating_sub(key_us) as f64 / 1000.0;
-        if obs.maximized {
+        if world_rules::looks_maximized(&obs) {
             out.push(Effect::Normalize { win: obs.key });
             out.push(Effect::Log(format!(
                 "{what} → tamaño anterior ({}), {since:.1} ms desde la tecla",
                 obs.app
             )));
         } else {
+            if obs.maximized {
+                // Dice estar maximizada sin estarlo (Steam): sacarle la marca.
+                out.push(Effect::Normalize { win: obs.key });
+            }
             out.push(Effect::Maximize { win: obs.key });
             out.push(Effect::Log(format!(
                 "{what} → maximizada ({}), {since:.1} ms desde la tecla",

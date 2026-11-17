@@ -1751,6 +1751,35 @@ fn without_rules_an_unlisted_window_is_not_searched_again() {
 }
 
 #[test]
+fn a_window_that_says_maximized_but_is_not_gets_maximized_for_real() {
+    // Como Steam al volver de la bandeja: la marca de maximizada puesta y la
+    // ventana a tamaño normal en el medio.
+    let (b, _) = crate::apps::parse_bindings("s = brave | | | al abrir: maximizada");
+    let mut w = World::new(b);
+    let mut sim = Sim::new();
+    let start = sim.win.frame;
+    sim.win.maximized = true;
+    sim.win.restore = start;
+    sim.run(&mut w, Event::Foreground(sim.win.key));
+    assert!(sim.win.maximized, "{:?}", sim.logs);
+    assert_eq!(sim.win.frame, sim.monitors[0].work, "{:?}", sim.logs);
+    assert!(sim.normalized, "primero se le saca la marca");
+}
+
+#[test]
+fn a_window_already_maximized_for_real_is_left_alone() {
+    let (b, _) = crate::apps::parse_bindings("s = brave | | | al abrir: maximizada");
+    let mut w = World::new(b);
+    let mut sim = Sim::new();
+    sim.win.restore = sim.win.frame;
+    sim.win.maximized = true;
+    sim.win.frame = sim.monitors[0].work;
+    sim.run(&mut w, Event::Foreground(sim.win.key));
+    assert!(!sim.normalized, "{:?}", sim.logs);
+    assert!(sim.logs.iter().any(|l| l.contains("ya se abrió maximizada")), "{:?}", sim.logs);
+}
+
+#[test]
 fn a_window_that_stays_behind_is_not_touched() {
     let (b, _) = crate::apps::parse_bindings("i = idea64, brave | | | al abrir: derecha");
     let mut w = World::new(b);

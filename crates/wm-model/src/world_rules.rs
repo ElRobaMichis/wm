@@ -15,6 +15,9 @@ const ARRIVE_MS: [u64; 4] = [100, 300, 700, 1500];
 /// detrás (la de IntelliJ, tras su pantalla de carga).
 const BEHIND_MS: u64 = 5_000;
 
+/// Margen para creerle a una ventana que dice estar maximizada (px).
+const COVER_PX: i32 = 8;
+
 /// Cuándo volver a buscar una ventana que pasó al frente y el `Scan` no vio
 /// (desde el `FOREGROUND`).
 const UNSEEN_MS: [u64; 12] =
@@ -39,6 +42,18 @@ pub(super) struct Arrival {
     inspecting: bool,
     /// Marco y maximizada de la observación anterior.
     last: Option<(Rect, bool)>,
+}
+
+/// ¿Maximizada de verdad? Steam (CEF) tiene la marca puesta con la ventana
+/// a tamaño normal: solo cuenta si además cubre el área de trabajo.
+pub(super) fn looks_maximized(obs: &Obs) -> bool {
+    let Some(m) = monitor_of(&obs.monitors, obs.frame) else { return obs.maximized };
+    let (w, f) = (obs.monitors[m].work, obs.frame);
+    obs.maximized
+        && f.left <= w.left + COVER_PX
+        && f.top <= w.top + COVER_PX
+        && f.right >= w.right - COVER_PX
+        && f.bottom >= w.bottom - COVER_PX
 }
 
 impl World {
@@ -261,14 +276,20 @@ impl World {
         let quiet = Obs { no_fly: Some(NoFly::NotFront), ..obs.clone() };
         match rule {
             OpenRule::Maximized => {
-                if obs.maximized {
+                if looks_maximized(&obs) {
                     out.push(Effect::Log(format!(
-                        "Regla al abrir ({}): ya se abrió maximizada (marco {:?}).",
-                        obs.app, obs.frame
+                        "Regla al abrir ({}): ya se abrió maximizada.",
+                        obs.app
                     )));
                     return;
                 }
-                self.remember(entry);
+                // Z la devuelve a como se veía: a tamaño normal.
+                self.remember(Entry { maximized: false, ..entry });
+                if obs.maximized {
+                    // Con la marca puesta, maximizar no hace nada: primero
+                    // se la saca.
+                    out.push(Effect::Normalize { win: obs.key });
+                }
                 out.push(Effect::Maximize { win: obs.key });
                 out.push(Effect::Log(what));
             }
