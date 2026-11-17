@@ -65,3 +65,11 @@ Ver §7 (se completa con las respuestas del usuario).
   - Steam (CEF) vuelve de la bandeja con la marca de maximizada y la ventana a tamaño normal: solo cuenta como maximizada si cubre el área de trabajo (también en Caps + Alt + F).
   - Cada vez que la regla no corre, el log dice por qué.
 - Falta: paso 4 (`ci-probe`), 5 (puntero), 6 (espacios), ajustes en dos pestañas, 7 (documentación).
+
+## 9. Diseño de espacios y puntero (Fable 5.2, 17/11/2026)
+
+**Espacios (d).** `g` = valor elegido (0–24) × DPI/96, limitado a 1/16 del lado menor. Afuera `g`, adentro `g` en total (`g/2` por lado; el píxel impar a la pieza derecha/de abajo). Tablero `B` = área de trabajo menos `g` por lado; `slot_rect(m, p, g)` y `slot_of(m, frame, g)` en place.rs. Maximizar, pantalla completa y C (centrar) siguen contra el área de trabajo; G/V contra `B`. `anchor`, `still_there` y la detección de bordes de `resize` reciben `B`. La detección (encaje, ajuste de 1 px, adopción, reencaje 4d) compara con `slot_rect` del `g` vigente. Si cambia `g`, las ventanas encajadas con el `g` viejo se reacomodan una vez (`Survey` + `go` exacto, sin vuelo ni Z); las demás, con la próxima tecla. Solo 14 llamadas de producción cambian; pruebas, sonda y demos siguen con `place`.
+
+**Puntero (b).** `pointer: Option<(i32, i32)>` en `Inspection`/`Obs` (`GetCursorPos` en `inspect`). Con la opción, más de un monitor y puntero: la regla se aplica en el monitor del puntero. Solo ventanas con regla. Maximizada en otro monitor: sacar la marca, colocarla centrada en el destino y maximizar (como `undo`).
+
+**Ajustes.** Pestaña Opciones, tarjeta "Ventanas": `Select` de espacio (sin espacio, 4, 8, 12, 16, 24; un valor a mano va como séptima opción) y el interruptor del puntero, visible solo con más de un monitor.

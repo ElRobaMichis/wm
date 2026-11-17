@@ -261,11 +261,13 @@ impl Brain {
         if reloaded {
             let b = |v: bool| if v { "sí" } else { "no" };
             self.log.line(format!(
-                "Opciones recargadas: animaciones {}, puntero sigue al foco {}, borde de foco {}, avisos {}.",
+                "Opciones recargadas: animaciones {}, puntero sigue al foco {}, borde de foco {}, avisos {}, espacio entre ventanas {} px, abrir en la pantalla del puntero {}.",
                 b(o.animate),
                 b(o.mouse_follows_focus),
                 b(o.focus_border),
-                b(o.notices)
+                b(o.notices),
+                o.gap,
+                b(o.open_on_pointer)
             ));
         }
         self.options = o;
@@ -1021,6 +1023,7 @@ fn obs(i: windows_list::Inspection) -> Obs {
             .map(|m| MonitorObs { bounds: m.bounds, work: m.work_area, dpi: m.dpi })
             .collect(),
         no_fly: i.no_fly,
+        pointer: i.pointer,
     }
 }
 

@@ -131,3 +131,21 @@ msgstr "Centrada"
 
 msgid "Section"
 msgstr "Sección"
+
+msgid "Windows"
+msgstr "Ventanas"
+
+msgid "No space"
+msgstr "Sin espacio"
+
+msgid "Space between windows"
+msgstr "Espacio entre ventanas"
+
+msgid "Around halves and corners, and against the screen edges."
+msgstr "Alrededor de mitades y esquinas, y contra los bordes de la pantalla."
+
+msgid "Open on the pointer's screen"
+msgstr "Abrir en la pantalla del puntero"
+
+msgid "Apps with a “When it opens” rule go to the screen where the pointer is."
+msgstr "Las apps con regla «Al abrir» van a la pantalla donde está el puntero."

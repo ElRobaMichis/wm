@@ -25,7 +25,7 @@ use std::rc::Rc;
 use slint::{Model, ModelRc, SharedString, VecModel};
 use wm_model::apps::{AppBinding, bindings_path, parse_bindings, update_bindings};
 use wm_model::mapview::display_name;
-use wm_model::options::{Options, options_path};
+use wm_model::options::{GAP_MAX, Options, options_path};
 use wm_model::rules::OpenRule;
 
 slint::include_modules!();
@@ -271,7 +271,29 @@ fn options_of(ui: &SettingsWindow) -> Options {
         mouse_follows_focus: ui.get_mouse_follows(),
         focus_border: ui.get_focus_border(),
         notices: ui.get_notices(),
+        gap: ui.get_gap_px().clamp(0, i32::from(GAP_MAX)) as u8,
+        open_on_pointer: ui.get_open_on_pointer(),
     }
+}
+
+/// Los espacios que ofrece el desplegable (px a 100 %).
+const GAP_CHOICES: [u8; 6] = [0, 4, 8, 12, 16, 24];
+
+/// Las opciones del desplegable de espacio y cuál está elegida: un valor
+/// escrito a mano que no es de la lista va como séptima.
+fn gap_options(ui: &SettingsWindow, gap: u8) -> (Vec<SharedString>, i32) {
+    let label = |g: u8| -> SharedString {
+        if g == 0 { ui.get_no_gap_text() } else { format!("{g} px").into() }
+    };
+    let mut options: Vec<SharedString> = GAP_CHOICES.iter().map(|&g| label(g)).collect();
+    let i = match GAP_CHOICES.iter().position(|&g| g == gap) {
+        Some(i) => i as i32,
+        None => {
+            options.push(label(gap));
+            GAP_CHOICES.len() as i32
+        }
+    };
+    (options, i)
 }
 
 /// Escribe `settings.txt` (temporal + renombrar, como `apps.txt`).
@@ -377,6 +399,12 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_mouse_follows(options.mouse_follows_focus);
     ui.set_focus_border(options.focus_border);
     ui.set_notices(options.notices);
+    ui.set_gap_px(i32::from(options.gap));
+    let (gaps, gap_i) = gap_options(&ui, options.gap);
+    ui.set_gap_options(ModelRc::new(VecModel::from(gaps)));
+    ui.set_gap_choice(gap_i);
+    ui.set_open_on_pointer(options.open_on_pointer);
+    ui.set_multi_monitor(wm_platform::monitors().len() > 1);
     let st = Rc::new(RefCell::new(State {
         catalog,
         file_text,
@@ -399,6 +427,16 @@ fn main() -> Result<(), slint::PlatformError> {
         if let Some(ui) = weak.upgrade() {
             refresh(&ui, &s.borrow());
         }
+    });
+    let weak = ui.as_weak();
+    let s = st.clone();
+    ui.on_gap_chosen(move |i| {
+        let Some(ui) = weak.upgrade() else { return };
+        // La séptima (un valor a mano) deja el que estaba.
+        if let Some(&g) = GAP_CHOICES.get(i.max(0) as usize) {
+            ui.set_gap_px(i32::from(g));
+        }
+        refresh(&ui, &s.borrow());
     });
 
     let weak = ui.as_weak();

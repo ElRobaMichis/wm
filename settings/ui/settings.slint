@@ -53,6 +53,14 @@ export component SettingsWindow inherits Window {
     in-out property <bool> mouse-follows: false;
     in-out property <bool> animations: true;
     in-out property <bool> notices: true;
+    // v1.1: espacio entre ventanas (px) y abrir en la pantalla del puntero.
+    in-out property <int> gap-px: 0;
+    in property <[string]> gap-options;
+    in-out property <int> gap-choice: 0;
+    callback gap-chosen(int);
+    out property <string> no-gap-text: @tr("No space");
+    in-out property <bool> open-on-pointer: false;
+    in property <bool> multi-monitor: false;
     in property <string> selected-letter;
     // Textos que arma el código en Rust, traducidos acá.
     out property <string> free-text: @tr("Free");
@@ -74,6 +82,7 @@ export component SettingsWindow inherits Window {
     changed mouse-follows => { root.options-changed(); }
     changed animations => { root.options-changed(); }
     changed notices => { root.options-changed(); }
+    changed open-on-pointer => { root.options-changed(); }
     callback cancel();
     pure callback find-letter(string) -> int;
 
@@ -291,6 +300,63 @@ export component SettingsWindow inherits Window {
             if root.tab == 1: VerticalLayout {
                 vertical-stretch: 1;
                 Rectangle { height: Theme.s4; }
+                // v1.1: las ventanas (plan-v1.1.md §9).
+                SectionLabel {
+                    text: @tr("Windows");
+                }
+                Rectangle { height: Theme.s2; }
+                Rectangle {
+                    border-radius: Theme.r-card;
+                    background: Theme.surface;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    VerticalLayout {
+                        padding: Theme.card-pad;
+                        HorizontalLayout {
+                            padding-left: Theme.s3;
+                            padding-right: Theme.s3;
+                            spacing: Theme.s3;
+                            height: 52px;
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 2px;
+                                Text {
+                                    text: @tr("Space between windows");
+                                    color: Theme.text;
+                                }
+                                Text {
+                                    text: @tr("Around halves and corners, and against the screen edges.");
+                                    color: Theme.text-2;
+                                    font-size: Theme.t-small;
+                                    wrap: word-wrap;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                Select {
+                                    width: 140px;
+                                    model: root.gap-options;
+                                    window-height: root.height;
+                                    label: @tr("Space between windows");
+                                    current <=> root.gap-choice;
+                                    selected(index) => {
+                                        root.gap-chosen(index);
+                                    }
+                                }
+                            }
+                        }
+                        if root.multi-monitor: ToggleRow {
+                            text: @tr("Open on the pointer's screen");
+                            detail: @tr("Apps with a “When it opens” rule go to the screen where the pointer is.");
+                            checked <=> root.open-on-pointer;
+                        }
+                    }
+                }
+                Rectangle { height: Theme.s6; }
+                SectionLabel {
+                    text: @tr("Options");
+                }
+                Rectangle { height: Theme.s2; }
                 Rectangle {
                     border-radius: Theme.r-card;
                     background: Theme.surface;

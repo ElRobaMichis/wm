@@ -21,6 +21,7 @@ fn obs(frame: Rect, maximized: bool) -> Obs {
         minimized: false,
         monitors: vec![MonitorObs { bounds: m, work: Rect::new(0, 0, 1920, 1040), dpi: 96 }],
         no_fly: None,
+        pointer: None,
     }
 }
 

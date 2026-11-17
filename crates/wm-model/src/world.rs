@@ -60,6 +60,9 @@ pub struct Obs {
     pub monitors: Vec<MonitorObs>,
     /// Por qué no se puede animar esta ventana (`None`: se puede).
     pub no_fly: Option<NoFly>,
+    /// v1.1: dónde estaba el puntero (para "abrir en la pantalla del
+    /// puntero"; `None` si no se leyó).
+    pub pointer: Option<(i32, i32)>,
 }
 
 /// Por qué una ventana no se anima (se mueve instantánea).
@@ -2201,22 +2204,7 @@ impl World {
             let there = monitor_of(&obs.monitors, entry.frame);
             let moved = match (here, there) {
                 (Some(h), Some(t)) if h != t => {
-                    if obs.maximized {
-                        out.push(Effect::Normalize { win: obs.key });
-                    }
-                    let work = obs.monitors[t].work;
-                    let (w, h) = (
-                        obs.frame.width().min(work.width()),
-                        obs.frame.height().min(work.height()),
-                    );
-                    let left = work.left + (work.width() - w) / 2;
-                    let top = work.top + (work.height() - h) / 2;
-                    let target = Rect::new(left, top, left + w, top + h);
-                    let rect = outer_for(obs.frame, obs.outer, target, obs.dpi, obs.dpi);
-                    // Sin chequeos: enseguida se maximiza.
-                    let req = self.req();
-                    out.push(Effect::Place { req, win: obs.key, rect });
-                    out.push(Effect::Maximize { win: obs.key });
+                    self.maximize_on(&obs, t, out);
                     true
                 }
                 _ => false,
@@ -2239,6 +2227,25 @@ impl World {
         let Some(m) = monitor_of(&obs.monitors, target) else { return };
         let spot = Spot { monitor: obs.monitors[m], placement: Placement::Full };
         self.go(&obs, spot, target, what, key_us, now_us, out);
+    }
+
+    /// Maximizarla en el monitor `t` (no es el suyo): sacarle la marca,
+    /// llevarla centrada a ese monitor y maximizarla ahí (Windows maximiza
+    /// en el monitor donde está la ventana).
+    fn maximize_on(&mut self, obs: &Obs, t: usize, out: &mut Vec<Effect>) {
+        if obs.maximized {
+            out.push(Effect::Normalize { win: obs.key });
+        }
+        let work = obs.monitors[t].work;
+        let (w, h) = (obs.frame.width().min(work.width()), obs.frame.height().min(work.height()));
+        let left = work.left + (work.width() - w) / 2;
+        let top = work.top + (work.height() - h) / 2;
+        let target = Rect::new(left, top, left + w, top + h);
+        let rect = outer_for(obs.frame, obs.outer, target, obs.dpi, obs.dpi);
+        // Sin chequeos: enseguida se maximiza.
+        let req = self.req();
+        out.push(Effect::Place { req, win: obs.key, rect });
+        out.push(Effect::Maximize { win: obs.key });
     }
 
     fn send_place(&mut self, win: WinKey, rect: Rect, out: &mut Vec<Effect>) {
@@ -3417,6 +3424,7 @@ mod fullscreen_tests {
             minimized: false,
             monitors: vec![m],
             no_fly: None,
+            pointer: None,
         }
     }
 

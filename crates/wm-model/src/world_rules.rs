@@ -250,14 +250,21 @@ impl World {
     }
 
     fn apply_rule(&mut self, rule: OpenRule, obs: Obs, now_us: u64, out: &mut Vec<Effect>) {
-        let Some(m) = monitor_of(&obs.monitors, obs.frame) else {
+        let Some(own) = monitor_of(&obs.monitors, obs.frame) else {
             out.push(Effect::Log(format!(
                 "Regla al abrir ({}): no está en ningún monitor ({:?}); no la muevo.",
                 obs.app, obs.frame
             )));
             return;
         };
+        // (b) Abrir en la pantalla del puntero (con más de un monitor).
+        let m = obs
+            .pointer
+            .filter(|_| self.options.open_on_pointer && obs.monitors.len() > 1)
+            .and_then(|(x, y)| monitor_of(&obs.monitors, Rect::new(x, y, x + 1, y + 1)))
+            .unwrap_or(own);
         let monitor = obs.monitors[m];
+        let there = if m == own { "" } else { ", en la pantalla del puntero" };
         self.next_gesture += 1;
         let entry = Entry {
             win: obs.key,
@@ -271,11 +278,18 @@ impl World {
             OpenRule::Maximized => "maximizada".to_owned(),
             OpenRule::Centered(p) => format!("centrada al {p} %"),
         };
-        let what = format!("Regla al abrir → {name} ({})", obs.app);
+        let what = format!("Regla al abrir → {name}{there} ({})", obs.app);
         // Sin animación: la miniatura de una ventana recién abierta sale vacía.
         let quiet = Obs { no_fly: Some(NoFly::NotFront), ..obs.clone() };
         match rule {
             OpenRule::Maximized => {
+                if m != own {
+                    // Z la devuelve a su monitor, como se veía.
+                    self.remember(Entry { maximized: looks_maximized(&obs), ..entry });
+                    self.maximize_on(&obs, m, out);
+                    out.push(Effect::Log(what));
+                    return;
+                }
                 if looks_maximized(&obs) {
                     out.push(Effect::Log(format!(
                         "Regla al abrir ({}): ya se abrió maximizada.",

@@ -413,6 +413,8 @@ pub struct Inspection {
     pub monitors: Vec<crate::MonitorInfo>,
     /// Por qué no se puede animar (`None`: se puede).
     pub no_fly: Option<wm_model::world::NoFly>,
+    /// v1.1: dónde está el puntero (`None`: no se pudo leer).
+    pub pointer: Option<(i32, i32)>,
 }
 
 /// Por qué no animar esta ventana (hito 1e): lecturas que no envían
@@ -500,7 +502,17 @@ pub fn inspect(target: Option<(WindowId, u32)>) -> Result<Inspection, String> {
         minimized,
         monitors: crate::monitors(),
         no_fly: no_fly(id),
+        pointer: cursor(),
     })
+}
+
+/// La posición del puntero (`None` en el escritorio seguro, por ejemplo).
+fn cursor() -> Option<(i32, i32)> {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    let mut p = POINT::default();
+    // SAFETY: escribe en una variable local.
+    unsafe { GetCursorPos(&mut p) }.ok().map(|()| (p.x, p.y))
 }
 
 /// La ventana top-level visible bajo el punto (para pruebas).

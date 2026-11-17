@@ -88,6 +88,8 @@ struct Sim {
     behind: bool,
     /// Tantos `Scan` más no ven la ventana (todavía sin mostrarse).
     unlisted: usize,
+    /// Dónde está el puntero (v1.1: abrir en la pantalla del puntero).
+    pointer: Option<(i32, i32)>,
 }
 
 fn monitor(left: i32) -> MonitorObs {
@@ -128,6 +130,7 @@ impl Sim {
             fly_fail: None,
             behind: false,
             unlisted: 0,
+            pointer: None,
         }
     }
 
@@ -143,6 +146,7 @@ impl Sim {
             minimized: false,
             monitors: self.monitors.clone(),
             no_fly: self.win.no_fly,
+            pointer: self.pointer,
         }
     }
 
@@ -254,6 +258,12 @@ impl Sim {
                         Effect::Maximize { win } => {
                             assert_eq!(win, self.win.key);
                             assert!(self.flight.is_none(), "Maximize sobre una ventana en vuelo");
+                            // Va por el mismo carril que los `Place` anteriores:
+                            // Windows los aplica antes.
+                            for q in &mut self.queued {
+                                q.0 = q.0.min(self.now);
+                            }
+                            self.settle();
                             if !self.win.maximized {
                                 let m = monitor_of(&self.monitors, self.win.frame).unwrap();
                                 self.win.restore = self.win.frame;
@@ -1777,6 +1787,76 @@ fn a_window_already_maximized_for_real_is_left_alone() {
     sim.run(&mut w, Event::Foreground(sim.win.key));
     assert!(!sim.normalized, "{:?}", sim.logs);
     assert!(sim.logs.iter().any(|l| l.contains("ya se abrió maximizada")), "{:?}", sim.logs);
+}
+
+fn on_pointer() -> Event {
+    Event::Options(crate::options::Options { open_on_pointer: true, ..Default::default() })
+}
+
+#[test]
+fn with_open_on_pointer_the_rule_goes_to_the_pointers_screen_and_z_brings_it_back() {
+    let (b, _) = crate::apps::parse_bindings("b = brave | | | al abrir: derecha");
+    let mut w = World::new(b);
+    let mut sim = Sim::new();
+    assert!(sim.monitors.len() > 1);
+    sim.run(&mut w, on_pointer());
+    let start = sim.win.frame;
+    sim.pointer = Some((sim.monitors[1].work.left + 300, 500));
+    sim.run(&mut w, Event::Foreground(sim.win.key));
+    assert!(sim.is_at(1, P::RightHalf), "{:?} {:?}", sim.win.frame, sim.logs);
+    assert!(sim.logs.iter().any(|l| l.contains("en la pantalla del puntero")), "{:?}", sim.logs);
+    sim.key(&mut w, b'Z');
+    assert_eq!(sim.win.frame, start, "{:?}", sim.logs);
+}
+
+#[test]
+fn without_open_on_pointer_the_rule_stays_on_its_screen() {
+    let (b, _) = crate::apps::parse_bindings("b = brave | | | al abrir: derecha");
+    let mut w = World::new(b);
+    let mut sim = Sim::new();
+    sim.pointer = Some((sim.monitors[1].work.left + 300, 500));
+    sim.run(&mut w, Event::Foreground(sim.win.key));
+    assert!(sim.is_at(0, P::RightHalf), "{:?} {:?}", sim.win.frame, sim.logs);
+}
+
+#[test]
+fn open_on_pointer_with_one_screen_does_nothing_different() {
+    let (b, _) = crate::apps::parse_bindings("b = brave | | | al abrir: derecha");
+    let mut w = World::new(b);
+    let mut sim = Sim::new();
+    sim.monitors = vec![monitor(0)];
+    sim.run(&mut w, on_pointer());
+    sim.pointer = Some((5000, 500));
+    sim.run(&mut w, Event::Foreground(sim.win.key));
+    assert!(sim.is_at(0, P::RightHalf), "{:?} {:?}", sim.win.frame, sim.logs);
+}
+
+#[test]
+fn maximized_on_the_pointers_screen() {
+    let (b, _) = crate::apps::parse_bindings("b = brave | | | al abrir: maximizada");
+    let mut w = World::new(b);
+    let mut sim = Sim::new();
+    sim.run(&mut w, on_pointer());
+    let start = sim.win.frame;
+    sim.pointer = Some((sim.monitors[1].work.left + 300, 500));
+    sim.run(&mut w, Event::Foreground(sim.win.key));
+    assert!(sim.win.maximized, "{:?}", sim.logs);
+    assert_eq!(sim.win.frame, sim.monitors[1].work, "{:?}", sim.logs);
+    sim.key(&mut w, b'Z');
+    assert!(!sim.win.maximized, "{:?}", sim.logs);
+    assert_eq!(sim.win.frame, start, "{:?}", sim.logs);
+}
+
+#[test]
+fn open_on_pointer_without_rules_moves_nothing() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.run(&mut w, on_pointer());
+    let start = sim.win.frame;
+    sim.pointer = Some((sim.monitors[1].work.left + 300, 500));
+    sim.run(&mut w, Event::Foreground(sim.win.key));
+    assert_eq!(sim.win.frame, start);
+    assert_eq!(sim.places, 0);
 }
 
 #[test]

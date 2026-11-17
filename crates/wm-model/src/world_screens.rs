@@ -501,6 +501,7 @@ impl World {
                 minimized: false,
                 monitors: survey.monitors.clone(),
                 no_fly: Some(NoFly::NotFront),
+                pointer: None,
             };
             let what = format!(
                 "Pantallas → {} ({}, reencaje)",
