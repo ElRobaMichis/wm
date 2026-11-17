@@ -191,7 +191,7 @@ Un modificador **exclusivo** del gestor, así no choca con nada. Por defecto es 
 | Gesto | Resultado |
 |---|---|
 | Mantener `Caps` + otra tecla | Acción del gestor |
-| Mantener `Caps` solo ~0,4 s | Muestra el **mapa de atajos** (§10.1) |
+| Mantener `Caps` solo ~0,6 s | Muestra el **mapa de atajos** (§10.1) |
 | Tocar `Caps` y soltar (sin otra tecla) | **Bloq Mayús normal** (por defecto), o `Esc`, o nada (configurable) |
 
 ### 5.2 Alternativas si el usuario necesita `Caps Lock`
@@ -460,7 +460,7 @@ Ningún atajo del núcleo debería tener **solo** `Cmd`/`Ctrl` como modificador:
 
 ### 10.1 El mapa al mantener Hyper (la pieza clave)
 
-- **Se activa** manteniendo Hyper solo ~0,4 s. **Desaparece** al soltar.
+- **Se activa** manteniendo Hyper solo ~0,6 s (era 0,4 s; subió tras la prueba del usuario). **Desaparece** al soltar.
 - **Muestra un teclado completo** dibujado con la **distribución real del usuario** (español, US, AZERTY…).
 - **Sin pulgar muestra la capa de apps:** el **ícono de cada app** sobre su letra, los escritorios sobre los números y las letras libres con un "+" para asignar.
 - **Al apretar el pulgar cambia a la capa de ventana** en el momento: flechas, "Full", "Centrar", "Deshacer"… Así se descubre la segunda capa sin explicarla.

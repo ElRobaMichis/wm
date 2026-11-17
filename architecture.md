@@ -200,7 +200,7 @@ No hizo falta una segunda ronda con Fable: su informe ya cubre y corrige cada pu
 
 ### 5.2 Máquina de estados (en el hilo de input, O(1))
 
-- **Caps abajo** (scancode `0x3A`, no inyectado por nosotros): se traga y arranca un timer de 0,4 s para el mapa.
+- **Caps abajo** (scancode `0x3A`, no inyectado por nosotros): se traga y arranca un timer de 0,6 s para el mapa (era 0,4 s).
 - **Otra tecla con Caps abajo:** se traga y se manda al brain con su marca de tiempo. Los acordes (W+A) y las repeticiones se resuelven en el brain, no en el hook.
 - **Caps arriba sin acorde y antes del mapa:** se inyecta Caps abajo+arriba con `SendInput` y una marca en `dwExtraInfo` que el hook deja pasar. Así se alterna Bloq Mayús y su LED.
 - **Invariante contra teclas trabadas:**
@@ -251,7 +251,7 @@ No hizo falta una segunda ronda con Fable: su informe ya cubre y corrige cada pu
 
 - No funciona en el escritorio seguro (UAC, pantalla de bloqueo).
 - Clientes de RDP o VM y algunos juegos toman el teclado antes que nosotros.
-- Conviene pausarse sola con apps a pantalla completa (`SHQueryUserNotificationState`).
+- ~~Conviene pausarse sola con apps a pantalla completa~~ (`SHQueryUserNotificationState`): **descartado en v1.2** (`plan-v1.2.md` §7). `QUNS_BUSY` no distingue juegos de F11, presentaciones o videos, no avisa cuando cambia, y con pantalla completa `Caps` + letra es justo lo que sirve para salir. Si aparece el caso (juegos, RDP, VM): "Pausar atajos en esta app" desde la bandeja.
 - La prueba en vivo de la bienvenida ("apretá Caps + …") sirve también para detectar conflictos con PowerToys o AutoHotkey.
 
 ---
@@ -1079,7 +1079,7 @@ Planteo revisado con Fable 5.2; implementado y medido el 15/11/2026.
 - no se usan los widgets `fluent` estándar;
 - tipografía **Geist** (OFL, `assets/fonts/geist`), incluida en el binario: +254 KB, sin cambios medibles en arranque ni memoria (elegida frente a Inter y Segoe UI Variable, design.md §3.1). `wm.exe` también la usa en el mapa de teclado, cargada desde memoria en DirectWrite: +255 KB (0,92 → 1,18 MB) y el mismo primer cuadro (p50 10,9 ms).
 
-**Guardar es real** (después de la prueba del usuario, 15/11/2026): los ajustes leen y escriben `%APPDATA%\wm\apps.txt`, el mismo archivo que usa el core (`wm_model::apps::bindings_path`). Se escribe a un temporal que se renombra encima, conservando comentarios, líneas con errores y rutas de lanzamiento (`update_bindings`, con pruebas). Las tres opciones todavía no se guardan: el core aún no las tiene.
+**Guardar es real** (después de la prueba del usuario, 15/11/2026): los ajustes leen y escriben `%APPDATA%\wm\apps.txt`, el mismo archivo que usa el core (`wm_model::apps::bindings_path`). Se escribe a un temporal que se renombra encima, conservando comentarios, líneas con errores y rutas de lanzamiento (`update_bindings`, con pruebas). Las tres opciones todavía no se guardan: el core aún no las tiene. *(Desde v0.1.1 se guardan en `%APPDATA%\wm\settings.txt`, `wm_model::options`.)*
 
 **Error de los componentes, corregido:** en `Button`, `Select` y `ToggleRow`, el `FocusScope` hermano tapaba al `TouchArea` y se quedaba con el primer clic para tomar el foco (`focus-on-click`), así que hacían falta dos clics. Ahora el `TouchArea` da el foco él mismo (`focus-on-click: false`). Además, la lista del desplegable se abre hacia donde haya lugar y ya no se corta en el borde de la ventana.
 

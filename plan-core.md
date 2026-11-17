@@ -128,7 +128,7 @@ Se registran fuera de contexto, saltando el proceso propio, en el brain. La API 
 ### 2.3 Qué despierta al brain
 
 - **En reposo: nada.** La espera es infinita si no hay plazos [V] `input.rs:451-452`.
-- **Plazos, solo mientras hay algo en curso:** órdenes en vuelo (ya existe), mapa armado (≤ 400 ms, solo con Caps apretada), chequeos de colocación (≤ 600 ms tras una acción), tormenta de pantallas (`StormTracker::deadline` [V] `screens.rs:252-261`), antirrebote de recarga (100 ms).
+- **Plazos, solo mientras hay algo en curso:** órdenes en vuelo (ya existe), mapa armado (≤ 600 ms, solo con Caps apretada), chequeos de colocación (≤ 600 ms tras una acción), tormenta de pantallas (`StormTracker::deadline` [V] `screens.rs:252-261`), antirrebote de recarga (100 ms).
 - Un toque de Caps cuesta dos mensajes al brain (microsegundos) y **nada en el hilo ui**.
 
 ### 2.4 Órdenes nuevas en `ops`
@@ -286,8 +286,8 @@ Latencia esperada: dos saltos de carril, como `Caps + letra` hoy (1,9-4,4 ms de 
 
 ### 5.1 Umbral y uso rápido
 
-- **Umbral: 400 ms** con Hyper apretada y sin tecla de acción. Es la constante que ya separa toque de mantener [V] `keyboard.rs:28`, así que "si viste el mapa, Bloq Mayús no cambia".
-- **Para no molestar:** (1) una acción antes de los 400 ms suprime el mapa durante **toda** esa pulsación; (2) el pulgar no es acción: elige la capa, y así se descubre la capa de ventana; (3) en un toque no se construye nada; (4) no roba el foco y los clics lo atraviesan [V] `overlay.rs:89-94`; (5) aparece en un solo monitor.
+- **Umbral: 600 ms** con Hyper apretada y sin tecla de acción (era 400 ms; `keyboard.rs`, `MAP_DELAY_MS`). El toque de Bloq Mayús dura menos de 350 ms (`TAP_MAX_MS`); entre 350 y 600 ms no pasa nada (banda muerta), así que "si viste el mapa, Bloq Mayús no cambia".
+- **Para no molestar:** (1) una acción antes de los 600 ms suprime el mapa durante **toda** esa pulsación; (2) el pulgar no es acción: elige la capa, y así se descubre la capa de ventana; (3) en un toque no se construye nada; (4) no roba el foco y los clics lo atraviesan [V] `overlay.rs:89-94`; (5) aparece en un solo monitor.
 - **Con el mapa visible** (D7): la tecla ejecuta su acción, se pinta en `accent` y el mapa sigue hasta soltar Hyper (`keyboard-design.md:451`).
 
 ### 5.2 Ciclo de vida
@@ -440,7 +440,7 @@ Para C: mover el bucle a `app/src/brain.rs`, reutilizable por `core` y `ci_probe
 | **1e. Animación** (con tope) | Carril `anim`; vuelos del mismo tamaño; mini-spike 6b para redimensionar | `wm-bench ghost`: 0 cuadros defectuosos, ≥ 95 %. Si 6b no cierra en el tope, queda instantáneo | M + `wm-bench` |
 | *1f. G/V (si D8)* | Agrandar o achicar 10 % anclado al borde exterior del slot | — | P + C |
 | | **Usable: capa de ventana completa** | | |
-| **2a. Mapa mínimo** | Plazo en el brain, hilo ui, mapa estático en el monitor del foco, todas las rutas de ocultado, `request_reset` | Aparece a 400 ms (+ ≤ 25); nunca en acordes rápidos; nunca queda pegado; Bloq Mayús intacto | P: `MapState`. C: Caps 500 ms → overlay visible + captura; toque → sin overlay. M: bloquear sesión; `Caps + F12` |
+| **2a. Mapa mínimo** | Plazo en el brain, hilo ui, mapa estático en el monitor del foco, todas las rutas de ocultado, `request_reset` | Aparece a 600 ms (+ ≤ 25; era 400); nunca en acordes rápidos; nunca queda pegado; Bloq Mayús intacto | P: `MapState`. C: Caps 500 ms → overlay visible + captura; toque → sin overlay. M: bloquear sesión; `Caps + F12` |
 | **2b. Contenido real** | `map_view`, capa de ventana con el pulgar, tecla en `accent`, tokens, pie | La usuaria encuentra "centrar" en < 10 s (`keyboard-design.md:539`) | P: instantáneas de `MapView`. M: revisión visual |
 | **2c. Pulido y medición** | Fundido, reducir animaciones, escala por DPI, recrear al cambiar monitores | ≤ 30 MB con el mapa; 0 % de CPU tras ocultarlo | `wm-bench` |
 | | **Usable: se aprende sin documentación** | | |
@@ -508,21 +508,21 @@ Lo que ya da Windows y no hace falta construir: arrastrar al borde o a la esquin
 
 Auditoría del 16/11/2026 (`keyboard-design.md`, `design.md`, `architecture.md`, `findings.md`, `README.md` contra este plan), después de notar que las equivalencias con el mouse no estaban ni dentro ni fuera. Todo lo documentado tiene ahora un lugar: un hito (arriba), "fuera de v1" (línea de alcance) o esta lista.
 
-**Escondido en los ajustes de v1 (no descartado):** el perfil y las opciones de borde de foco, puntero que sigue al foco y animar ventanas: ver [funciones-ocultas.md](funciones-ocultas.md).
+**Escondido en los ajustes de v1 (no descartado):** solo el perfil "Apps primero / Ventanas primero". El borde de foco, el puntero que sigue al foco y animar ventanas volvieron en v0.1.1–0.1.2 y funcionan: ver [funciones-ocultas.md](funciones-ocultas.md).
 
 **Ubicado en un hito:** arranque automático (3a), Pausar y Deshacer en la bandeja y aviso de "atajos no disponibles" con una ventana de administrador (3b), mouse (5), ocultar el selector de perfil y actualizar el README (antes de la sesión U).
 
 **A decidir antes de las 1–2 semanas de uso real** (no bloquean la sesión 1):
 - ~~**Avisos en pantalla**~~ hecho en v0.1.1: una píldora abajo al centro del monitor de la ventana al frente, 2,2 s, con fundidos (`wm_model::notices` traduce las líneas del log de las acciones que no hicieron nada; `ui.rs`); se apaga con "Avisos en pantalla" en los ajustes. Antes: **avisos en pantalla** cuando una tecla no hace nada (no hay otro monitor, la app no responde, pantalla completa): hoy quedan solo en el log. Para una persona no técnica, que no pase nada parece una falla (`architecture.md` §5.5, `design.md` §5). Recomendación: un aviso discreto en el mapa o la bandeja; decidir con la sesión 1.
-- **Registro local de uso** con su permiso (`keyboard-design.md` §12.3): `wm.log` cubre una parte, pero rota por tamaño.
+- **Registro local de uso** con su permiso (`keyboard-design.md` §12.3): `wm.log` cubre una parte, pero rota por tamaño. **v1.2** (`plan-v1.2.md` §2): `uso.txt`, apagado por defecto.
 - **Instalación:** cómo se le actualiza y se desinstala; la firma del ejecutable va después de v1 (`architecture.md` §12.3–12.4, §9.7).
 
 **Después de v1:**
-- Enseñar en el momento ("esto también es `Caps` + …", `keyboard-design.md` §10.2).
-- Borde de foco prendido por defecto (`keyboard-design.md` §14.7, `design.md` §5; con `DWMWA_BORDER_COLOR` cuesta poco).
+- Enseñar en el momento ("esto también es `Caps` + …", `keyboard-design.md` §10.2). **v1.2:** "La próxima vez: Caps + B" al ir a una app con Alt+Tab o la barra (`plan-v1.2.md` §6); lo del mouse, con las zonas en v2.
+- ~~Borde de foco prendido por defecto~~ hecho en v0.1.2 (`focus_border.rs`).
 - Atajos del nivel 2: foco con Hyper + flechas, X para cerrar (apagado por defecto), "llevar y seguir" con Shift (`keyboard-design.md` §6.3, §14.7).
-- Teclado y configuración: elegir qué hace un toque de `Caps`, otra tecla Hyper desde la interfaz, detectar choques con PowerToys o AutoHotkey, perfiles de flechas y Vim, "letra = categoría", exportar e importar, el puntero que sigue al foco, WASD por posición física con las etiquetas reales de la distribución en el mapa (hoy QWERTY fijo, `mapview.rs`) (`keyboard-design.md` §4.3, §5, §6.4, §8.2, §10.1, §11.3, §14.7; `architecture.md` §5.7).
-- Pausarse sola con apps a pantalla completa (`architecture.md` §5.7): hoy el mapa y C/F/Z/WASD/G/V la respetan, pero el hook sigue activo.
+- Teclado y configuración: elegir qué hace un toque de `Caps`, otra tecla Hyper desde la interfaz, detectar choques con PowerToys o AutoHotkey, perfiles de flechas y Vim, "letra = categoría", exportar e importar, ~~el puntero que sigue al foco~~ (hecho en v0.1.1), WASD por posición física con las etiquetas reales de la distribución en el mapa (hoy QWERTY fijo, `mapview.rs`) (`keyboard-design.md` §4.3, §5, §6.4, §8.2, §10.1, §11.3, §14.7; `architecture.md` §5.7).
+- ~~Pausarse sola con apps a pantalla completa~~ **descartado en v1.2** (`plan-v1.2.md` §7): para la usuaria, pantalla completa es AutoCAD, F11 o un video, justo donde `Caps` + letra sirve para salir. Si hace falta, "Pausar atajos en esta app" desde la bandeja.
 - Volcado de fallos local (`architecture.md` §9.10).
 - Arrastrar íconos sobre el mapa y el gesto de centrar con el mouse (hito 5, nota).
 
@@ -546,7 +546,7 @@ Revisión del 16/11/2026, a pedido del usuario: qué de lo que la gente **ama**,
 |---|---|
 | ⭐ 1–2. Zonas fijas con pilas de ventanas, híbrido con tiling (la propuesta de valor de §14.1) | **Fuera de v1** (línea de alcance) |
 | ⭐ 21. Configurar el layout visualmente, con mouse | **Fuera de v1** (va con las zonas) |
-| ⭐ 4. Reglas por app (lado preferido, tamaño, flotar, posición al abrir) | **v1.1: "al abrir"** (mitad, esquina, maximizada o centrada; `plan-v1.1.md`). Tamaño fijo, flotar y recordar la posición: después |
+| ⭐ 4. Reglas por app (lado preferido, tamaño, flotar, posición al abrir) | **v1.1: "al abrir"** (mitad, esquina, maximizada o centrada; `plan-v1.1.md`). **v1.2:** escritorio al abrir y "abrir siempre así" desde la bandeja (`plan-v1.2.md`). Tamaño fijo, flotar y recordar la posición: después |
 | ⭐ 10. Reaplicar el layout solo (al abrir una app, al cambiar monitores, al volver del reposo) | Parcial: 4d rescata ventanas fuera de pantalla; la persistencia por topología (spike 7) está fuera de v1 |
 | ⭐ 14. Selector por ventana y por monitor con posiciones estables | **Sin lugar hasta ahora** → propuesta abajo |
 | 13. Ventanas nuevas en el monitor del puntero y sin tapar a otras | **v1.1: el monitor del puntero** (opcional, para apps con regla). "Sin tapar a otras": v2, con las zonas |
@@ -555,7 +555,7 @@ Revisión del 16/11/2026, a pedido del usuario: qué de lo que la gente **ama**,
 | 25. Tecla Hyper configurable | Después de v1 (§10) |
 | 26. Espacios entre ventanas (accesibilidad) | **v1.1** (0–24 px, por la escala de cada monitor) |
 | 28. Cuartos arrastrando a las esquinas | Ya lo da Windows (Snap) |
-| 30. Animaciones en cero | Hecho (`WM_ANIM=0`, "reducir animaciones"); falta el interruptor en los ajustes |
+| 30. Animaciones en cero | Hecho (`WM_ANIM=0`, "reducir animaciones" y el interruptor "Animar ventanas" de los ajustes, desde v0.1.1) |
 
 **Conclusión:** v1 es la **base de teclado** para la sesión con la usuaria (lo que pidió `keyboard-design.md` §12): resuelve casi todo lo que la gente odia, pero **todavía no tiene el diferencial** que la investigación encontró (zonas con pilas, reglas por app, layouts que se reaplican solos).
 

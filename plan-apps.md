@@ -1,6 +1,6 @@
 # `Caps` + letra con apps reales: bandeja, identidad, ajustes y ciclo
 
-Diseño de Fable 5.2 (16/11/2026) a partir de la prueba del usuario; decisiones del usuario al final. Nada de esto está implementado todavía (ver avance en §7).
+Diseño de Fable 5.2 (16/11/2026) a partir de la prueba del usuario; decisiones del usuario al final. Implementado y publicado en v0.1.4 y v0.1.5 (ver avance en §7).
 
 ## 1. Problemas encontrados por el usuario
 
@@ -57,7 +57,7 @@ Cada letra tiene una lista, de la ventana más reciente a la más vieja (entre t
 7. Ajustes: selector con búsqueda que guarda nombres, destino y nombre.
 8. Nombre visible en mapa y avisos; README y keyboard-design.
 
-**Avance (16/11/2026, sin subir; falta la prueba del usuario):** pasos 1–7 hechos. Modelo: formato nuevo de `apps.txt` (alias, destino, nombre), identidad por exe/familia/AUMID, "Alt+Tab de la letra", `Revive` con guardia de 30 s y seguimiento a 0,3/0,8/1,5/3 s (sin el chequeo de pantalla de carga: queda para después). Plataforma: `process_info` (familia y AUMID con caché por pid), `launch::open` (exe, `.lnk` y `shell:AppsFolder` con `explorer.exe`), `Op::Revive`, `catalog` (107 apps en 120 ms en la PC del autor), `wm apps --instaladas`. Ajustes: selector que cubre la ventana, con búsqueda y secciones "Ninguna", "Abiertas ahora" y "Todas"; guarda nombres, destino y nombre visible.
+**Avance (16/11/2026; probado por el usuario y publicado en v0.1.4):** pasos 1–7 hechos. Modelo: formato nuevo de `apps.txt` (alias, destino, nombre), identidad por exe/familia/AUMID, "Alt+Tab de la letra", `Revive` con guardia de 30 s y seguimiento a 0,3/0,8/1,5/3 s (sin el chequeo de pantalla de carga: queda para después). Plataforma: `process_info` (familia y AUMID con caché por pid), `launch::open` (exe, `.lnk` y `shell:AppsFolder` con `explorer.exe`), `Op::Revive`, `catalog` (107 apps en 120 ms en la PC del autor), `wm apps --instaladas`. Ajustes: selector que cubre la ventana, con búsqueda y secciones "Ninguna", "Abiertas ahora" y "Todas"; guarda nombres, destino y nombre visible.
 
 ## 8. Elegir entre muchas ventanas de una letra (diseño de Fable 5.2, 16/11/2026)
 
@@ -67,6 +67,6 @@ Con 3 o más ventanas en la lista de una letra, el **segundo toque** sin soltar 
 
 Límites conocidos: la fuente del overlay (Geist) no tiene emoji ni CJK: esos caracteres se omiten hasta sumar un respaldo.
 
-**Detalles (17/11/2026, sin subir):** una app que **arrancó hace menos de 2 minutos** y todavía no tiene ventana se considera cargando (AutoCAD, Revit): `Caps` + letra avisa "Abriendo…" y espera su ventana en vez de abrir otra (Steam en la bandeja corre hace rato: se reabre igual). La tecla del mapa dice "Brave · 5" cuando la letra tiene lista (3 o más). Clic en una fila de la lista = ir a esa ventana; clic afuera = cerrarla y quedarse.
+**Detalles (17/11/2026; publicado en v0.1.5):** una app que **arrancó hace menos de 2 minutos** y todavía no tiene ventana se considera cargando (AutoCAD, Revit): `Caps` + letra avisa "Abriendo…" y espera su ventana en vez de abrir otra (Steam en la bandeja corre hace rato: se reabre igual). La tecla del mapa dice "Brave · 5" cuando la letra tiene lista (3 o más). Clic en una fila de la lista = ir a esa ventana; clic afuera = cerrarla y quedarse.
 
 **Ajuste (17/11/2026):** se quitó el criterio "arrancó hace menos de 2 minutos = está cargando": una IntelliJ recién cerrada (su proceso todavía vivo o recién abierta antes) quedaba "abriendo" sin abrirse. Ahora la protección contra abrir dos veces es solo para lo que abrió `wm`: hasta que aparece su ventana o 90 s; el seguimiento busca la ventana hasta 60 s (AutoCAD y Revit). El mapa aparece a los 600 ms de mantener `Caps` (eran 400: aparecía sin querer).

@@ -57,7 +57,7 @@ La versión nativa de los ajustes (`wm settings`, `wm-platform::native_settings`
 - **Por qué se esconde:** la animación existe (hito 1e: vuelos con fantasma y cambio de tamaño), pero **el interruptor no hace nada**. Hoy solo se apaga con la variable `WM_ANIM=0` o con "Reducir animaciones" de Windows (que `wm` respeta: `windows_list::reduced_motion`).
 - **Requisitos:**
   - `findings.md` §7, pedido 30 ("animaciones en cero");
-  - `plan-core.md` §11: hecho, falta el interruptor en los ajustes;
+  - `plan-core.md` §11: hecho; el interruptor está en los ajustes desde v0.1.1;
   - `plan-core.md` D6: las animaciones son opcionales.
 - **Para hacerlo (es el más barato de los cuatro):**
   - guardar la opción en el mismo archivo que el perfil;
