@@ -1260,6 +1260,11 @@ impl World {
                 else {
                     return out;
                 };
+                // Si ya estaba al frente, Windows no avisa `FOREGROUND`: una
+                // nueva que esperaba detrás arranca su regla igual.
+                if result.as_ref().is_ok_and(|f| f.ok) {
+                    self.came_forward(win, now_us, &mut out);
+                }
                 if let Some((r, next)) = self.follow_focus.take()
                     && r == req
                 {

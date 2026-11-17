@@ -4,7 +4,7 @@
 //! después, gana la app. Sin animación; Z la devuelve adonde la abrió la app.
 
 use super::{Effect, Entry, NoFly, Obs, Pending, Spot, WinInfo, WinKey, World, is_fullscreen};
-use crate::place::{centered_percent, monitor_of, placement_name};
+use crate::place::{centered_percent, edge_error, monitor_of, placement_name};
 use crate::rules::OpenRule;
 use crate::{Placement, Rect};
 
@@ -67,10 +67,15 @@ impl World {
         now_us: u64,
         out: &mut Vec<Effect>,
     ) {
+        // La que pasó al frente antes de aparecer en la lista ya vino al
+        // frente: no "apareció detrás" aunque ahora no lo esté (la de
+        // IntelliJ; pruebas del usuario, 17/11/2026).
+        let mut came_first = None;
         if let Some(u) = self.unseen
             && windows.iter().any(|w| w.key == u.win)
         {
             self.unseen = None;
+            came_first = Some(u.win);
             if u.step > 0 {
                 out.push(Effect::Log(format!(
                     "Ventana nueva: apareció en la lista {} ms después de pasar al frente.",
@@ -113,7 +118,7 @@ impl World {
                 ))),
                 // Apareció detrás: la regla corre solo si pasa al frente
                 // pronto; una que se abre de verdad en segundo plano no.
-                None if fg != Some(w.key) => {
+                None if fg != Some(w.key) && came_first != Some(w.key) => {
                     self.behind.insert(w.key, (rule, now_us));
                     out.push(Effect::Log(format!(
                         "Regla al abrir ({app}): «{title}» apareció detrás; espera a pasar al frente."
@@ -307,15 +312,25 @@ impl World {
                 out.push(Effect::Maximize { win: obs.key });
                 out.push(Effect::Log(what));
             }
-            OpenRule::Place(p) => {
+            OpenRule::Place(_) | OpenRule::Centered(_) => {
+                let (spot, target) = match rule {
+                    OpenRule::Place(p) => (Spot { monitor, placement: p }, self.slot(&monitor, p)),
+                    OpenRule::Centered(pct) => (
+                        Spot { monitor, placement: Placement::Full },
+                        centered_percent(monitor.work, i32::from(pct)),
+                    ),
+                    OpenRule::Maximized => unreachable!(),
+                };
+                // Ya se abrió ahí (Rayo esconde su ventana al cerrarla y la
+                // vuelve a mostrar donde estaba): `go` no hace nada; se anota.
+                if !obs.maximized && edge_error(obs.frame, target) <= super::TOLERANCE_PX {
+                    out.push(Effect::Log(format!(
+                        "Regla al abrir ({}): ya se abrió {}.",
+                        obs.app,
+                        rule.describe()
+                    )));
+                }
                 self.record = Some(entry);
-                let spot = Spot { monitor, placement: p };
-                self.go(&quiet, spot, self.slot(&monitor, p), what, now_us, now_us, out);
-            }
-            OpenRule::Centered(pct) => {
-                self.record = Some(entry);
-                let spot = Spot { monitor, placement: Placement::Full };
-                let target = centered_percent(monitor.work, i32::from(pct));
                 self.go(&quiet, spot, target, what, now_us, now_us, out);
             }
         }

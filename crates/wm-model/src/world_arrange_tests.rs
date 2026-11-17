@@ -1754,6 +1754,36 @@ fn a_window_that_comes_to_the_front_before_it_is_listed_still_gets_its_rule() {
 }
 
 #[test]
+fn a_window_that_came_to_the_front_before_it_was_listed_is_not_behind() {
+    // IntelliJ (pruebas del usuario, 17/11/2026): pasó al frente antes de
+    // aparecer en la lista y, al aparecer, el `Scan` ya no la ve al frente.
+    let (b, _) = crate::apps::parse_bindings("i = idea64, brave | | | al abrir: derecha");
+    let mut w = World::new(b);
+    let mut sim = Sim::new();
+    sim.unlisted = 2;
+    sim.behind = true;
+    sim.run(&mut w, Event::Foreground(sim.win.key));
+    assert!(sim.is_at(0, P::RightHalf), "{:?} {:?}", sim.win.frame, sim.logs);
+}
+
+#[test]
+fn a_window_that_opens_already_in_its_place_says_so() {
+    // Rayo esconde su ventana al cerrarla y la muestra donde estaba.
+    let (b, _) = crate::apps::parse_bindings("r = brave | | | al abrir: derecha");
+    let mut w = World::new(b);
+    let mut sim = Sim::new();
+    sim.at(0, P::RightHalf);
+    let places = sim.places;
+    sim.run(&mut w, Event::Foreground(sim.win.key));
+    assert_eq!(sim.places, places, "no se mueve");
+    assert!(
+        sim.logs.iter().any(|l| l.contains("ya se abrió en la mitad derecha")),
+        "{:?}",
+        sim.logs
+    );
+}
+
+#[test]
 fn without_rules_an_unlisted_window_is_not_searched_again() {
     let mut w = World::new(Vec::new());
     let mut sim = Sim::new();

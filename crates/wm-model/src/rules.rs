@@ -68,11 +68,12 @@ impl OpenRule {
 }
 
 impl OpenRule {
-    /// Para los avisos: "en la mitad derecha", "maximizada", "centrada"…
+    /// Para los avisos: "en la mitad derecha", "maximizada", "centrada al
+    /// 80 %"…
     pub fn describe(self) -> String {
         match self {
             Self::Maximized => "maximizada".into(),
-            Self::Centered(_) => "centrada".into(),
+            Self::Centered(p) => format!("centrada al {p} %"),
             Self::Place(p) => format!("en la {}", crate::place::placement_name(p)),
         }
     }
@@ -151,5 +152,6 @@ mod tests {
         let small = crate::place::centered_percent(work, 20);
         assert_eq!(rule_like(small, false, Placement::Full, work), None, "muy chica");
         assert_eq!(OpenRule::Place(Placement::RightHalf).describe(), "en la mitad derecha");
+        assert_eq!(OpenRule::Centered(80).describe(), "centrada al 80 %");
     }
 }

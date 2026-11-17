@@ -25,8 +25,9 @@ pub fn key_for(line: &str) -> Option<String> {
             return None;
         }
         // "Caps + B «…»" no pasa: siempre hay → o : antes de un título.
-        let failed =
-            line.contains("FALLÓ") || notice_for(line).is_some_and(|n| !n.starts_with("Abriendo"));
+        let failed = line.contains("FALLÓ")
+            || line.ends_with("todavía no hace nada.")
+            || notice_for(line).is_some_and(|n| !n.starts_with("Abriendo"));
         return Some(if failed { format!("{key} (no hizo nada)") } else { key.to_owned() });
     }
     for (start, key) in [
@@ -171,6 +172,7 @@ mod tests {
                 Some("Caps + Alt + A (no hizo nada)"),
             ),
             ("Caps + Q: no hay ninguna app abierta con la Q.", Some("Caps + Q (no hizo nada)")),
+            ("Caps + Alt + R: todavía no hace nada.", Some("Caps + Alt + R (no hizo nada)")),
             ("Caps + N: abriendo notion… (espera)", Some("Caps + N")),
             (
                 "Caps + 2 → escritorio 2: 1 mostradas, 2 escondidas, 9.0 ms desde la tecla",
