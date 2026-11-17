@@ -15,6 +15,10 @@
 //! La tipografía es Geist, la misma de los ajustes (design.md §3.1). Va
 //! dentro de `wm.exe` y se carga desde memoria en una fábrica de DirectWrite
 //! aislada: no depende de las fuentes instaladas ni toca la caché del sistema.
+//!
+//! v1.2 (plan-v1.2.md §8): lo que Geist no tiene (emoji, chino, coreano,
+//! símbolos) sale de fuentes de Windows abiertas por archivo recién cuando
+//! hacen falta ([`FALLBACK_FILES`]); antes salían cuadraditos.
 
 use std::ffi::c_void;
 
@@ -283,10 +287,212 @@ impl IGeometrySource2DInterop_Impl for GeometrySource_Impl {
     }
 }
 
+#[derive(Clone)]
 struct Font {
     face: IDWriteFontFace,
     units_per_em: f32,
     ascent: f32,
+}
+
+// ---------------------------------------------------------------------------
+// Respaldo de glifos (v1.2)
+// ---------------------------------------------------------------------------
+
+/// Las fuentes de respaldo, en orden, de `%WINDIR%\Fonts`: Segoe UI (latín
+/// extendido, griego, cirílico), símbolos, emoji (en contorno: un color),
+/// chino y coreano.
+const FALLBACK_FILES: [&str; 5] =
+    ["segoeui.ttf", "seguisym.ttf", "seguiemj.ttf", "msyh.ttc", "malgun.ttf"];
+
+/// Caras de respaldo ya abiertas (`None` sin probar, `Some(None)` si falló),
+/// del hilo de los overlays.
+struct Fallback {
+    factory: Option<IDWriteFactory5>,
+    faces: [Option<Option<Font>>; FALLBACK_FILES.len()],
+}
+
+thread_local! {
+    static FALLBACK: std::cell::RefCell<Fallback> =
+        const { std::cell::RefCell::new(Fallback { factory: None, faces: [const { None }; 5] }) };
+}
+
+/// La cara de respaldo `k`, abriéndola la primera vez.
+fn fallback_face(k: usize) -> Option<Font> {
+    FALLBACK.with(|f| {
+        let mut f = f.borrow_mut();
+        if let Some(face) = &f.faces[k] {
+            return face.clone();
+        }
+        if f.factory.is_none() {
+            f.factory = dwrite_factory().ok();
+        }
+        let face = f.factory.as_ref().and_then(|factory| open_face(factory, FALLBACK_FILES[k]));
+        f.faces[k] = Some(face.clone());
+        face
+    })
+}
+
+fn open_face(factory: &IDWriteFactory5, file: &str) -> Option<Font> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::Graphics::DirectWrite::{DWRITE_FONT_FACE_TYPE, DWRITE_FONT_FILE_TYPE};
+    let path = std::path::PathBuf::from(std::env::var_os("WINDIR")?).join("Fonts").join(file);
+    if !path.exists() {
+        return None;
+    }
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    // SAFETY: ruta terminada en cero que vive durante la llamada; salidas
+    // locales. DirectWrite mapea el archivo: solo se leen las páginas usadas.
+    unsafe {
+        let f = factory.CreateFontFileReference(PCWSTR(wide.as_ptr()), None).ok()?;
+        let mut supported = windows::core::BOOL(0);
+        let mut file_type = DWRITE_FONT_FILE_TYPE::default();
+        let mut face_type = DWRITE_FONT_FACE_TYPE::default();
+        let mut faces = 0u32;
+        f.Analyze(&mut supported, &mut file_type, Some(&mut face_type), &mut faces).ok()?;
+        if !supported.as_bool() || faces == 0 {
+            return None;
+        }
+        let face =
+            factory.CreateFontFace(face_type, &[Some(f)], 0, DWRITE_FONT_SIMULATIONS_NONE).ok()?;
+        let mut m = DWRITE_FONT_METRICS::default();
+        face.GetMetrics(&mut m);
+        Some(Font {
+            face,
+            units_per_em: f32::from(m.designUnitsPerEm),
+            ascent: f32::from(m.ascent),
+        })
+    }
+}
+
+/// Lo que no se dibuja ni con respaldo: controles, uniones y selectores
+/// (ZWJ, variaciones, tonos de piel: sin *shaping* saldrían sueltos) y las
+/// escrituras que necesitan *shaping* o van de derecha a izquierda (hebreo,
+/// árabe, índicas, tailandés…): letras sueltas serían peor que nada.
+fn skip(c: char) -> bool {
+    c.is_control()
+        || matches!(u32::from(c),
+            0x0590..=0x08FF        // hebreo, árabe, siríaco, tāna, n'ko…
+            | 0x0900..=0x0DFF      // índicas
+            | 0x0E00..=0x0FFF      // tailandés, lao, tibetano
+            | 0x1000..=0x109F      // birmano
+            | 0x1100..=0x11FF      // jamo (las sílabas hechas sí van)
+            | 0x1780..=0x18AF      // jemer, mongol
+            | 0x200B..=0x200F      // espacios de ancho cero, ZWJ, marcas
+            | 0x202A..=0x202E      // incrustaciones bidi
+            | 0x2060..=0x206F
+            | 0xFB1D..=0xFDFF      // formas de presentación
+            | 0xFE00..=0xFE0F      // selectores de variación
+            | 0xFE70..=0xFEFF
+            | 0x1F3FB..=0x1F3FF    // tonos de piel
+            | 0xE0000..=0xE01EF)
+}
+
+/// Las caras de respaldo para `c`, en orden (índices en [`FALLBACK_FILES`]):
+/// así un título en chino abre solo la fuente china, y un emoji prueba
+/// primero Segoe UI Symbol (contorno, más liviana) y la de emoji después.
+fn candidates(c: char) -> &'static [usize] {
+    match u32::from(c) {
+        0xAC00..=0xD7AF | 0x3130..=0x318F => &[4, 3],
+        0x2E80..=0x2FDF
+        | 0x3000..=0x312F
+        | 0x31A0..=0x9FFF
+        | 0xF900..=0xFAFF
+        | 0xFE30..=0xFE4F
+        | 0xFF00..=0xFFEF
+        | 0x20000..=0x3FFFF => &[3, 4],
+        0x2600..=0x27BF | 0x2B00..=0x2BFF | 0x1F000..=0x1FAFF => &[1, 2],
+        _ => &[0, 1],
+    }
+}
+
+/// Un tramo de `text` con una sola cara: sus glifos y avances (a `em`) y
+/// dónde empieza.
+struct Run {
+    font: Font,
+    glyphs: Vec<u16>,
+    advances: Vec<f32>,
+    x: f32,
+}
+
+/// Índices de glifo de `codepoints` en `font` (0: no lo tiene).
+fn glyph_indices(font: &Font, codepoints: &[u32]) -> windows::core::Result<Vec<u16>> {
+    let mut glyphs = vec![0u16; codepoints.len()];
+    if !codepoints.is_empty() {
+        // SAFETY: buffers locales del largo indicado.
+        unsafe {
+            font.face.GetGlyphIndices(
+                codepoints.as_ptr(),
+                codepoints.len() as u32,
+                glyphs.as_mut_ptr(),
+            )?;
+        }
+    }
+    Ok(glyphs)
+}
+
+/// Avances de `glyphs` de `font` a tamaño `em`.
+fn glyph_advances(font: &Font, glyphs: &[u16], em: f32) -> windows::core::Result<Vec<f32>> {
+    let mut metrics = vec![DWRITE_GLYPH_METRICS::default(); glyphs.len()];
+    if !glyphs.is_empty() {
+        // SAFETY: buffers locales del largo indicado.
+        unsafe {
+            font.face.GetDesignGlyphMetrics(
+                glyphs.as_ptr(),
+                glyphs.len() as u32,
+                metrics.as_mut_ptr(),
+                false,
+            )?;
+        }
+    }
+    let scale = em / font.units_per_em;
+    Ok(metrics.iter().map(|m| m.advanceWidth as f32 * scale).collect())
+}
+
+/// Un carácter, la cara que lo dibuja (0: la pedida; k + 1: el respaldo k)
+/// con su glifo, y su avance.
+type Resolved = (char, Option<(usize, u16)>, f32);
+
+/// Cada carácter de `text` con la cara que lo dibuja (`None`: no se
+/// dibuja), su glifo y su avance a `em`. Si `font` los tiene todos, no se
+/// abre ningún respaldo (el camino de siempre).
+fn resolve_chars(
+    font: &Font,
+    text: &str,
+    em: f32,
+) -> windows::core::Result<Vec<Resolved>> {
+    let chars: Vec<char> = text.chars().collect();
+    let codepoints: Vec<u32> = chars.iter().map(|&c| u32::from(c)).collect();
+    let glyphs = glyph_indices(font, &codepoints)?;
+    let mut out: Vec<(char, Option<(usize, u16)>)> = Vec::with_capacity(chars.len());
+    for (&c, &g) in chars.iter().zip(&glyphs) {
+        let face = if g != 0 {
+            Some((0, g))
+        } else if skip(c) {
+            None
+        } else {
+            candidates(c).iter().find_map(|&k| {
+                let f = fallback_face(k)?;
+                let g = glyph_indices(&f, &[u32::from(c)]).ok()?[0];
+                (g != 0).then_some((k + 1, g))
+            })
+        };
+        out.push((c, face));
+    }
+    // Avances por cara, en un pedido por cara.
+    let mut adv = vec![0.0f32; out.len()];
+    for k in 0..=FALLBACK_FILES.len() {
+        let idx: Vec<usize> =
+            (0..out.len()).filter(|&i| out[i].1.is_some_and(|(f, _)| f == k)).collect();
+        if idx.is_empty() {
+            continue;
+        }
+        let f = if k == 0 { font.clone() } else { fallback_face(k - 1).expect("ya abierta") };
+        let gs: Vec<u16> = idx.iter().map(|&i| out[i].1.expect("filtrada").1).collect();
+        for (i, a) in idx.into_iter().zip(glyph_advances(&f, &gs, em)?) {
+            adv[i] = a;
+        }
+    }
+    Ok(out.into_iter().zip(adv).map(|((c, f), a)| (c, f, a)).collect())
 }
 
 /// Cara de fuente de un archivo de Geist (sin buscar por nombre).
@@ -312,38 +518,51 @@ fn text_geometry(
     text: &str,
     em: f32,
 ) -> windows::core::Result<(ID2D1Geometry, f32)> {
-    let codepoints: Vec<u32> = text.chars().map(u32::from).collect();
-    let n = codepoints.len();
-    let mut glyphs = vec![0u16; n];
-    let mut metrics = vec![DWRITE_GLYPH_METRICS::default(); n];
-    // SAFETY: buffers locales del largo indicado.
-    unsafe {
-        font.face.GetGlyphIndices(codepoints.as_ptr(), n as u32, glyphs.as_mut_ptr())?;
-        font.face.GetDesignGlyphMetrics(glyphs.as_ptr(), n as u32, metrics.as_mut_ptr(), false)?;
+    let mut runs: Vec<Run> = Vec::new();
+    let mut width = 0.0;
+    let mut last = None;
+    for (_, face, a) in resolve_chars(font, text, em)? {
+        let Some((k, g)) = face else { continue };
+        if last != Some(k) {
+            let f = if k == 0 { font.clone() } else { fallback_face(k - 1).expect("ya abierta") };
+            runs.push(Run { font: f, glyphs: Vec::new(), advances: Vec::new(), x: width });
+            last = Some(k);
+        }
+        let run = runs.last_mut().expect("recién agregado");
+        run.glyphs.push(g);
+        run.advances.push(a);
+        width += a;
     }
-    let scale = em / font.units_per_em;
-    let advances: Vec<f32> = metrics.iter().map(|m| m.advanceWidth as f32 * scale).collect();
-    let width: f32 = advances.iter().sum();
 
     // SAFETY: geometría propia; el sink se cierra antes de usarla.
     let path = unsafe { d2d.CreatePathGeometry() }?;
-    // SAFETY: ídem.
+    // SAFETY: ídem. Cada tramo se escribe en el mismo sink, corrido a su x.
     unsafe {
         let sink = path.Open()?;
-        font.face.GetGlyphRunOutline(
-            em,
-            glyphs.as_ptr(),
-            Some(advances.as_ptr()),
-            None,
-            n as u32,
-            false,
-            false,
-            &sink,
-        )?;
+        for run in &runs {
+            let n = run.glyphs.len();
+            let offsets = vec![
+                windows::Win32::Graphics::DirectWrite::DWRITE_GLYPH_OFFSET {
+                    advanceOffset: run.x,
+                    ascenderOffset: 0.0,
+                };
+                n
+            ];
+            run.font.face.GetGlyphRunOutline(
+                em,
+                run.glyphs.as_ptr(),
+                Some(run.advances.as_ptr()),
+                Some(offsets.as_ptr()),
+                n as u32,
+                false,
+                false,
+                &sink,
+            )?;
+        }
         sink.Close()?;
     }
     // Los contornos salen con la línea base en y = 0 (hacia arriba negativo).
-    let baseline = font.ascent * scale;
+    let baseline = font.ascent * (em / font.units_per_em);
     let moved = Matrix3x2::translation(0.0, baseline);
     // SAFETY: geometría válida y matriz local.
     let geometry = unsafe { d2d.CreateTransformedGeometry(&path, &moved) }?;
@@ -632,35 +851,14 @@ pub fn build_toast(
     Ok(container)
 }
 
-/// Avance de cada carácter de `text` a tamaño `em` y si la fuente lo tiene.
+/// Avance de cada carácter de `text` a tamaño `em` y si se dibuja (con
+/// Geist o con un respaldo).
 fn advances(font: &Font, text: &str, em: f32) -> windows::core::Result<Vec<(char, f32, bool)>> {
-    let chars: Vec<char> = text.chars().collect();
-    let codepoints: Vec<u32> = chars.iter().map(|&c| u32::from(c)).collect();
-    let n = codepoints.len();
-    let mut glyphs = vec![0u16; n];
-    let mut metrics = vec![DWRITE_GLYPH_METRICS::default(); n];
-    if n > 0 {
-        // SAFETY: buffers locales del largo indicado.
-        unsafe {
-            font.face.GetGlyphIndices(codepoints.as_ptr(), n as u32, glyphs.as_mut_ptr())?;
-            font.face.GetDesignGlyphMetrics(
-                glyphs.as_ptr(),
-                n as u32,
-                metrics.as_mut_ptr(),
-                false,
-            )?;
-        }
-    }
-    let scale = em / font.units_per_em;
-    Ok(chars
-        .into_iter()
-        .zip(glyphs.iter().zip(&metrics))
-        .map(|(c, (&g, m))| (c, m.advanceWidth as f32 * scale, g != 0))
-        .collect())
+    Ok(resolve_chars(font, text, em)?.into_iter().map(|(c, f, a)| (c, a, f.is_some())).collect())
 }
 
-/// `text` sin los caracteres que la fuente no tiene (Geist no trae emoji ni
-/// CJK: saldrían cuadraditos) y cortado con "…" para que entre en `max_w`.
+/// `text` sin los caracteres que no se pueden dibujar (ni Geist ni los
+/// respaldos los tienen) y cortado con "…" para que entre en `max_w`.
 fn fit(font: &Font, text: &str, em: f32, max_w: f32) -> windows::core::Result<String> {
     let all = advances(font, text, em)?;
     let kept: Vec<(char, f32)> =
@@ -948,4 +1146,66 @@ fn build_d2d(
     keep.push(dxgi.cast()?);
     let _ = PCWSTR::null();
     Ok(())
+}
+
+/// v1.2 (plan-v1.2.md §8), `wm overlay-demo fuentes`: cuánto cuesta armar un
+/// texto latino (el camino de siempre) y textos que necesitan un respaldo,
+/// cada uno en un hilo nuevo (en frío: abre sus fuentes) y en caliente, y
+/// cuánta memoria suman.
+pub fn font_bench() -> windows::core::Result<String> {
+    use crate::overlay::process_memory;
+    let mb = |b: usize| b as f64 / (1024.0 * 1024.0);
+    let case = |text: &'static str| {
+        std::thread::spawn(move || -> windows::core::Result<String> {
+            let geist = Geist::load()?;
+            let d2d: ID2D1Factory = d2d_factory()?;
+            let regular = font(&geist, &geist.regular)?;
+            text_geometry(&d2d, &regular, "Brave", 16.0)?; // Geist ya cargada
+            let (_, p0) = process_memory();
+            let t = std::time::Instant::now();
+            text_geometry(&d2d, &regular, text, 16.0)?;
+            let cold = t.elapsed().as_secs_f64() * 1000.0;
+            let (_, p1) = process_memory();
+            let t = std::time::Instant::now();
+            for _ in 0..200 {
+                text_geometry(&d2d, &regular, text, 16.0)?;
+            }
+            let warm = t.elapsed().as_secs_f64() * 1000.0 / 200.0;
+            let opened: Vec<&str> = FALLBACK_FILES
+                .iter()
+                .enumerate()
+                .filter(|&(k, _)| FALLBACK.with(|f| matches!(f.borrow().faces[k], Some(Some(_)))))
+                .map(|(_, n)| *n)
+                .collect();
+            let lost: String = resolve_chars(&regular, text, 16.0)?
+                .into_iter()
+                .filter(|(c, f, _)| f.is_none() && !c.is_whitespace())
+                .map(|(c, _, _)| c)
+                .collect();
+            let ok = cold <= 3.0 && mb(p1.saturating_sub(p0)) <= 0.5;
+            Ok(format!(
+                "  {} «{text}»: {cold:.2} ms en frío, {warm:.3} ms en caliente, privada +{:.2} MB; \
+                 abre: {}{}\n",
+                if ok { "ok  " } else { "MAL " },
+                mb(p1.saturating_sub(p0)),
+                if opened.is_empty() { "nada".to_owned() } else { opened.join(", ") },
+                if lost.is_empty() { String::new() } else { format!("; sin dibujar «{lost}»") },
+            ))
+        })
+        .join()
+        .unwrap_or_else(|_| Ok("  (el hilo se cayó)\n".to_owned()))
+    };
+    let mut out =
+        String::from("Respaldo de glifos (compuerta: ≤ 3 ms en frío y ≤ 0,5 MB por texto):\n");
+    for text in [
+        "Brave — Bandeja de entrada (12) · Gmail",
+        "Notas 📝 de la semana",
+        "微信 — 聊天",
+        "카카오톡",
+        "Ωμέγα ★ ✓ → №",
+        "Notas 📝 微信 카카오톡 ★ Ωμέγα ✓",
+    ] {
+        out.push_str(&case(text)?);
+    }
+    Ok(out)
 }

@@ -28,6 +28,19 @@ pub fn demo(args: &[String]) -> ExitCode {
     };
     let now = args.iter().any(|a| a == "now");
 
+    // v1.2 (plan-v1.2.md §8): la compuerta del respaldo de glifos.
+    if args.iter().any(|a| a == "fuentes") {
+        return match wm_platform::overlay_text::font_bench() {
+            Ok(report) => {
+                println!("{report}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("No se pudo medir: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     input::ensure_message_queue();
     wm_platform::overlay::disable_ghosting();
     if args.iter().any(|a| a == "bare") {
