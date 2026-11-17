@@ -17,6 +17,8 @@ struct W {
     cloaked: bool,
     minimized: bool,
     unmarkable: bool,
+    /// El cloak no toma (como la ventana recién activada, plan-hito4 §6).
+    hide_fails: bool,
 }
 
 struct Plat {
@@ -52,6 +54,7 @@ impl Plat {
                 cloaked: false,
                 minimized: false,
                 unmarkable: false,
+                hide_fails: false,
             },
         );
         self.fg = Some(key);
@@ -113,7 +116,7 @@ impl Plat {
                         let mut failed = Vec::new();
                         for k in wins {
                             match self.get(k) {
-                                Some(w) if !w.unmarkable => {
+                                Some(w) if !w.unmarkable && !w.hide_fails => {
                                     w.marked = true;
                                     w.cloaked = true;
                                 }
@@ -409,6 +412,9 @@ fn an_unexpected_uncloak_is_hidden_again_and_twice_makes_it_sticky() {
     let (mut world, mut p) = boot(&["aaa", "bbb"]);
     let top = p.fg.expect("foco");
     p.carry(&mut world, 2);
+    p.settle(&mut world); // la pasada de pantallas del arranque
+    // Un rato después (un destape enseguida de mostrarla es nuestro eco).
+    p.now += 1_000_000;
     for round in 0..2 {
         // Alguien (Explorer al reiniciar) la destapa sin activarla.
         p.get(top).expect("existe").cloaked = false;
@@ -419,7 +425,7 @@ fn an_unexpected_uncloak_is_hidden_again_and_twice_makes_it_sticky() {
             assert!(!p.visible(top));
         }
     }
-    assert!(world.desks_sticky(top));
+    assert!(world.desks_sticky(top), "{:?}", p.logs);
     p.check(&world);
     assert!(p.visible(top), "queda en todos los escritorios");
 }
@@ -499,4 +505,49 @@ fn random_sequences_keep_the_invariants() {
             p.check(&world);
         }
     }
+}
+
+#[test]
+fn the_echo_of_our_own_show_is_not_a_strike() {
+    let (mut world, mut p) = boot(&["aaa", "bbb"]);
+    let top = p.fg.expect("foco");
+    p.carry(&mut world, 2);
+    p.now += 1_000_000;
+    p.go(&mut world, 2);
+    p.go(&mut world, 1);
+    // El aviso de destape del `Show` de recién llega tarde, ya en el 1.
+    p.run(&mut world, Event::Uncloaked(top));
+    p.run(&mut world, Event::Uncloaked(top));
+    p.settle(&mut world);
+    assert!(!world.desks_sticky(top), "{:?}", p.logs);
+    p.check(&world);
+}
+
+#[test]
+fn one_hide_that_does_not_take_is_retried_before_giving_up() {
+    let (mut world, mut p) = boot(&["aaa", "bbb"]);
+    let top = p.fg.expect("foco");
+    p.now += 1_000_000;
+    p.get(top).expect("existe").hide_fails = true;
+    p.carry(&mut world, 2);
+    assert!(!world.desks_sticky(top), "un fallo solo: reintenta");
+    p.get(top).expect("existe").hide_fails = false;
+    p.settle(&mut world);
+    assert!(!world.desks_sticky(top), "{:?}", p.logs);
+    assert!(!p.visible(top), "el reintento la escondió");
+}
+
+#[test]
+fn a_strike_long_ago_does_not_count() {
+    let (mut world, mut p) = boot(&["aaa", "bbb"]);
+    let top = p.fg.expect("foco");
+    p.carry(&mut world, 2);
+    p.now += 1_000_000;
+    for _ in 0..2 {
+        p.get(top).expect("existe").cloaked = false;
+        p.run(&mut world, Event::Uncloaked(top));
+        p.settle(&mut world);
+        p.now += 10_000_000;
+    }
+    assert!(!world.desks_sticky(top), "dos destapes separados por 10 s");
 }

@@ -66,9 +66,21 @@ struct DeskWin {
     /// No se esconde nunca (no se pudo marcar o esconder, o fuera del
     /// alcance de prueba): está en todos los escritorios.
     sticky: bool,
-    /// Destapes inesperados seguidos (R4: con 2, `sticky`).
+    /// Destapes inesperados o escondidas sin confirmar seguidas (R4: con 2,
+    /// `sticky`).
     strikes: u8,
+    /// Cuándo fue el último strike (µs): vencen a los 5 s, así un tropiezo
+    /// aislado al cambiar rápido de escritorio no la deja en todos.
+    strike_us: u64,
+    /// Cuándo la mostramos nosotros (µs): el aviso de destape que llega
+    /// enseguida es el eco de nuestro propio `Show`.
+    shown_us: u64,
 }
+
+/// Cuánto vale un strike.
+const STRIKE_TTL_US: u64 = 5_000_000;
+/// Un destape hasta este tiempo después de mostrarla es nuestro.
+const OWN_SHOW_US: u64 = 300_000;
 
 #[derive(Debug, Default)]
 pub struct Desks {
@@ -114,11 +126,16 @@ impl Desks {
         }
     }
 
-    /// Un destape inesperado: suma un strike; con 2, `sticky` (devuelve
-    /// `true` si pasó a serlo).
-    pub fn strike(&mut self, win: WinKey) -> bool {
+    /// Un destape inesperado o una escondida sin confirmar: suma un strike
+    /// (los de más de 5 s ya no cuentan); con 2, `sticky` (devuelve `true`
+    /// si pasó a serlo).
+    pub fn strike(&mut self, win: WinKey, now_us: u64) -> bool {
         match self.wins.get_mut(&win) {
             Some(d) if !d.sticky => {
+                if now_us.saturating_sub(d.strike_us) > STRIKE_TTL_US {
+                    d.strikes = 0;
+                }
+                d.strike_us = now_us;
                 d.strikes += 1;
                 if d.strikes >= 2 {
                     d.sticky = true;
@@ -128,6 +145,20 @@ impl Desks {
             }
             _ => false,
         }
+    }
+
+    /// La mostramos nosotros ahora.
+    pub fn note_shown(&mut self, win: WinKey, now_us: u64) {
+        if let Some(d) = self.wins.get_mut(&win) {
+            d.shown_us = now_us;
+        }
+    }
+
+    /// ¿La mostramos hace muy poco? (el destape es nuestro).
+    pub fn shown_recently(&self, win: WinKey, now_us: u64) -> bool {
+        self.wins
+            .get(&win)
+            .is_some_and(|d| d.shown_us != 0 && now_us.saturating_sub(d.shown_us) < OWN_SHOW_US)
     }
 
     /// Ventanas por escritorio (para el mapa): `[1, 2, 3, 4]`.

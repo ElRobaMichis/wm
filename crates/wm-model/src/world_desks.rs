@@ -164,10 +164,11 @@ impl World {
         if self.desks.is_sticky(win)
             || d == self.desks.active()
             || self.jobs.get(&win).is_some_and(|j| j.flying)
+            || self.desks.shown_recently(win, now_us)
         {
             return;
         }
-        if self.desks.strike(win) {
+        if self.desks.strike(win, now_us) {
             out.push(Effect::Log(format!(
                 "Escritorios: la ventana {:#x} se destapó sola dos veces; queda en todos.",
                 win.hwnd
@@ -279,6 +280,13 @@ impl World {
                 failed.len()
             )));
         }
+        let shown: Vec<WinKey> = match &result {
+            Ok(failed) => plan.show.iter().filter(|k| !failed.contains(k)).copied().collect(),
+            Err(_) => Vec::new(),
+        };
+        for k in shown {
+            self.desks.note_shown(k, now_us);
+        }
         self.sync_focus(now_us, out);
     }
 
@@ -350,12 +358,18 @@ impl World {
             // El lote entero falló (plazo, Explorer): el próximo cambio lo ve.
             Err(e) => out.push(Effect::Log(format!("{what}: no se pudo esconder ({e})."))),
             Ok(failed) => {
+                // Esconder la ventana recién activada a veces no toma el
+                // cloak (plan-hito4 §6): primero se reintenta (reconciliar a
+                // los 150 ms); dos seguidas, queda en todos (R4).
                 for k in failed {
-                    self.desks.make_sticky(k);
-                    out.push(Effect::Log(format!(
-                        "{what}: la ventana {:#x} no se pudo esconder; queda en todos los escritorios.",
-                        k.hwnd
-                    )));
+                    if self.desks.strike(k, now_us) {
+                        out.push(Effect::Log(format!(
+                            "{what}: la ventana {:#x} no se pudo esconder dos veces; queda en todos los escritorios.",
+                            k.hwnd
+                        )));
+                    } else {
+                        self.verify_due = Some(now_us + 150_000);
+                    }
                 }
             }
         }
