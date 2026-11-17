@@ -432,6 +432,12 @@ fn main() -> Result<(), slint::PlatformError> {
                 || ui.get_none_text(),
                 |a| st.catalog.entries[a].name.as_str().into(),
             ));
+            // La fila "Al abrir" de esta letra (v1.1): antes se quedaba con la
+            // de la letra de cuando se abrió la ventana.
+            let (options, chosen) = open_options(&ui, st.rules[i]);
+            ui.set_open_options(ModelRc::new(VecModel::from(options)));
+            ui.set_open_choice(chosen);
+            ui.set_choice_assigned(app.is_some());
         }
     });
     let s = st.clone();
