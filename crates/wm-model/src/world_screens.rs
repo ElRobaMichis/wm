@@ -77,26 +77,6 @@ pub(crate) struct Screens {
     /// sin animaciones hasta la calma. El arranque o el área de trabajo no.
     frozen: bool,
     stats: ScreenStats,
-    /// Escondidas que rescatamos, para devolverlas cuando vuelva su
-    /// topología (ajuste del 4d).
-    homes: HashMap<WinKey, Home>,
-    /// La topología de antes, si esta tormenta la cambió (0 si no): las
-    /// casas que se guardan ahora son de ella.
-    home_key: u64,
-}
-
-/// De dónde sacamos una ventana al rescatarla.
-#[derive(Debug, Clone, Copy)]
-struct Home {
-    /// Topología en la que estaba ahí.
-    key: u64,
-    /// Esquina exterior antes del rescate.
-    from: (i32, i32),
-    /// Marco justo después del rescate: si cambió (la movieron o le
-    /// cambiaron el tamaño, aunque sea con la misma esquina), no vuelve.
-    after: Rect,
-    /// Marco de antes (para saber si vuelve a ser alcanzable).
-    frame: Rect,
 }
 
 impl Screens {
@@ -331,9 +311,6 @@ impl World {
             }
         };
         let changed = key != self.screens.last_key;
-        if !late {
-            self.screens.home_key = if changed { self.screens.last_key } else { 0 };
-        }
         let mut old_placed = HashMap::new();
         if changed {
             // Memorias de "repetir" (plan-core §3.3): con otros monitores
@@ -354,7 +331,6 @@ impl World {
         let mut moves = Vec::new();
         if changed && !late {
             self.resnap(old_placed, &survey, dragging, false, now_us, out);
-            self.return_home(key, &survey, &mut moves, out);
         } else if late {
             // Windows restaura algunas ventanas (minimizadas al desconectar)
             // después de la calma: otra oportunidad de reencajarlas.
@@ -393,15 +369,6 @@ impl World {
                 Verdict::Move { dx, dy } => {
                     let to = shift(w.outer, dx, dy);
                     moves.push((win, to.left, to.top));
-                    if self.screens.home_key != 0 {
-                        let home = Home {
-                            key: self.screens.home_key,
-                            from: (w.outer.left, w.outer.top),
-                            after: shift(w.frame, dx, dy),
-                            frame: w.frame,
-                        };
-                        self.screens.homes.insert(win, home);
-                    }
                     names.push(format!("{} ({dx:+}, {dy:+})", w.info.app));
                 }
                 Verdict::Remaximize { on } => {
@@ -602,48 +569,6 @@ impl World {
             if let Some(&placement) = SLOTS.iter().find(|&&p| place(monitor.work, p) == w.frame) {
                 self.placed.insert(win, (Spot { monitor, placement }, w.frame));
             }
-        }
-    }
-
-    /// Volvió la topología de la que sacamos una ventana al rescatarla: si
-    /// sigue donde la dejamos, vuelve a su lugar (Windows lo hace con las
-    /// visibles; no con las escondidas en otro escritorio).
-    fn return_home(
-        &mut self,
-        key: u64,
-        survey: &Survey,
-        moves: &mut Vec<(WinKey, i32, i32)>,
-        out: &mut Vec<Effect>,
-    ) {
-        let areas: Vec<Rect> = survey.monitors.iter().map(|m| m.work).collect();
-        let min = crate::screens::min_visible(&survey.monitors);
-        let mut back = Vec::new();
-        let homes = std::mem::take(&mut self.screens.homes);
-        for (win, home) in homes {
-            let Some(w) = survey.wins.iter().find(|w| w.info.key == win) else { continue };
-            // Nadie la movió desde el rescate; si no, la casa se olvida.
-            if edge_error(w.frame, home.after) > 1 {
-                continue;
-            }
-            let ok = home.key == key
-                && !w.info.minimized
-                && !w.maximized
-                && !w.parked
-                && !self.jobs.contains_key(&win)
-                && crate::screens::reachable(home.frame, &areas, min);
-            if ok {
-                moves.push((win, home.from.0, home.from.1));
-                back.push(w.info.app.clone());
-            } else {
-                self.screens.homes.insert(win, home);
-            }
-        }
-        if !back.is_empty() {
-            out.push(Effect::Log(format!(
-                "Pantallas: {} devuelta(s) a su monitor: {}.",
-                back.len(),
-                back.join(", ")
-            )));
         }
     }
 
