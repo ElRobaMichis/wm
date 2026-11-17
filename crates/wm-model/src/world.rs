@@ -392,6 +392,18 @@ pub enum Event {
         win: WinKey,
         result: Result<DragReport, String>,
     },
+    /// Hito 4d: aviso de pantallas, reposo o sesión.
+    Screen(crate::screens::ScreenEvent),
+    /// Hito 4d: resultado de `Survey`.
+    Surveyed {
+        req: Req,
+        result: Result<Survey, String>,
+    },
+    /// Hito 4d: resultado de `Rescue` (las que no se pudieron mover).
+    Rescued {
+        req: Req,
+        failed: Vec<(WinKey, String)>,
+    },
 }
 
 /// La ventana agarrada con `Caps` + clic (hito 5).
@@ -536,6 +548,18 @@ pub enum Effect {
     MovePointer {
         win: WinKey,
     },
+    /// Hito 4d: monitores y ventanas (responde con `Surveyed`).
+    Survey {
+        req: Req,
+    },
+    /// Hito 4d: correr estas ventanas a la esquina nueva de su rectángulo
+    /// exterior, sin cambiar el tamaño (responde con `Rescued`).
+    Rescue {
+        req: Req,
+        moves: Vec<(WinKey, i32, i32)>,
+    },
+    /// Hito 4d: cambiaron los monitores (rearmar el mapa y los avisos).
+    ScreensChanged,
 }
 
 /// Antigüedad máxima de una acción para ejecutarla: una que llega tarde (el
@@ -627,6 +651,9 @@ enum Pending {
     DeskShow,
     DeskFocus,
     DeskHide,
+    /// Hito 4d.
+    Survey,
+    Rescue,
 }
 
 /// El estado del core.
@@ -690,6 +717,8 @@ pub struct World {
     undo_after_drag: Option<u64>,
     /// Opciones de `settings.txt`.
     options: crate::options::Options,
+    /// Pantallas, reposo y bloqueo (hito 4d).
+    screens: world_screens::Screens,
 }
 
 /// Tamaños que una ventana no aceptó. Antes se marcaba la ventana entera y
@@ -783,6 +812,7 @@ impl World {
             .chain(self.map.deadline())
             .chain(self.verify_due)
             .chain(self.pointer_deadline())
+            .chain(self.screens.deadline_us())
             .min()
     }
 
@@ -881,6 +911,7 @@ impl World {
             // vuelo al pausar), se ignora.
             Event::Action { .. } | Event::Layer(_) if self.paused => {}
             Event::Action { action, held, age_ms } => {
+                self.screens_unblock(now_us, &mut out);
                 // Cualquier acción (también una descartada) suprime el mapa si
                 // todavía no se ve; Esc con el mapa visible solo lo cierra.
                 let mut m = Vec::new();
@@ -1038,7 +1069,20 @@ impl World {
             Event::Command(c) => self.command(c, now_us, &mut out),
             Event::Tick => self.tick(now_us, &mut out),
             Event::Boot { recover } => {
-                self.start_sync(crate::desks::Goal::Boot { recover }, now_us, &mut out)
+                self.start_sync(crate::desks::Goal::Boot { recover }, now_us, &mut out);
+                self.screens_boot(now_us, &mut out);
+            }
+            Event::Screen(e) => self.on_screen(e, now_us, &mut out),
+            Event::Surveyed { req, result } => {
+                if let Some(Pending::Survey) = self.pending.get(&req) {
+                    self.pending.remove(&req);
+                    self.on_surveyed(req, result, now_us, &mut out);
+                }
+            }
+            Event::Rescued { req, failed } => {
+                if self.pending.remove(&req).is_some() {
+                    self.on_rescued(failed, &mut out);
+                }
             }
             Event::DesksSet { req, failed } => {
                 if self.pending.remove(&req).is_some() {
@@ -1452,6 +1496,7 @@ impl World {
         let resize = target.width() != obs.frame.width() || target.height() != obs.frame.height();
         self.fly
             && self.options.animate
+            && !self.screens.active()
             && obs.no_fly.is_none()
             && !obs.maximized
             && !obs.minimized
@@ -1875,6 +1920,7 @@ impl World {
     /// Lanza los chequeos vencidos.
     fn tick(&mut self, now_us: u64, out: &mut Vec<Effect>) {
         self.pointer_tick(now_us, out);
+        self.screens_tick(now_us, out);
         if self.verify_due.is_some_and(|t| t <= now_us) {
             self.verify_due = None;
             self.start_sync(crate::desks::Goal::Verify, now_us, out);
@@ -2107,6 +2153,10 @@ mod world_desks;
 #[path = "world_drag.rs"]
 mod world_drag;
 
+#[path = "world_screens.rs"]
+mod world_screens;
+pub use world_screens::{ScreenStats, Survey, SurveyWin};
+
 /// Índice actual de un monitor (los índices no valen entre observaciones: se
 /// identifica por su rectángulo).
 fn index_of(monitors: &[MonitorObs], m: MonitorObs) -> Option<usize> {
@@ -2259,6 +2309,10 @@ mod tests {
                             panic!("todo está en el escritorio 1")
                         }
                         Effect::Notice(_) | Effect::MovePointer { .. } => {}
+                        // Sin pantallas en esta simulación: el Survey queda sin
+                        // respuesta y no se rescata nada.
+                        Effect::Survey { .. } | Effect::ScreensChanged => {}
+                        Effect::Rescue { .. } => panic!("sin pantallas no hay rescate"),
                         Effect::InspectAt { .. }
                         | Effect::Raise { .. }
                         | Effect::DragStart { .. }

@@ -113,6 +113,9 @@ enum Wait {
     Show(Req),
     Hide(Req),
     CloakProbe,
+    /// Hito 4d.
+    Survey(Req),
+    Rescue(Req),
 }
 
 /// Las ventanas que fallaron en un pedido en lote.
@@ -146,6 +149,8 @@ pub struct Brain {
     tray: Tray,
     /// Recarga de `apps.txt` (hito 3c).
     watch: Option<wm_platform::watch::Watch>,
+    /// Avisos de pantallas, reposo y sesión (hito 4d).
+    displays: wm_platform::display_watch::Watch,
     /// El modelo pidió terminar.
     pub quit: bool,
     /// Terminar para que el guardián coloque la actualización (código 10).
@@ -189,6 +194,7 @@ impl Brain {
                     )
                 },
             ),
+            displays: wm_platform::display_watch::Watch::start(input::current_thread_id()),
             quit: false,
             apply_update: false,
             hide_method: wm_platform::hide::HideMethod::ShellCloak,
@@ -197,6 +203,29 @@ impl Brain {
             drag: None,
             options: wm_model::options::Options::default(),
             border: None,
+        }
+    }
+
+    /// Avisos de Windows sobre pantallas, reposo y sesión (hito 4d).
+    fn collect_displays(&mut self) {
+        use wm_model::screens::ScreenEvent as S;
+        use wm_platform::display_watch::DisplayEvent as D;
+        if let Some(Err(e)) = self.displays.ready() {
+            self.log.line(format!("Pantallas: no puedo escuchar los cambios ({e})."));
+        }
+        for e in self.displays.drain() {
+            let s = match e {
+                D::DisplayChange { .. } => S::Changed,
+                D::WorkArea => S::WorkArea,
+                D::Suspend => S::Suspend,
+                D::Resume => S::Resume,
+                D::Lock => S::Lock,
+                D::Unlock => S::Unlock,
+                D::ConsoleDisconnect | D::RemoteDisconnect => S::Disconnect,
+                D::ConsoleConnect | D::RemoteConnect => S::Connect,
+                D::Setting | D::PowerSetting | D::DevicesChanged => continue,
+            };
+            self.feed(Event::Screen(s));
         }
     }
 
@@ -641,6 +670,23 @@ impl Brain {
                     }
                 }
                 Effect::MovePointer { win } => windows_list::pointer_to(WindowId(win.hwnd)),
+                Effect::Survey { req } => {
+                    let t = self.ops.submit(Op::Survey);
+                    self.waits.insert(t, Wait::Survey(req));
+                }
+                Effect::Rescue { req, moves } => {
+                    let items = moves
+                        .into_iter()
+                        .map(|(k, x, y)| (WindowId(k.hwnd), k.pid, x, y))
+                        .collect();
+                    let t = self.ops.submit(Op::MoveMany(items));
+                    self.waits.insert(t, Wait::Rescue(req));
+                }
+                Effect::ScreensChanged => {
+                    if let Some(ui) = self.ui.as_mut() {
+                        ui.screens_changed();
+                    }
+                }
                 Effect::DragStop { .. } => {
                     if let Some(d) = self.drag.as_mut() {
                         d.end();
@@ -796,6 +842,7 @@ impl Brain {
         self.collect_drag();
         self.collect_tray();
         self.collect_watch();
+        self.collect_displays();
         self.collect_anim();
         self.collect_ui();
         let mut events = self.ops.expire(Instant::now());
@@ -891,7 +938,51 @@ impl Brain {
                 self.feed(Event::Grabbed { req, result });
             }
             Wait::Hide(req) => self.feed(Event::Hidden { req, result: result.map(failed_of) }),
+            Wait::Survey(req) => {
+                let result = result.and_then(|out| match out {
+                    Output::Survey(s) => Ok(survey(s)),
+                    _ => Err("respuesta inesperada".to_owned()),
+                });
+                self.feed(Event::Surveyed { req, result });
+            }
+            Wait::Rescue(req) => {
+                let failed = match result {
+                    Ok(Output::Batch(items)) => items
+                        .into_iter()
+                        .filter_map(|(id, r)| {
+                            r.err().map(|e| {
+                                (WinKey { hwnd: id.0, pid: windows_list::window_pid(id) }, e)
+                            })
+                        })
+                        .collect(),
+                    Ok(_) => Vec::new(),
+                    Err(e) => vec![(WinKey::default(), e)],
+                };
+                self.feed(Event::Rescued { req, failed });
+            }
         }
+    }
+}
+
+/// Hito 4d: la observación de la plataforma, para el modelo (las ventanas
+/// sin marco, ya cerradas, se omiten).
+pub(crate) fn survey(s: windows_list::Survey) -> wm_model::world::Survey {
+    wm_model::world::Survey {
+        monitors: s.monitors,
+        wins: s
+            .wins
+            .into_iter()
+            .filter_map(|w| {
+                let (frame, outer) = (w.frame?, w.outer?);
+                Some(wm_model::world::SurveyWin {
+                    info: win_info(w.info),
+                    frame,
+                    outer,
+                    maximized: w.maximized,
+                    parked: w.parked,
+                })
+            })
+            .collect(),
     }
 }
 

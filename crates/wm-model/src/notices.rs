@@ -36,6 +36,14 @@ pub fn notice_for(line: &str) -> Option<String> {
             format!("{} está en pantalla completa", display_name(app))
         });
     }
+    // Hito 4d: "… Ventanas traídas a la pantalla: 2."
+    if let Some(rest) = l.split("Ventanas traídas a la pantalla: ").nth(1) {
+        let n: u32 = rest.trim_end_matches('.').trim().parse().unwrap_or(0);
+        return Some(match n {
+            1 => "Traje una ventana que había quedado fuera de la pantalla".into(),
+            n => format!("Traje {n} ventanas que habían quedado fuera de la pantalla"),
+        });
+    }
     if l.contains("la app no responde") {
         return Some("La app no responde: se va a mover cuando despierte".into());
     }

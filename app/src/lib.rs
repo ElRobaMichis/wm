@@ -69,6 +69,10 @@ pub fn run() -> ExitCode {
         #[cfg(windows)]
         Some("desk-check") => desk_check(args.first().map(String::as_str)),
         #[cfg(windows)]
+        Some("fuera") => offscreen(),
+        #[cfg(windows)]
+        Some("display-poke") => display_poke(),
+        #[cfg(windows)]
         Some("puppet-hard") => {
             use wm_platform::puppet::{HardKind, run_hard_puppet};
             match args.first().and_then(|k| HardKind::from_name(k)) {
@@ -304,6 +308,55 @@ fn doctor() -> ExitCode {
 
 /// `wm desk-check [manual]`: verificaciones del hito 4.0 (plan-core.md §7).
 #[cfg(windows)]
+/// `wm fuera` (hito 4d): solo mira. ¿Hay ventanas fuera de pantalla? Lista
+/// la app de cada una, sin títulos.
+#[cfg(windows)]
+fn offscreen() -> ExitCode {
+    use wm_model::screens::{Seen, rescue_plan};
+    let s = match wm_platform::windows_list::survey() {
+        Ok(s) => brain::survey(s),
+        Err(e) => {
+            eprintln!("No pude leer las pantallas: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let seen: Vec<Seen> = s
+        .wins
+        .iter()
+        .map(|w| Seen {
+            frame: w.frame,
+            minimized: w.info.minimized,
+            maximized: w.maximized,
+            skip: w.parked,
+        })
+        .collect();
+    let plan = rescue_plan(&s.monitors, &seen);
+    println!("{} monitores; {} ventanas revisadas.", s.monitors.len(), s.wins.len());
+    if plan.is_empty() {
+        println!("0 ventanas fuera de pantalla.");
+    }
+    for (i, v) in plan {
+        let w = &s.wins[i];
+        println!("Fuera de pantalla: {} en {:?} → {v:?}", w.info.app, w.frame);
+    }
+    ExitCode::SUCCESS
+}
+
+/// `wm display-poke` (hito 4d, para el autor): un `WM_DISPLAYCHANGE` falso a
+/// la ventana de avisos del `wm` que esté corriendo. Nada cambia en Windows.
+#[cfg(windows)]
+fn display_poke() -> ExitCode {
+    use wm_platform::display_watch::{MSG_DISPLAYCHANGE, poke};
+    let instance = std::env::var("WM_INSTANCE").ok().filter(|s| !s.is_empty());
+    if poke(instance.as_deref(), MSG_DISPLAYCHANGE, 0) {
+        println!("Aviso enviado.");
+        ExitCode::SUCCESS
+    } else {
+        eprintln!("No hay un wm corriendo.");
+        ExitCode::FAILURE
+    }
+}
+
 fn desk_check(mode: Option<&str>) -> ExitCode {
     let Ok(exe) = std::env::current_exe() else { return ExitCode::FAILURE };
     if mode == Some("manual") {

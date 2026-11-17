@@ -48,6 +48,11 @@ fn verb(button: Button) -> &'static str {
 }
 
 impl World {
+    /// La ventana que se está arrastrando (hito 4d: no se rescata).
+    pub(super) fn dragging_win(&self) -> Option<WinKey> {
+        self.dragging.as_ref().map(|d| d.win)
+    }
+
     pub(super) fn pointer_deadline(&self) -> Option<u64> {
         self.pointer.map(|p| p.since_us + POINTER_MAX_US)
     }

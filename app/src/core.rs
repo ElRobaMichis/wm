@@ -201,6 +201,8 @@ fn print_summary(brain: &Brain) {
         stats.mouse_installs, stats.mouse_removes
     ));
     log.line(format!("Callbacks lentos (> 100 ms) con estado reiniciado: {}", stats.stalls));
+    let sc = brain.world.screen_stats();
+    log.line(format!("Pantallas: {} cambios, {} ventanas rescatadas", sc.storms, sc.rescued));
     log.line(format!(
         "Hilos de trabajo abandonados: {} (volvieron tarde: {})",
         o.abandoned, o.late

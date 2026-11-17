@@ -28,6 +28,8 @@ mod world_desk_tests;
 mod world_drag_tests;
 #[cfg(test)]
 mod world_map_tests;
+#[cfg(test)]
+mod world_screen_tests;
 
 /// Rectángulo en píxeles físicos de la pantalla virtual.
 ///

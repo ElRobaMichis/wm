@@ -134,6 +134,12 @@ impl Plat {
                     }
                     Effect::Log(line) => self.logs.push(line),
                     Effect::Notice(_) | Effect::MovePointer { .. } => {}
+                    // Sin pantallas en esta simulación (hito 4d).
+                    Effect::Survey { req } => queue.push_back(Event::Surveyed {
+                        req,
+                        result: Err("sin pantallas en la prueba".into()),
+                    }),
+                    Effect::ScreensChanged => {}
                     other => panic!("efecto inesperado en la prueba de escritorios: {other:?}"),
                 }
             }

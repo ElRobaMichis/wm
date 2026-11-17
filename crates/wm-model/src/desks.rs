@@ -89,6 +89,11 @@ impl Desks {
         self.active.max(1)
     }
 
+    /// ¿Esta app está dentro del alcance (sin alcance: todas)?
+    pub fn in_scope(&self, app: &str) -> bool {
+        self.scope.as_ref().is_none_or(|s| s == app)
+    }
+
     pub fn set_scope(&mut self, app: Option<String>) {
         self.scope = app;
     }
