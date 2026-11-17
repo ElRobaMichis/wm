@@ -6,8 +6,153 @@
 //! - [`RelRect`]: una posición guardada relativa al área de trabajo.
 //! - [`StormTracker`]: cuándo terminó una tormenta de cambios de pantalla y
 //!   hay que reconciliar (una sola vez por calma).
+//! - Hito 4d (plan-hito4d.md): [`ScreenEvent`], [`topology_key`],
+//!   [`rescue_plan`] (qué ventanas rescatar tras la calma) y [`on_screen`]
+//!   (la red de Z hacia un monitor que ya no está).
 
 use crate::Rect;
+use crate::place::{MonitorObs, monitor_of};
+
+/// Aviso de Windows sobre pantallas, energía o sesión (plan-hito4d §1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScreenEvent {
+    /// `WM_DISPLAYCHANGE`: resolución, cantidad de monitores o escala.
+    Changed,
+    /// `SPI_SETWORKAREA`: cambió un área de trabajo (la barra de tareas).
+    WorkArea,
+    /// Reposo.
+    Suspend,
+    /// Vuelta del reposo.
+    Resume,
+    /// Sesión bloqueada.
+    Lock,
+    Unlock,
+    /// La sesión dejó la consola (RDP, cambio de usuario).
+    Disconnect,
+    Connect,
+}
+
+impl ScreenEvent {
+    /// Nombre corto para el log.
+    pub fn name(self) -> &'static str {
+        match self {
+            ScreenEvent::Changed => "pantallas",
+            ScreenEvent::WorkArea => "área de trabajo",
+            ScreenEvent::Suspend => "reposo",
+            ScreenEvent::Resume => "vuelta del reposo",
+            ScreenEvent::Lock => "bloqueo",
+            ScreenEvent::Unlock => "desbloqueo",
+            ScreenEvent::Disconnect => "sesión desconectada",
+            ScreenEvent::Connect => "sesión conectada",
+        }
+    }
+}
+
+/// Clave de una topología: límites, área de trabajo y DPI de cada monitor,
+/// sin importar el orden. `0` = sin monitores o con un rectángulo vacío
+/// (configuración a medio aplicar); nunca `0` si es válida.
+pub fn topology_key(monitors: &[MonitorObs]) -> u64 {
+    if monitors.is_empty()
+        || monitors.iter().any(|m| m.bounds.width() <= 0 || m.bounds.height() <= 0)
+    {
+        return 0;
+    }
+    let mut items: Vec<[i64; 9]> = monitors
+        .iter()
+        .map(|m| {
+            let (b, w) = (m.bounds, m.work);
+            [b.left, b.top, b.right, b.bottom, w.left, w.top, w.right, w.bottom, m.dpi as i32]
+                .map(i64::from)
+        })
+        .collect();
+    items.sort_unstable();
+    // FNV-1a de 64 bits.
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for v in items.iter().flatten() {
+        for b in v.to_le_bytes() {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    h.max(1)
+}
+
+/// Lo que se vio de una ventana al reconciliar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Seen {
+    /// Marco visible (DWM).
+    pub frame: Rect,
+    pub minimized: bool,
+    pub maximized: bool,
+    /// No tocarla (colocación o arrastre en curso, fuera de alcance, terca).
+    pub skip: bool,
+}
+
+/// Qué hacer con una ventana inalcanzable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// Correrla (sin cambiar el tamaño).
+    Move { dx: i32, dy: i32 },
+    /// Maximizada perdida: volver a maximizarla en el monitor `on`.
+    Remaximize { on: usize },
+}
+
+/// Cuánto tiene que verse con estos monitores (al DPI más alto).
+pub fn min_visible(monitors: &[MonitorObs]) -> MinVisible {
+    MinVisible::at_dpi(monitors.iter().map(|m| m.dpi).max().unwrap_or(96))
+}
+
+/// Plan de rescate tras la calma (plan-hito4d §3.2): solo las ventanas
+/// inalcanzables; las minimizadas, las de pantalla completa, las maximizadas
+/// con el centro en algún monitor y las marcadas `skip` no se tocan. Devuelve
+/// `(índice en seen, veredicto)`.
+pub fn rescue_plan(monitors: &[MonitorObs], seen: &[Seen]) -> Vec<(usize, Verdict)> {
+    if monitors.is_empty() {
+        return Vec::new();
+    }
+    let areas: Vec<Rect> = monitors.iter().map(|m| m.work).collect();
+    let min = min_visible(monitors);
+    let inside = |b: Rect, x: i32, y: i32| x >= b.left && x < b.right && y >= b.top && y < b.bottom;
+    let mut plan = Vec::new();
+    for (i, s) in seen.iter().enumerate() {
+        let f = s.frame;
+        if s.skip || s.minimized || f.width() <= 0 || f.height() <= 0 {
+            continue;
+        }
+        if monitors.iter().any(|m| m.bounds == f) {
+            continue; // pantalla completa
+        }
+        if s.maximized {
+            let (cx, cy) = ((f.left + f.right) / 2, (f.top + f.bottom) / 2);
+            if !monitors.iter().any(|m| inside(m.bounds, cx, cy)) {
+                if let Some(on) = monitor_of(monitors, f) {
+                    plan.push((i, Verdict::Remaximize { on }));
+                }
+            }
+            continue;
+        }
+        if let Some(r) = rescue(f, &areas, min) {
+            plan.push((i, Verdict::Move { dx: r.left - f.left, dy: r.top - f.top }));
+        }
+    }
+    plan
+}
+
+/// Un destino absoluto (Z) que puede ser de un monitor que ya no está: si no
+/// es alcanzable, el mismo tamaño (achicado si no entra) dentro del área del
+/// monitor más cercano, lo más cerca posible de donde estaba.
+pub fn on_screen(monitors: &[MonitorObs], r: Rect) -> Rect {
+    let areas: Vec<Rect> = monitors.iter().map(|m| m.work).collect();
+    if areas.is_empty() || reachable(r, &areas, min_visible(monitors)) {
+        return r;
+    }
+    let Some(m) = monitor_of(monitors, r) else { return r };
+    let work = monitors[m].work;
+    let (w, h) = (r.width().min(work.width()), r.height().min(work.height()));
+    let left = r.left.clamp(work.left, work.right - w);
+    let top = r.top.clamp(work.top, work.bottom - h);
+    Rect::new(left, top, left + w, top + h)
+}
 
 /// Identidad de un monitor: la tupla completa, nunca un solo campo.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -231,6 +376,11 @@ impl StormTracker {
     pub const MAX_MS: u64 = 10_000;
     /// Control tardío después de reconciliar.
     pub const RECHECK_MS: u64 = 3_000;
+
+    /// ¿Hay una tormenta en curso (entre el primer aviso y la reconciliación)?
+    pub fn active(&self) -> bool {
+        !matches!(self.state, Storm::Calm | Storm::Settled { .. })
+    }
 
     /// Llegó un aviso de Windows (pantallas, área de trabajo, energía...).
     pub fn hint(&mut self, now: u64) -> StormAction {
@@ -504,5 +654,155 @@ mod tests {
             // Sin avisos después de 5 s, a los 40 s ya tuvo que reconciliar.
             assert!(now < 20_000 || reconciled > 0 || t.deadline().is_some());
         }
+    }
+
+    fn mon(left: i32, top: i32, w: i32, h: i32, dpi: u32) -> MonitorObs {
+        let bounds = Rect::new(left, top, left + w, top + h);
+        MonitorObs { bounds, work: Rect::new(left, top, left + w, top + h - 48), dpi }
+    }
+
+    fn seen(frame: Rect) -> Seen {
+        Seen { frame, minimized: false, maximized: false, skip: false }
+    }
+
+    #[test]
+    fn topology_key_ignores_order_and_sees_every_field() {
+        let a = mon(0, 0, 1920, 1080, 96);
+        let b = mon(1920, 0, 2560, 1440, 144);
+        let k = topology_key(&[a, b]);
+        assert_ne!(k, 0);
+        assert_eq!(k, topology_key(&[b, a]));
+        assert_eq!(topology_key(&[]), 0);
+        let mut c = b;
+        c.dpi = 120;
+        assert_ne!(k, topology_key(&[a, c]));
+        let mut d = b;
+        d.work.bottom -= 10;
+        assert_ne!(k, topology_key(&[a, d]));
+        let mut e = b;
+        e.bounds.left += 1;
+        assert_ne!(k, topology_key(&[a, e]));
+        let empty =
+            MonitorObs { bounds: Rect::new(0, 0, 0, 0), work: Rect::new(0, 0, 0, 0), dpi: 96 };
+        assert_eq!(topology_key(&[a, empty]), 0);
+    }
+
+    fn random_scene(rng: &mut Rng) -> (Vec<MonitorObs>, Vec<Seen>) {
+        let n = 1 + (rng.next() % 3) as usize;
+        let dpis = [96, 120, 144, 192];
+        let mut monitors = Vec::new();
+        let mut x = rng.range(-3000, 0);
+        for _ in 0..n {
+            let (w, h) = (rng.range(800, 3000), rng.range(600, 2000));
+            let y = rng.range(-500, 500);
+            monitors.push(mon(x, y, w, h, dpis[(rng.next() % 4) as usize]));
+            x += w;
+        }
+        let wins = (0..8)
+            .map(|_| {
+                let (l, t) = (rng.range(-8000, 8000), rng.range(-4000, 4000));
+                let (w, h) = (rng.range(100, 2500), rng.range(80, 1600));
+                Seen {
+                    frame: Rect::new(l, t, l + w, t + h),
+                    minimized: rng.next().is_multiple_of(7),
+                    maximized: false,
+                    skip: rng.next().is_multiple_of(9),
+                }
+            })
+            .collect();
+        (monitors, wins)
+    }
+
+    #[test]
+    fn rescue_plan_is_empty_when_everything_is_reachable() {
+        let mut rng = Rng(0xA5A5_1234_DEAD_BEEF);
+        for _ in 0..5000 {
+            let (monitors, mut wins) = random_scene(&mut rng);
+            let areas: Vec<Rect> = monitors.iter().map(|m| m.work).collect();
+            let min = min_visible(&monitors);
+            wins.retain(|s| reachable(s.frame, &areas, min));
+            assert!(rescue_plan(&monitors, &wins).is_empty());
+        }
+    }
+
+    #[test]
+    fn rescue_plan_makes_everything_reachable_once_and_keeps_sizes() {
+        let mut rng = Rng(0x1357_9BDF_2468_ACE0);
+        for _ in 0..5000 {
+            let (monitors, wins) = random_scene(&mut rng);
+            let areas: Vec<Rect> = monitors.iter().map(|m| m.work).collect();
+            let min = min_visible(&monitors);
+            let mut after = wins.clone();
+            for (i, v) in rescue_plan(&monitors, &wins) {
+                let Verdict::Move { dx, dy } = v else { panic!("sin maximizadas") };
+                let f = after[i].frame;
+                after[i].frame = Rect::new(f.left + dx, f.top + dy, f.right + dx, f.bottom + dy);
+                assert_eq!(after[i].frame.width(), f.width());
+                assert_eq!(after[i].frame.height(), f.height());
+            }
+            for (s, a) in wins.iter().zip(&after) {
+                if s.skip || s.minimized {
+                    assert_eq!(s.frame, a.frame, "no se toca");
+                } else {
+                    assert!(reachable(a.frame, &areas, min), "{:?} → {:?}", s.frame, a.frame);
+                }
+            }
+            assert!(rescue_plan(&monitors, &after).is_empty(), "idempotente");
+        }
+    }
+
+    #[test]
+    fn rescue_plan_leaves_alone_what_windows_owns() {
+        let monitors = [mon(0, 0, 1920, 1080, 96), mon(1920, 0, 1920, 1080, 96)];
+        let lost = Rect::new(5000, 5000, 5800, 5600);
+        let full = monitors[1].bounds;
+        let max_ok = Rect::new(1912, -8, 3848, 1040);
+        let max_lost = Rect::new(-4000, -8, -2000, 1040);
+        let scene = [
+            Seen { minimized: true, ..seen(lost) },
+            seen(full),
+            Seen { maximized: true, ..seen(max_ok) },
+            Seen { skip: true, ..seen(lost) },
+            Seen { maximized: true, ..seen(max_lost) },
+            seen(lost),
+        ];
+        let plan = rescue_plan(&monitors, &scene);
+        assert_eq!(plan.len(), 2, "{plan:?}");
+        assert_eq!(plan[0], (4, Verdict::Remaximize { on: 0 }));
+        assert_eq!(plan[1].0, 5);
+    }
+
+    #[test]
+    fn storm_is_active_only_until_it_reconciles() {
+        let mut t = StormTracker::default();
+        assert!(!t.active());
+        t.hint(0);
+        assert!(t.active());
+        assert_eq!(t.tick(400), Some(StormAction::Snapshot));
+        assert!(t.active());
+        t.snapshot(400, 7);
+        assert_eq!(t.tick(650), Some(StormAction::Snapshot));
+        assert_eq!(t.snapshot(650, 7), Some(StormAction::Reconcile(7)));
+        assert!(!t.active(), "reconciliado");
+        assert_eq!(t.tick(3650), Some(StormAction::Snapshot));
+        assert!(!t.active(), "el control tardío no es tormenta");
+    }
+
+    #[test]
+    fn on_screen_keeps_reachable_targets_and_fits_lost_ones() {
+        let monitors = [mon(0, 0, 1920, 1080, 96)];
+        let ok = Rect::new(100, 100, 900, 700);
+        assert_eq!(on_screen(&monitors, ok), ok);
+        // El monitor de la derecha ya no está: la mitad que ocupaba vuelve al
+        // borde derecho del que queda, con su tamaño.
+        let gone = Rect::new(1920, 0, 2880, 1032);
+        let r = on_screen(&monitors, gone);
+        assert_eq!((r.width(), r.height()), (960, 1032));
+        assert_eq!(r.right, 1920);
+        // Más grande que el área: se achica.
+        let big = Rect::new(-5000, 0, 0, 3000);
+        let r = on_screen(&monitors, big);
+        assert!(r.width() <= 1920 && r.height() <= 1032);
+        assert!(reachable(r, &[monitors[0].work], min_visible(&monitors)));
     }
 }

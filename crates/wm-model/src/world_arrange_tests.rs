@@ -1495,3 +1495,23 @@ fn g_and_v_follow_the_edges_the_window_touches() {
         sim.logs
     );
 }
+
+#[test]
+fn z_to_a_monitor_that_is_gone_lands_on_the_nearest_one() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.at(1, P::LeftHalf);
+    sim.key(&mut w, b'C'); // centrada en el monitor 1: la entrada guarda la mitad
+    // Se desconecta el monitor 1 y Windows trae la ventana al 0.
+    sim.monitors = vec![monitor(0)];
+    sim.win.frame = Rect::new(400, 200, 1360, 800);
+    sim.key(&mut w, b'Z');
+    let f = sim.win.frame;
+    assert_eq!((f.width(), f.height()), (960, 1032), "mismo tamaño: {f:?} {:?}", sim.logs);
+    assert_eq!(f.right, 1920, "pegada al borde más cercano");
+    assert!(
+        sim.logs.iter().any(|l| l.contains("fuera de las pantallas actuales")),
+        "{:?}",
+        sim.logs
+    );
+}

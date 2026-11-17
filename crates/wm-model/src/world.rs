@@ -1852,9 +1852,17 @@ impl World {
             out.push(Effect::Log(format!("{what}: maximizada, {since:.1} ms desde la tecla")));
             return;
         }
-        let Some(m) = monitor_of(&obs.monitors, entry.frame) else { return };
+        // El monitor de la entrada puede ya no estar (hito 4d): el destino se
+        // trae a la pantalla más cercana; si vuelve, Z es exacta otra vez.
+        let target = crate::screens::on_screen(&obs.monitors, entry.frame);
+        if target != entry.frame {
+            out.push(Effect::Log(format!(
+                "{what}: su lugar quedó fuera de las pantallas actuales; la dejo en la más cercana."
+            )));
+        }
+        let Some(m) = monitor_of(&obs.monitors, target) else { return };
         let spot = Spot { monitor: obs.monitors[m], placement: Placement::Full };
-        self.go(&obs, spot, entry.frame, what, key_us, now_us, out);
+        self.go(&obs, spot, target, what, key_us, now_us, out);
     }
 
     fn send_place(&mut self, win: WinKey, rect: Rect, out: &mut Vec<Effect>) {
