@@ -1496,7 +1496,7 @@ impl World {
         let resize = target.width() != obs.frame.width() || target.height() != obs.frame.height();
         self.fly
             && self.options.animate
-            && !self.screens.active()
+            && !self.screens.frozen()
             && obs.no_fly.is_none()
             && !obs.maximized
             && !obs.minimized

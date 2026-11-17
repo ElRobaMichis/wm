@@ -72,6 +72,9 @@ pub(crate) struct Screens {
     since_us: u64,
     /// Controles tardíos seguidos sin poder leer las pantallas.
     retries: u8,
+    /// Un aviso fuerte (cambió la configuración, reposo) en esta tormenta:
+    /// sin animaciones hasta la calma. El arranque o el área de trabajo no.
+    frozen: bool,
     stats: ScreenStats,
 }
 
@@ -82,9 +85,9 @@ impl Screens {
         self.locked || self.asleep || self.away
     }
 
-    /// Una tormenta en curso (sin animaciones).
-    pub(crate) fn active(&self) -> bool {
-        self.storm.active()
+    /// Una tormenta con un aviso fuerte en curso (sin animaciones).
+    pub(crate) fn frozen(&self) -> bool {
+        self.frozen && self.storm.active()
     }
 
     pub(crate) fn deadline_us(&self) -> Option<u64> {
@@ -105,11 +108,17 @@ impl World {
         self.screens.stats
     }
 
+    /// Hay una tormenta con un cambio de pantallas real: sin animaciones.
+    pub fn screens_frozen(&self) -> bool {
+        self.screens.frozen()
+    }
+
     pub(crate) fn on_screen(&mut self, e: ScreenEvent, now_us: u64, out: &mut Vec<Effect>) {
         match e {
             ScreenEvent::Changed => {
-                self.freeze(out);
+                // Primero el aviso (abre la tormenta), después congelar.
                 self.screen_hint(e.name(), now_us, out);
+                self.freeze(out);
             }
             ScreenEvent::WorkArea
             | ScreenEvent::Resume
@@ -170,6 +179,7 @@ impl World {
     fn screen_hint(&mut self, name: &'static str, now_us: u64, out: &mut Vec<Effect>) {
         let s = &mut self.screens;
         if !s.storm.active() {
+            s.frozen = false;
             s.since_us = now_us;
             s.hints.clear();
             s.rescued.clear();
@@ -192,6 +202,7 @@ impl World {
     /// la topología vieja); el mapa se oculta. El arrastre, el aviso y el
     /// borde de foco siguen.
     fn freeze(&mut self, out: &mut Vec<Effect>) {
+        self.screens.frozen = true;
         for (win, j) in self.jobs.drain() {
             if j.flying {
                 out.push(Effect::Land { win });

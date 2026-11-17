@@ -358,3 +358,17 @@ fn show_all_brings_back_even_a_window_we_had_given_up_on() {
     sim.wait(&mut w, 2_000);
     assert!(sim.reachable(runner), "{:?}", sim.logs);
 }
+
+#[test]
+fn only_a_real_change_turns_animations_off() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.add(1, Rect::new(100, 100, 900, 700));
+    w.step(Event::Screen(ScreenEvent::WorkArea), sim.now);
+    assert!(!w.screens_frozen(), "el área de trabajo no apaga las animaciones");
+    sim.wait(&mut w, 5_000);
+    w.step(Event::Screen(ScreenEvent::Changed), sim.now);
+    assert!(w.screens_frozen(), "un cambio de pantallas sí");
+    sim.wait(&mut w, 2_000);
+    assert!(!w.screens_frozen(), "hasta la calma");
+}
