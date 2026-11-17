@@ -442,7 +442,7 @@ fn map_checks(r: &mut Report, core_pid: u32) {
     let mut ok = true;
     let caps_before = session::caps_lock_on();
 
-    // 1. Mantener: aparece a ~400 ms y se oculta al soltar.
+    // 1. Mantener: aparece a los `MAP_DELAY_MS` y se oculta al soltar.
     std::thread::sleep(Duration::from_millis(300));
     session::send_keys(&[(CAPS, true)]);
     let start = Instant::now();
@@ -454,8 +454,10 @@ fn map_checks(r: &mut Report, core_pid: u32) {
     let still = visible();
     session::send_keys(&[(CAPS, false)]);
     let hidden = wait_for(Duration::from_millis(300), || !visible());
-    let in_time =
-        shown.is_some_and(|d| d >= Duration::from_millis(380) && d <= Duration::from_millis(520));
+    let in_time = shown.is_some_and(|d| {
+        let delay = u64::from(wm_model::keyboard::MAP_DELAY_MS);
+        d >= Duration::from_millis(delay - 20) && d <= Duration::from_millis(delay + 120)
+    });
     let kept_caps = session::caps_lock_on() == caps_before;
     ok &= in_time && still && hidden.is_some() && kept_caps;
     parts.push(format!(
