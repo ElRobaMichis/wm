@@ -682,6 +682,22 @@ fn fit(font: &Font, text: &str, em: f32, max_w: f32) -> windows::core::Result<St
     Ok(out.trim_end().to_owned() + "…")
 }
 
+/// La lista dibujada: mover la selección es solo correr la píldora (sin
+/// rearmar los textos: así no parpadea al apretar la letra seguido).
+pub struct ListVisual {
+    pub container: ContainerVisual,
+    pill: windows::UI::Composition::CompositionRoundedRectangleGeometry,
+    /// Arriba de cada fila (en `rows`).
+    row_y: Vec<f32>,
+}
+
+impl ListVisual {
+    pub fn select(&self, i: usize) -> windows::core::Result<()> {
+        let Some(&y) = self.row_y.get(i) else { return Ok(()) };
+        self.pill.SetOffset(Vector2 { X: 8.0, Y: y + 2.0 })
+    }
+}
+
 /// La lista de ventanas de una letra (plan-apps.md §8): panel con la
 /// tecla, el nombre y la cantidad; una fila por ventana (título y, a la
 /// derecha, datos chicos); la elegida en una píldora con anillo `accent`.
@@ -693,7 +709,7 @@ pub fn build_list(
     area_h: f32,
     dpi: u32,
     view: &wm_model::listview::ListView,
-) -> windows::core::Result<ContainerVisual> {
+) -> windows::core::Result<ListVisual> {
     const W: f32 = 640.0;
     const PAD: f32 = 16.0;
     const HEAD: f32 = 48.0;
@@ -730,6 +746,16 @@ pub fn build_list(
     panel.SetStrokeBrush(&compositor.CreateColorBrushWithColor(tokens::BORDER)?)?;
     panel.SetStrokeThickness(1.0)?;
     shapes.Append(&panel)?;
+    // La píldora de la elegida, debajo de todos los textos.
+    let pill_geom = compositor.CreateRoundedRectangleGeometry()?;
+    pill_geom.SetSize(Vector2 { X: W - PAD, Y: ROW - 4.0 })?;
+    pill_geom.SetCornerRadius(Vector2 { X: 8.0, Y: 8.0 })?;
+    let pill = compositor.CreateSpriteShapeWithGeometry(&pill_geom)?;
+    pill.SetFillBrush(&compositor.CreateColorBrushWithColor(tokens::FILL_STRONG)?)?;
+    pill.SetStrokeBrush(&compositor.CreateColorBrushWithColor(tokens::ACCENT)?)?;
+    pill.SetStrokeThickness(2.0)?;
+    shapes.Append(&pill)?;
+    let mut row_y = Vec::new();
 
     let text = compositor.CreateColorBrushWithColor(tokens::TEXT)?;
     let text2 = compositor.CreateColorBrushWithColor(tokens::TEXT_2)?;
@@ -761,14 +787,8 @@ pub fn build_list(
         more(view.above, y)?;
         y += ROW;
     }
-    for (i, row) in view.rows.iter().enumerate() {
-        if i == view.selected {
-            let pill = rect(PAD / 2.0, y + 2.0, W - PAD, ROW - 4.0, 8.0)?;
-            pill.SetFillBrush(&compositor.CreateColorBrushWithColor(tokens::FILL_STRONG)?)?;
-            pill.SetStrokeBrush(&compositor.CreateColorBrushWithColor(tokens::ACCENT)?)?;
-            pill.SetStrokeThickness(2.0)?;
-            shapes.Append(&pill)?;
-        }
+    for row in &view.rows {
+        row_y.push(y);
         let meta_w = if row.meta.is_empty() {
             0.0
         } else {
@@ -791,8 +811,10 @@ pub fn build_list(
     shape_text(compositor, &shapes, g, &text2, (W - fw) / 2.0, line_y(y + PAD / 2.0, FOOT, SMALL))?;
 
     container.Children()?.InsertAtTop(&visual)?;
-    parent.Children()?.InsertAtTop(&container)?;
-    Ok(container)
+    let list = ListVisual { container, pill: pill_geom, row_y };
+    list.select(view.selected)?;
+    parent.Children()?.InsertAtTop(&list.container)?;
+    Ok(list)
 }
 
 // ---------------------------------------------------------------------------

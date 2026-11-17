@@ -249,8 +249,9 @@ struct State {
     toast_timer: usize,
     /// Borde de foco (se crea la primera vez que se pide).
     border: Option<crate::focus_border::FocusBorder>,
-    /// La lista de ventanas de una letra: monitor y visual.
-    list: Option<(usize, windows::UI::Composition::ContainerVisual)>,
+    /// La lista de ventanas de una letra: monitor, lo dibujado y lo que
+    /// muestra (si solo cambia la elegida, se corre la píldora).
+    list: Option<(usize, overlay_text::ListVisual, wm_model::listview::ListView)>,
     /// La capa del mapa (para volver a mostrarlo al cerrar la lista).
     layer: Layer,
 }
@@ -553,51 +554,62 @@ impl State {
             self.end_list();
             return Ok(());
         };
-        // Primero la nueva encima y después se quita la vieja: si se quitaba
-        // antes, mientras se armaban los textos se veía un cuadro vacío
-        // (parpadeo al apretar la letra seguido; prueba del usuario).
         if self.ensure_current()? {
             self.list = None; // las ventanas se rearmaron: la vieja ya no está
         }
+        // Mismas filas: solo se corre la píldora (sin rearmar ni volver a
+        // mostrar nada: así no parpadea al apretar la letra seguido; prueba
+        // del usuario).
+        if let Some((_, visual, shown)) = self.list.as_mut()
+            && shown.rows == view.rows
+            && shown.above == view.above
+            && shown.below == view.below
+            && shown.app == view.app
+        {
+            visual.select(view.selected)?;
+            *shown = view;
+            return Ok(());
+        }
+        // Otras filas: la nueva encima y después se quita la vieja.
         let old = self.list.take();
         let i = old
             .as_ref()
-            .map(|(i, _)| *i)
+            .map(|(i, _, _)| *i)
             .filter(|&i| i < self.overlays.screens().len())
             .unwrap_or_else(|| pick_monitor(&self.overlays));
         let s = &self.overlays.screens()[i];
         let (w, h) = (s.bounds.width() as f32, s.bounds.height() as f32);
         let built =
             overlay_text::build_list(self.overlays.compositor(), &s.root, w, h, s.dpi, &view);
-        if let Some((oi, visual)) = old
+        if let Some((oi, visual, _)) = old
             && let Some(os) = self.overlays.screens().get(oi)
             && let Ok(children) = os.root.Children()
         {
-            let _ = children.Remove(&visual);
+            let _ = children.Remove(&visual.container);
         }
         let visual = built?;
         self.map_visible(i, false);
-        if self.shown != Some(i) {
+        if self.shown != Some(i) && self.list.is_none() {
             s.root.SetOpacity(1.0)?;
             self.overlays.show_also(i);
         }
-        self.list = Some((i, visual));
+        self.list = Some((i, visual, view));
         Ok(())
     }
 
     fn remove_list(&mut self) {
-        if let Some((i, visual)) = self.list.take()
+        if let Some((i, visual, _)) = self.list.take()
             && let Some(s) = self.overlays.screens().get(i)
             && let Ok(children) = s.root.Children()
         {
-            let _ = children.Remove(&visual);
+            let _ = children.Remove(&visual.container);
         }
     }
 
     /// Cierra la lista: el mapa vuelve si estaba; si no, la ventana se
     /// esconde (salvo que tenga un aviso).
     fn end_list(&mut self) {
-        let Some((i, _)) = self.list.as_ref().map(|(i, v)| (*i, v.clone())) else { return };
+        let Some(i) = self.list.as_ref().map(|(i, _, _)| *i) else { return };
         self.remove_list();
         if self.shown == Some(i) {
             self.map_visible(i, true);
