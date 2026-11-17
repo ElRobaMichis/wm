@@ -76,10 +76,17 @@ impl Overlays {
 
     /// ¿Las ventanas siguen correspondiendo a los monitores de ahora (mismos
     /// rectángulos y escalas)?
+    /// Mira también dónde está de verdad cada ventana (hito 4d): Windows
+    /// puede correr una ventana oculta al desconectar un monitor.
     pub fn is_current(&self) -> bool {
         let now = crate::monitors();
         now.len() == self.screens.len()
-            && now.iter().zip(&self.screens).all(|(m, s)| m.bounds == s.bounds && m.dpi == s.dpi)
+            && now.iter().zip(&self.screens).all(|(m, s)| {
+                m.bounds == s.bounds
+                    && m.dpi == s.dpi
+                    && crate::ghost::window_rect(crate::windows_list::WindowId(s.hwnd.0 as isize))
+                        == Some(s.bounds)
+            })
     }
 
     /// Rearma las ventanas para los monitores de ahora (se conectó o

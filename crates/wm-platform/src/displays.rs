@@ -163,6 +163,44 @@ pub fn displays() -> windows::core::Result<Vec<Display>> {
     Ok(out)
 }
 
+/// Hito 4d: los monitores de ahora, para el modelo, solo si la
+/// configuración es coherente (cada camino activo de `QueryDisplayConfig`
+/// tiene su monitor). Sin leer el EDID: lo que importa al rescate es la
+/// geometría.
+pub fn topology() -> windows::core::Result<Vec<wm_model::place::MonitorObs>> {
+    let (paths, _modes) = query()?;
+    let monitors = crate::monitors();
+    for path in paths {
+        let mut source = DISPLAYCONFIG_SOURCE_DEVICE_NAME {
+            header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
+                r#type: DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
+                size: size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32,
+                adapterId: path.sourceInfo.adapterId,
+                id: path.sourceInfo.id,
+            },
+            ..Default::default()
+        };
+        // SAFETY: estructura local con su encabezado y tamaño correctos.
+        if unsafe { DisplayConfigGetDeviceInfo(&mut source.header) } != 0 {
+            continue;
+        }
+        let gdi_name = wide(&source.viewGdiDeviceName);
+        if !monitors.iter().any(|m| m.device == gdi_name) {
+            return Err(windows::core::Error::new(
+                E_FAIL,
+                "configuración de pantallas incoherente",
+            ));
+        }
+    }
+    if monitors.is_empty() {
+        return Err(windows::core::Error::new(E_FAIL, "no hay monitores"));
+    }
+    Ok(monitors
+        .iter()
+        .map(|m| wm_model::place::MonitorObs { bounds: m.bounds, work: m.work_area, dpi: m.dpi })
+        .collect())
+}
+
 fn query() -> windows::core::Result<(Vec<DISPLAYCONFIG_PATH_INFO>, Vec<DISPLAYCONFIG_MODE_INFO>)> {
     // Si la topología cambia entre las dos llamadas, se reintenta; con tope.
     for _ in 0..4 {

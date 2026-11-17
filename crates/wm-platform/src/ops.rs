@@ -111,6 +111,11 @@ pub enum Op {
     CloakProbe,
     /// Hito 5: la ventana bajo el cursor (`Caps` + clic).
     InspectAt { x: i32, y: i32 },
+    /// Hito 4d: monitores y ventanas, para reconciliar tras un cambio.
+    Survey,
+    /// Hito 4d: rescatar un lote (HWND, proceso, esquina nueva del
+    /// rectángulo exterior), sin cambiar el tamaño.
+    MoveMany(Vec<(WindowId, u32, i32, i32)>),
 }
 
 impl Op {
@@ -131,6 +136,8 @@ impl Op {
             Op::FocusShell => Duration::from_millis(300),
             Op::CloakProbe => Duration::from_millis(250),
             Op::InspectAt { .. } => Duration::from_millis(50),
+            Op::Survey => Duration::from_millis(150),
+            Op::MoveMany(_) => Duration::from_millis(200),
             Op::RestoreAll => Duration::from_secs(1),
             Op::Launch(_) => Duration::from_secs(2),
             Op::Stall { lane, .. } => match lane {
@@ -154,6 +161,8 @@ pub enum Output {
     Batch(Vec<(WindowId, Result<(), String>)>),
     /// La ventana agarrada con el mouse.
     Grab(windows_list::GrabInfo),
+    /// Hito 4d.
+    Survey(windows_list::Survey),
 }
 
 pub type Ticket = u64;
@@ -420,6 +429,7 @@ fn route(op: &Op) -> Lane {
         Op::FocusShell => Lane::Focus,
         Op::CloakProbe => Lane::Shell,
         Op::InspectAt { .. } => Lane::Win,
+        Op::Survey | Op::MoveMany(_) => Lane::Win,
         Op::HideMany { wins, method } => {
             if *method == HideMethod::ShellCloak || wins.iter().any(|(id, _)| cloaked(id)) {
                 Lane::Shell
@@ -577,6 +587,21 @@ impl Context {
                             Err("la ventana ya no existe".to_owned())
                         } else {
                             hide::set_desk(id, desk)
+                        };
+                        (id, r)
+                    })
+                    .collect(),
+            )),
+            Op::Survey => windows_list::survey().map(Output::Survey),
+            Op::MoveMany(items) => Ok(Output::Batch(
+                items
+                    .iter()
+                    .map(|&(id, pid, x, y)| {
+                        let now = windows_list::window_pid(id);
+                        let r = if now == 0 || (pid != 0 && now != pid) {
+                            Err("la ventana ya no existe".to_owned())
+                        } else {
+                            windows_list::move_async(id, x, y)
                         };
                         (id, r)
                     })

@@ -470,6 +470,10 @@ impl Brain {
                     ));
                 }
                 UiEvent::Shown { .. } => {}
+                UiEvent::Screens { n, rebuilt: true, ms } => self
+                    .log
+                    .line(format!("Mapa y avisos rearmados para {n} monitores ({ms:.1} ms).")),
+                UiEvent::Screens { .. } => {}
                 UiEvent::Failed(e) => self.log.line(e),
                 UiEvent::Skipped(why) => {
                     self.log.line(format!("Mapa de teclado no mostrado: {why}."))

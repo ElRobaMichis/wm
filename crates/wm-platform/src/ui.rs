@@ -55,6 +55,12 @@ pub enum UiEvent {
     /// completa en ese monitor).
     Skipped(&'static str),
     Failed(String),
+    /// Hito 4d: tras un cambio de pantallas, ¿se rearmaron las ventanas?
+    Screens {
+        n: usize,
+        rebuilt: bool,
+        ms: f64,
+    },
 }
 
 /// Duración del fundido de entrada (design.md §3.4 usa 140 ms; el mapa,
@@ -75,6 +81,8 @@ enum Cmd {
     Notice(String),
     /// Borde de foco: seguir a esta ventana (`None`: apagado).
     Border(Option<isize>),
+    /// Hito 4d: cambiaron las pantallas.
+    Screens,
 }
 
 /// Cuánto dura un aviso en pantalla (con los fundidos).
@@ -168,6 +176,12 @@ impl Ui {
     /// Borde de foco alrededor de `win` (`None`: ninguno).
     pub fn border(&mut self, win: Option<isize>) {
         self.send(Cmd::Border(win));
+    }
+
+    /// Hito 4d: cambiaron las pantallas; rearmar lo que haga falta ya (no
+    /// en el próximo mapa).
+    pub fn screens_changed(&mut self) {
+        self.send(Cmd::Screens);
     }
 
     pub fn next_deadline(&self) -> Option<Instant> {
@@ -346,6 +360,21 @@ impl State {
                 }
                 UiEvent::Shown { ms: 0.0, monitor: usize::MAX }
             }
+            Cmd::Screens => {
+                let start = Instant::now();
+                let result = self.ensure_current();
+                if let Some(b) = self.border.as_mut() {
+                    b.update();
+                }
+                match result {
+                    Ok(rebuilt) => UiEvent::Screens {
+                        n: self.overlays.screens().len(),
+                        rebuilt,
+                        ms: start.elapsed().as_secs_f64() * 1000.0,
+                    },
+                    Err(e) => UiEvent::Failed(format!("no se pudo rearmar el mapa: {e}")),
+                }
+            }
             Cmd::Notice(text) => {
                 if let Err(e) = self.notice(&text) {
                     return UiEvent::Failed(format!("no se pudo mostrar el aviso: {e}"));
@@ -355,17 +384,30 @@ impl State {
         }
     }
 
+    /// Si las ventanas ya no corresponden a los monitores de ahora: termina
+    /// el aviso, oculta el mapa y las rearma. `Ok(true)` si las rearmó.
+    fn ensure_current(&mut self) -> windows::core::Result<bool> {
+        if self.overlays.is_current() {
+            return Ok(false);
+        }
+        self.end_toast();
+        if self.shown.is_some() {
+            self.hide();
+        }
+        self.overlays.rebuild_screens()?;
+        if let Ok(mut w) = WINDOWS.lock() {
+            *w = self.overlays.screens().iter().map(|s| s.hwnd.0 as isize).collect();
+        }
+        self.built = None;
+        self.shown = None;
+        Ok(true)
+    }
+
     /// `Ok(None)`: no se muestra (pantalla completa).
     fn show(&mut self, layer: Layer, views: Views) -> windows::core::Result<Option<usize>> {
         // Se conectó o desconectó un monitor, o cambió la escala: ventanas
         // nuevas y contenido nuevo.
-        if !self.overlays.is_current() {
-            self.overlays.rebuild_screens()?;
-            if let Ok(mut w) = WINDOWS.lock() {
-                *w = self.overlays.screens().iter().map(|s| s.hwnd.0 as isize).collect();
-            }
-            self.built = None;
-        }
+        self.ensure_current()?;
         let n = self.overlays.screens().len();
         if self.built.as_ref().is_none_or(|b| b.views != views) {
             // Contenido nuevo (cambiaron las asignaciones): se rearma.
@@ -447,10 +489,9 @@ impl State {
     /// Un aviso: reemplaza al anterior. No en un monitor con pantalla
     /// completa (un juego o un video).
     fn notice(&mut self, text: &str) -> windows::core::Result<()> {
-        if !self.overlays.is_current() {
-            // Monitores cambiados: lo rearma el próximo mapa; el aviso se omite.
-            return Ok(());
-        }
+        // Monitores cambiados: se rearma ya (antes el aviso se omitía hasta
+        // el próximo mapa; hito 4d).
+        self.ensure_current()?;
         self.end_toast();
         let i = pick_monitor(&self.overlays);
         if fullscreen_on(&self.overlays.screens()[i].bounds) {

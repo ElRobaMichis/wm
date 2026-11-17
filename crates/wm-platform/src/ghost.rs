@@ -158,7 +158,10 @@ impl GhostHost {
     /// ¿Sigue cubriendo la pantalla virtual (no cambiaron los monitores)?
     pub fn is_current(&self) -> bool {
         let (x, y, cx, cy) = virtual_screen();
-        self.origin == (x, y) && self.size == (cx, cy)
+        let want = Rect::new(x, y, x + cx, y + cy);
+        self.origin == (x, y)
+            && self.size == (cx, cy)
+            && window_rect(crate::windows_list::WindowId(self.host.0 as isize)) == Some(want)
     }
 
     /// El HWND del anfitrión, para esconderlo desde otro hilo

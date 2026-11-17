@@ -45,6 +45,71 @@ pub struct WindowInfo {
     pub minimized: bool,
 }
 
+/// Hito 4d: una ventana vista al reconciliar.
+#[derive(Debug, Clone)]
+pub struct SurveyWin {
+    pub info: WindowInfo,
+    /// Marco visible (DWM; vale también con cloak).
+    pub frame: Option<wm_model::Rect>,
+    /// Rectángulo de la ventana (con los bordes invisibles).
+    pub outer: Option<wm_model::Rect>,
+    pub maximized: bool,
+    /// Escondida por nosotros fuera de pantalla u oculta: su lugar no cuenta.
+    pub parked: bool,
+}
+
+/// Hito 4d: monitores y ventanas en una sola observación.
+#[derive(Debug, Clone)]
+pub struct Survey {
+    pub monitors: Vec<wm_model::place::MonitorObs>,
+    pub wins: Vec<SurveyWin>,
+}
+
+/// Hito 4d: la observación para reconciliar. Solo lecturas que no envían
+/// mensajes a las apps (una colgada no la frena).
+pub fn survey() -> Result<Survey, String> {
+    use crate::hide::HideMethod;
+    let monitors = crate::displays::topology().map_err(|e| e.message())?;
+    let wins = user_windows()
+        .into_iter()
+        .map(|info| {
+            let id = info.id;
+            SurveyWin {
+                frame: crate::ghost::frame_bounds(id),
+                outer: crate::ghost::window_rect(id),
+                maximized: crate::hide::is_maximized(id),
+                parked: matches!(
+                    crate::hide::hidden_with(id),
+                    Some(HideMethod::Offscreen | HideMethod::Hide)
+                ),
+                info,
+            }
+        })
+        .collect();
+    Ok(Survey { monitors, wins })
+}
+
+/// Hito 4d: correr una ventana a `(x, y)` (rectángulo exterior) sin cambiar
+/// el tamaño, el orden Z ni el foco. Asíncrono: no espera a la app.
+pub fn move_async(id: WindowId, x: i32, y: i32) -> Result<(), String> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
+    };
+    // SAFETY: HWND de otra app; asíncrono (no envía mensajes sincrónicos).
+    unsafe {
+        SetWindowPos(
+            id.hwnd(),
+            None,
+            x,
+            y,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS,
+        )
+    }
+    .map_err(|e| e.message())
+}
+
 /// Ventanas que un usuario consideraría "abiertas" (las del Alt+Tab), en
 /// orden Z: la primera es la de más arriba. Incluye las que escondimos
 /// nosotros (en otro escritorio), con `hidden`; no las que escondió otro
