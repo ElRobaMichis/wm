@@ -84,6 +84,8 @@ struct Sim {
     lands: usize,
     /// El carril responde así a todo vuelo (sin animación).
     fly_fail: Option<FlyFail>,
+    /// El `Scan` dice que la ventana no está al frente (apareció detrás).
+    behind: bool,
 }
 
 fn monitor(left: i32) -> MonitorObs {
@@ -122,6 +124,7 @@ impl Sim {
             flights: 0,
             lands: 0,
             fly_fail: None,
+            behind: false,
         }
     }
 
@@ -293,7 +296,7 @@ impl Sim {
                                 main: true,
                                 ..Default::default()
                             };
-                            let fg = Some(self.win.key);
+                            let fg = (!self.behind).then_some(self.win.key);
                             queue.push_back(Event::Windows { req, result: Ok((vec![info], fg)) });
                         }
                         Effect::SetDesks { req, .. } => {
@@ -1694,6 +1697,36 @@ fn a_new_window_with_an_open_rule_goes_to_its_place_once_and_z_undoes_it() {
     assert_eq!(sim.places, places, "una sola vez");
     sim.key(&mut w, b'Z');
     assert_eq!(sim.win.frame, start, "Z la devuelve adonde la abrió la app");
+}
+
+#[test]
+fn a_window_that_appears_behind_gets_its_rule_when_it_comes_to_the_front() {
+    // Como IntelliJ: la ventana principal aparece mientras la pantalla de
+    // carga sigue al frente, y pasa al frente un momento después.
+    let (b, _) = crate::apps::parse_bindings("i = idea64, brave | | | al abrir: derecha");
+    let mut w = World::new(b);
+    let mut sim = Sim::new();
+    sim.behind = true;
+    sim.run(&mut w, Event::Foreground(WinKey { hwnd: 99, pid: 99 })); // dispara el Scan
+    assert_eq!(sim.places, 0, "detrás no se toca todavía: {:?}", sim.logs);
+    sim.behind = false;
+    sim.now += 800 * MS;
+    sim.run(&mut w, Event::Foreground(sim.win.key));
+    assert!(sim.is_at(0, P::RightHalf), "{:?} {:?}", sim.win.frame, sim.logs);
+}
+
+#[test]
+fn a_window_that_stays_behind_is_not_touched() {
+    let (b, _) = crate::apps::parse_bindings("i = idea64, brave | | | al abrir: derecha");
+    let mut w = World::new(b);
+    let mut sim = Sim::new();
+    let start = sim.win.frame;
+    sim.behind = true;
+    sim.run(&mut w, Event::Foreground(WinKey { hwnd: 99, pid: 99 }));
+    sim.behind = false;
+    sim.now += 10_000 * MS; // pasa al frente mucho después: ya es del usuario
+    sim.run(&mut w, Event::Foreground(sim.win.key));
+    assert_eq!(sim.win.frame, start, "{:?}", sim.logs);
 }
 
 #[test]

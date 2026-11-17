@@ -11,6 +11,10 @@ use crate::{Placement, Rect, place};
 /// Cuándo mirar la ventana nueva (desde que se la vio).
 const ARRIVE_MS: [u64; 4] = [100, 300, 700, 1500];
 
+/// Cuánto puede tardar en pasar al frente una ventana nueva que apareció
+/// detrás (la de IntelliJ, tras su pantalla de carga).
+const BEHIND_MS: u64 = 5_000;
+
 /// Una ventana nueva esperando su regla.
 #[derive(Debug, Clone)]
 pub(super) struct Arrival {
@@ -38,7 +42,10 @@ impl World {
             return;
         }
         for w in windows {
-            if self.desks.desk_of(w.key).is_some() || self.arrivals.contains_key(&w.key) {
+            if self.desks.desk_of(w.key).is_some()
+                || self.arrivals.contains_key(&w.key)
+                || self.behind.contains_key(&w.key)
+            {
                 continue;
             }
             let id = w.app_id();
@@ -49,8 +56,6 @@ impl World {
             let others = windows.iter().any(|o| o.key != w.key && o.main && b.matches(&o.app_id()));
             let why = if !w.main {
                 Some("no es la ventana principal (pantalla de carga o diálogo)")
-            } else if fg != Some(w.key) {
-                Some("no se abrió al frente")
             } else if others {
                 Some("la app ya tenía otra ventana")
             } else if w.minimized || w.concealed {
@@ -61,11 +66,19 @@ impl World {
                 None
             };
             let app = b.display();
+            let title = super::shorten(&w.title, 40);
             match why {
                 Some(why) => out.push(Effect::Log(format!(
-                    "Regla al abrir ({app}): «{}» no se toca: {why}.",
-                    super::shorten(&w.title, 40)
+                    "Regla al abrir ({app}): «{title}» no se toca: {why}."
                 ))),
+                // Apareció detrás: la regla corre solo si pasa al frente
+                // pronto; una que se abre de verdad en segundo plano no.
+                None if fg != Some(w.key) => {
+                    self.behind.insert(w.key, (rule, now_us));
+                    out.push(Effect::Log(format!(
+                        "Regla al abrir ({app}): «{title}» apareció detrás; espera a pasar al frente."
+                    )));
+                }
                 None => {
                     let arrival =
                         Arrival { rule, since_us: now_us, step: 0, inspecting: false, last: None };
@@ -73,6 +86,18 @@ impl World {
                 }
             }
         }
+    }
+
+    /// `FOREGROUND` de una ventana: si era una nueva con regla que había
+    /// aparecido detrás, empieza a seguirla.
+    pub(super) fn came_forward(&mut self, win: WinKey, now_us: u64) {
+        self.behind.retain(|_, (_, seen)| now_us.saturating_sub(*seen) <= BEHIND_MS * 1000);
+        let Some((rule, _)) = self.behind.remove(&win) else { return };
+        if self.paused || self.screens_frozen() {
+            return;
+        }
+        let arrival = Arrival { rule, since_us: now_us, step: 0, inspecting: false, last: None };
+        self.arrivals.insert(win, arrival);
     }
 
     pub(super) fn arrival_deadline(&self) -> Option<u64> {

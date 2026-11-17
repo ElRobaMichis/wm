@@ -803,6 +803,10 @@ pub struct World {
     follow_focus: Option<(Req, Follow)>,
     /// v1.1: ventanas nuevas esperando su regla "al abrir".
     arrivals: HashMap<WinKey, world_rules::Arrival>,
+    /// v1.1: ventanas nuevas con regla que aparecieron detrás (IntelliJ:
+    /// Java la muestra y la activa un momento después). Si pasan al frente
+    /// pronto, la regla corre: (regla, cuándo se vieron).
+    behind: HashMap<WinKey, (crate::rules::OpenRule, u64)>,
 }
 
 /// La lista de una letra mientras `Caps` sigue abajo.
