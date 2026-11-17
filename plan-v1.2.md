@@ -2,6 +2,16 @@
 
 Diseño de Fable del 17/11/2026, a pedido del usuario ("seguí con las cosas más chicas que quedaron anotadas"), antes de la v2 con zonas. Se escribió leyendo el código, sin compilar ni medir: el paso 0 confirma lo que quedó a verificar.
 
+## Estado (17/11/2026)
+
+Hecho todo lo de §2–§6 y §8, en commits locales; falta la prueba del usuario de la segunda mitad y publicar. Diferencias con el diseño:
+
+- **§4:** una ventana centrada con un toque de C conserva su tamaño: se guarda como "centrada" con el porcentaje de su lado más grande.
+- **§5:** `Goal::Bring { win, to, undo }` hace las dos cosas (Z es `Bring` con `undo`); la tecla del usuario gana también si cambió de escritorio después de abrirse la ventana (`user_desk_us`). `WM_SCOPE` acepta una lista (`wm,wmregla`) y la sonda tiene el chequeo "escritorio al abrir".
+- **§6:** el paso 0 no se hizo aparte: la lista de clases es la conocida (`windows_list::is_shell_switcher`) y se confirma con la prueba del usuario. La detección es del modelo (`Event::ShellForeground` antes del `Foreground`; `world_teach.rs`), no un `Event::Chosen` de la plataforma. Un cambio de escritorio automático (reconciliar) no la frena; sí uno del usuario. Con la opción apagada no se cuenta nada (la sonda no escribe `aprendizaje.txt`).
+- **§8:** las fuentes se eligen por escritura (chino → msyh, coreano → malgun, emoji → Segoe UI Symbol y después Segoe UI Emoji, el resto → Segoe UI y Symbol). `wm overlay-demo fuentes`: latino 0,022 ms por armado sin abrir nada; emoji, chino o coreano 1,2–1,9 ms en frío y +0,3–0,4 MB privados. Griego y símbolos juntos abren dos fuentes (+0,56 MB); un texto con todo, cuatro (3,3 ms, +0,73 MB). Se aceptó: es una vez por sesión.
+- Arreglos de la prueba de la primera mitad: la regla al abrir anota "ya se abrió…" cuando la ventana ya estaba en su lugar (Rayo la esconde y la vuelve a mostrar), y una ventana que pasó al frente antes de aparecer en la lista ya no queda "detrás" (IntelliJ).
+
 ## 1. Alcance
 
 | # | Ítem | v1.2 | Por qué |
