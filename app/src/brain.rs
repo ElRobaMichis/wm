@@ -686,6 +686,16 @@ impl Brain {
                     let t = self.ops.submit(Op::MoveMany(items));
                     self.waits.insert(t, Wait::Rescue(req));
                 }
+                Effect::ShowList { view } => {
+                    if let Some(ui) = self.ui.as_mut() {
+                        ui.list(Some(view));
+                    }
+                }
+                Effect::HideList => {
+                    if let Some(ui) = self.ui.as_mut() {
+                        ui.list(None);
+                    }
+                }
                 Effect::ScreensChanged => {
                     if let Some(ui) = self.ui.as_mut() {
                         ui.screens_changed();

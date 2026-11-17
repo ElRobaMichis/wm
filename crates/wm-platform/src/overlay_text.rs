@@ -399,6 +399,8 @@ pub(crate) mod tokens {
     pub const TEXT_2: Color = c(0xFF, 0x8E, 0x8E, 0x93);
     pub const TEXT_3: Color = c(0xFF, 0x5A, 0x5A, 0x5F);
     pub const ACCENT: Color = c(0xFF, 0x5B, 0x8C, 0xFF);
+    /// `fill-strong` (10 %): la fila elegida de la lista.
+    pub const FILL_STRONG: Color = c(0x1A, 0xFF, 0xFF, 0xFF);
 }
 
 /// Margen del panel alrededor de las teclas, y alto del pie.
@@ -626,6 +628,169 @@ pub fn build_toast(
     anim.InsertKeyFrame(1.0, 0.0)?;
     anim.SetDuration(windows::Foundation::TimeSpan { Duration: (total.as_nanos() / 100) as i64 })?;
     container.StartAnimation(&windows::core::HSTRING::from("Opacity"), &anim)?;
+    parent.Children()?.InsertAtTop(&container)?;
+    Ok(container)
+}
+
+/// Avance de cada carácter de `text` a tamaño `em` y si la fuente lo tiene.
+fn advances(font: &Font, text: &str, em: f32) -> windows::core::Result<Vec<(char, f32, bool)>> {
+    let chars: Vec<char> = text.chars().collect();
+    let codepoints: Vec<u32> = chars.iter().map(|&c| u32::from(c)).collect();
+    let n = codepoints.len();
+    let mut glyphs = vec![0u16; n];
+    let mut metrics = vec![DWRITE_GLYPH_METRICS::default(); n];
+    if n > 0 {
+        // SAFETY: buffers locales del largo indicado.
+        unsafe {
+            font.face.GetGlyphIndices(codepoints.as_ptr(), n as u32, glyphs.as_mut_ptr())?;
+            font.face.GetDesignGlyphMetrics(
+                glyphs.as_ptr(),
+                n as u32,
+                metrics.as_mut_ptr(),
+                false,
+            )?;
+        }
+    }
+    let scale = em / font.units_per_em;
+    Ok(chars
+        .into_iter()
+        .zip(glyphs.iter().zip(&metrics))
+        .map(|(c, (&g, m))| (c, m.advanceWidth as f32 * scale, g != 0))
+        .collect())
+}
+
+/// `text` sin los caracteres que la fuente no tiene (Geist no trae emoji ni
+/// CJK: saldrían cuadraditos) y cortado con "…" para que entre en `max_w`.
+fn fit(font: &Font, text: &str, em: f32, max_w: f32) -> windows::core::Result<String> {
+    let all = advances(font, text, em)?;
+    let kept: Vec<(char, f32)> =
+        all.iter().filter(|(_, _, ok)| *ok).map(|&(c, w, _)| (c, w)).collect();
+    let total: f32 = kept.iter().map(|(_, w)| w).sum();
+    if total <= max_w {
+        return Ok(kept.iter().map(|(c, _)| c).collect::<String>().trim().to_owned());
+    }
+    let ellipsis = advances(font, "…", em)?.first().map_or(em * 0.6, |a| a.1);
+    let mut out = String::new();
+    let mut w = 0.0;
+    for (c, a) in kept {
+        if w + a + ellipsis > max_w {
+            break;
+        }
+        out.push(c);
+        w += a;
+    }
+    Ok(out.trim_end().to_owned() + "…")
+}
+
+/// La lista de ventanas de una letra (plan-apps.md §8): panel con la
+/// tecla, el nombre y la cantidad; una fila por ventana (título y, a la
+/// derecha, datos chicos); la elegida en una píldora con anillo `accent`.
+/// Centrada en `area`, escalada por DPI.
+pub fn build_list(
+    compositor: &Compositor,
+    parent: &ContainerVisual,
+    area_w: f32,
+    area_h: f32,
+    dpi: u32,
+    view: &wm_model::listview::ListView,
+) -> windows::core::Result<ContainerVisual> {
+    const W: f32 = 640.0;
+    const PAD: f32 = 16.0;
+    const HEAD: f32 = 48.0;
+    const ROW: f32 = 36.0;
+    const FOOT: f32 = 36.0;
+    const EM: f32 = 16.0;
+    const SMALL: f32 = 13.0;
+    let geist = Geist::load()?;
+    let d2d: ID2D1Factory = d2d_factory()?;
+    let regular = font(&geist, &geist.regular)?;
+    let semibold = font(&geist, &geist.semibold)?;
+    let more_rows = usize::from(view.above > 0) + usize::from(view.below > 0);
+    let h = HEAD + (view.rows.len() + more_rows) as f32 * ROW + FOOT + PAD;
+
+    let container = compositor.CreateContainerVisual()?;
+    container.SetSize(Vector2 { X: W, Y: h })?;
+    let scale = (dpi.max(96) as f32 / 96.0).min(area_w * 0.9 / W).min(area_h * 0.9 / h);
+    container.SetScale(Vector3 { X: scale, Y: scale, Z: 1.0 })?;
+    let (sw, sh) = (W * scale, h * scale);
+    container.SetOffset(Vector3 { X: (area_w - sw) / 2.0, Y: (area_h - sh) / 2.0, Z: 0.0 })?;
+
+    let visual = compositor.CreateShapeVisual()?;
+    visual.SetSize(Vector2 { X: W, Y: h })?;
+    let shapes = visual.Shapes()?;
+    let rect = |x: f32, y: f32, w: f32, hh: f32, r: f32| -> windows::core::Result<_> {
+        let g = compositor.CreateRoundedRectangleGeometry()?;
+        g.SetOffset(Vector2 { X: x, Y: y })?;
+        g.SetSize(Vector2 { X: w, Y: hh })?;
+        g.SetCornerRadius(Vector2 { X: r, Y: r })?;
+        compositor.CreateSpriteShapeWithGeometry(&g)
+    };
+    let panel = rect(0.0, 0.0, W, h, 14.0)?;
+    panel.SetFillBrush(&compositor.CreateColorBrushWithColor(tokens::PANEL)?)?;
+    panel.SetStrokeBrush(&compositor.CreateColorBrushWithColor(tokens::BORDER)?)?;
+    panel.SetStrokeThickness(1.0)?;
+    shapes.Append(&panel)?;
+
+    let text = compositor.CreateColorBrushWithColor(tokens::TEXT)?;
+    let text2 = compositor.CreateColorBrushWithColor(tokens::TEXT_2)?;
+    // Centrado vertical aproximado: la caja de Geist mide ~1,2 em.
+    let line_y = |top: f32, rowh: f32, em: f32| top + (rowh - em * 1.2) / 2.0;
+
+    // Encabezado: tecla, app y cantidad.
+    let key = rect(PAD, (HEAD - 26.0) / 2.0 + 4.0, 26.0, 26.0, 6.0)?;
+    key.SetStrokeBrush(&compositor.CreateColorBrushWithColor(tokens::BORDER)?)?;
+    key.SetStrokeThickness(1.0)?;
+    key.SetFillBrush(&compositor.CreateColorBrushWithColor(tokens::SURFACE)?)?;
+    shapes.Append(&key)?;
+    let (g, lw) = text_geometry(&d2d, &semibold, &view.letter.to_string(), SMALL)?;
+    shape_text(compositor, &shapes, g, &text, PAD + (26.0 - lw) / 2.0, line_y(4.0, HEAD, SMALL))?;
+    let count =
+        if view.count == 1 { "1 ventana".to_owned() } else { format!("{} ventanas", view.count) };
+    let (g, cw) = text_geometry(&d2d, &regular, &count, SMALL)?;
+    shape_text(compositor, &shapes, g, &text2, W - PAD - cw, line_y(4.0, HEAD, SMALL))?;
+    let app = fit(&semibold, &view.app, EM, W - 3.0 * PAD - 26.0 - cw - 12.0)?;
+    let (g, _) = text_geometry(&d2d, &semibold, &app, EM)?;
+    shape_text(compositor, &shapes, g, &text, PAD + 26.0 + 12.0, line_y(4.0, HEAD, EM))?;
+
+    let mut y = HEAD;
+    let more = |n: usize, y: f32| -> windows::core::Result<()> {
+        let (g, _) = text_geometry(&d2d, &regular, &format!("… {n} más"), SMALL)?;
+        shape_text(compositor, &shapes, g, &text2, PAD + 12.0, line_y(y, ROW, SMALL))
+    };
+    if view.above > 0 {
+        more(view.above, y)?;
+        y += ROW;
+    }
+    for (i, row) in view.rows.iter().enumerate() {
+        if i == view.selected {
+            let pill = rect(PAD / 2.0, y + 2.0, W - PAD, ROW - 4.0, 8.0)?;
+            pill.SetFillBrush(&compositor.CreateColorBrushWithColor(tokens::FILL_STRONG)?)?;
+            pill.SetStrokeBrush(&compositor.CreateColorBrushWithColor(tokens::ACCENT)?)?;
+            pill.SetStrokeThickness(2.0)?;
+            shapes.Append(&pill)?;
+        }
+        let meta_w = if row.meta.is_empty() {
+            0.0
+        } else {
+            let meta = fit(&regular, &row.meta, SMALL, W * 0.35)?;
+            let (g, mw) = text_geometry(&d2d, &regular, &meta, SMALL)?;
+            shape_text(compositor, &shapes, g, &text2, W - PAD - 12.0 - mw, line_y(y, ROW, SMALL))?;
+            mw + 16.0
+        };
+        let title = fit(&regular, &row.title, EM, W - 2.0 * PAD - 24.0 - meta_w)?;
+        let (g, _) = text_geometry(&d2d, &regular, &title, EM)?;
+        shape_text(compositor, &shapes, g, &text, PAD + 12.0, line_y(y, ROW, EM))?;
+        y += ROW;
+    }
+    if view.below > 0 {
+        more(view.below, y)?;
+        y += ROW;
+    }
+    let footer = fit(&regular, &view.footer, SMALL, W - 2.0 * PAD)?;
+    let (g, fw) = text_geometry(&d2d, &regular, &footer, SMALL)?;
+    shape_text(compositor, &shapes, g, &text2, (W - fw) / 2.0, line_y(y + PAD / 2.0, FOOT, SMALL))?;
+
+    container.Children()?.InsertAtTop(&visual)?;
     parent.Children()?.InsertAtTop(&container)?;
     Ok(container)
 }

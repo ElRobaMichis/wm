@@ -582,6 +582,12 @@ pub enum Effect {
     },
     /// Hito 4d: cambiaron los monitores (rearmar el mapa y los avisos).
     ScreensChanged,
+    /// La lista de ventanas de una letra (plan-apps.md §8): mostrarla o
+    /// actualizarla.
+    ShowList {
+        view: crate::listview::ListView,
+    },
+    HideList,
 }
 
 /// Antigüedad máxima de una acción para ejecutarla: una que llega tarde (el
@@ -773,7 +779,27 @@ struct Cycle {
     letter: u8,
     order: Vec<WinKey>,
     pos: usize,
+    /// Modo lista (3 o más ventanas, desde el segundo toque): los toques
+    /// mueven la selección sin enfocar; soltar `Caps` va a la elegida.
+    list: bool,
+    /// Mostrarla a esta hora (150 ms después del segundo toque).
+    list_due: Option<u64>,
+    list_shown: bool,
+    /// Desde cuándo está abierta (tope de 30 s).
+    list_since: u64,
+    /// La ventana que quedó al frente con el primer toque.
+    front: Option<WinKey>,
+    /// Las ventanas del último `Scan` (títulos, escritorios) y la del frente.
+    snapshot: Vec<WinInfo>,
+    fg: Option<WinKey>,
 }
+
+/// Lista recién pedida: se muestra si `Caps` sigue abajo a los 150 ms.
+const LIST_DELAY_US: u64 = 150_000;
+/// Una lista abierta más de esto se cierra sola.
+const LIST_MAX_US: u64 = 30_000_000;
+const VK_UP: u8 = 0x26;
+const VK_DOWN: u8 = 0x28;
 
 /// Seguimiento de una app recién abierta.
 #[derive(Debug, Clone)]
@@ -886,6 +912,7 @@ impl World {
             .chain(self.pointer_deadline())
             .chain(self.screens.deadline_us())
             .chain(self.follow_deadline())
+            .chain(self.list_deadline())
             .min()
     }
 
@@ -1028,6 +1055,25 @@ impl World {
             Event::Action { .. } | Event::Layer(_) if self.paused => {}
             Event::Action { action, held, age_ms } => {
                 self.screens_unblock(now_us, &mut out);
+                if self.cycle.as_ref().is_some_and(|c| c.list) {
+                    match action {
+                        HyperAction::Escape => {
+                            // Cerrar y quedarse en la ventana que se ve.
+                            self.drop_cycle(&mut out);
+                            return out;
+                        }
+                        HyperAction::Other { vk: VK_UP | VK_DOWN, .. } => {
+                            let delta = if matches!(action, HyperAction::Other { vk: VK_UP, .. }) {
+                                -1
+                            } else {
+                                1
+                            };
+                            self.list_move(delta, None, now_us, &mut out);
+                            return out;
+                        }
+                        _ => {}
+                    }
+                }
                 // Cualquier acción (también una descartada) suprime el mapa si
                 // todavía no se ve; Esc con el mapa visible solo lo cierra.
                 let mut m = Vec::new();
@@ -1068,11 +1114,12 @@ impl World {
                     self.keys = None; // las teclas siguientes empiezan otro gesto
                 }
                 if layer == Layer::Off {
-                    self.cycle = None; // soltar Caps confirma la ventana elegida
+                    // Soltar Caps confirma: con lista, ir a la elegida.
+                    self.commit_list(now_us, &mut out);
                 }
             }
             Event::KeyboardReset => {
-                self.cycle = None;
+                self.drop_cycle(&mut out);
                 self.pointer_reset(&mut out);
                 self.layer = Layer::Off;
                 self.keys = None;
@@ -1081,6 +1128,9 @@ impl World {
                 self.map_effects(m, &mut out);
             }
             Event::MapEnabled(on) => {
+                if !on {
+                    self.drop_cycle(&mut out);
+                }
                 let mut m = Vec::new();
                 self.map.set_enabled(on, &mut m);
                 self.map_effects(m, &mut out);
@@ -1296,7 +1346,7 @@ impl World {
         out: &mut Vec<Effect>,
     ) {
         if !matches!(action, HyperAction::Letter { thumb: false, .. }) {
-            self.cycle = None;
+            self.drop_cycle(out);
         }
         match action {
             HyperAction::Letter { letter, thumb: false } => {
@@ -2115,6 +2165,7 @@ impl World {
     fn tick(&mut self, now_us: u64, out: &mut Vec<Effect>) {
         self.pointer_tick(now_us, out);
         self.follow_tick(now_us, out);
+        self.list_tick(now_us, out);
         self.screens_tick(now_us, out);
         if self.verify_due.is_some_and(|t| t <= now_us) {
             self.verify_due = None;
@@ -2310,6 +2361,18 @@ impl World {
         match resolve(letter, &self.bindings, &list) {
             Target::Focus { windows: order, app } => {
                 self.launching.remove(&app);
+                // Segundo toque (o más) con 3 o más ventanas: modo lista.
+                if self.map.enabled()
+                    && let Some(c) = self.cycle.as_ref().filter(|c| c.letter == letter)
+                    && c.order.iter().filter(|w| order.contains(w)).count() >= 3
+                {
+                    let snapshot = (windows.to_vec(), foreground);
+                    self.list_move(1, Some(snapshot), now_us, out);
+                    return;
+                }
+                if self.cycle.as_ref().is_some_and(|c| c.letter != letter) {
+                    self.drop_cycle(out);
+                }
                 let Some(window) = self.pick(letter, order, foreground) else {
                     out.push(Effect::Log(format!("Caps + {key}: {app} es la única ventana.")));
                     return;
@@ -2367,8 +2430,130 @@ impl World {
             None => *order.first()?,
         };
         let pos = order.iter().position(|&w| w == target).unwrap_or(0);
-        self.cycle = Some(Cycle { letter, order, pos });
+        // Si Caps ya se soltó antes de que llegara el `Scan`, no queda un
+        // ciclo viejo para la próxima pulsación.
+        if self.layer != Layer::Off {
+            self.cycle = Some(Cycle {
+                letter,
+                order,
+                pos,
+                list: false,
+                list_due: None,
+                list_shown: false,
+                list_since: 0,
+                front: Some(target),
+                snapshot: Vec::new(),
+                fg: None,
+            });
+        }
         Some(target)
+    }
+
+    /// Modo lista: mover la selección `delta` (y la vuelta) entre las
+    /// ventanas que siguen abiertas; `snapshot`: un `Scan` nuevo (títulos).
+    fn list_move(
+        &mut self,
+        delta: i64,
+        snapshot: Option<(Vec<WinInfo>, Option<WinKey>)>,
+        now_us: u64,
+        out: &mut Vec<Effect>,
+    ) {
+        let map_shown = self.map_shown;
+        let Some(c) = self.cycle.as_mut() else { return };
+        if let Some((wins, fg)) = snapshot {
+            c.snapshot = wins;
+            c.fg = fg;
+        }
+        // Saltear las que se cerraron.
+        let alive: Vec<WinKey> =
+            c.order.iter().copied().filter(|w| c.snapshot.iter().any(|s| s.key == *w)).collect();
+        if alive.is_empty() {
+            return;
+        }
+        let cur = c.order.get(c.pos).copied();
+        let i = cur.and_then(|w| alive.iter().position(|&x| x == w)).unwrap_or(0) as i64;
+        let n = alive.len() as i64;
+        let next = alive[(i + delta).rem_euclid(n) as usize];
+        c.pos = c.order.iter().position(|&w| w == next).unwrap_or(0);
+        if !c.list {
+            c.list = true;
+            c.list_since = now_us;
+            if map_shown {
+                c.list_shown = true;
+            } else {
+                c.list_due = Some(now_us + LIST_DELAY_US);
+            }
+        }
+        if c.list_shown {
+            self.send_list(out);
+        }
+    }
+
+    fn send_list(&mut self, out: &mut Vec<Effect>) {
+        let active = self.desks.active();
+        let Some(c) = self.cycle.as_ref() else { return };
+        let rows: Vec<WinInfo> = c
+            .order
+            .iter()
+            .filter_map(|w| c.snapshot.iter().find(|s| s.key == *w).cloned())
+            .collect();
+        let sel =
+            c.order.get(c.pos).and_then(|k| rows.iter().position(|r| r.key == *k)).unwrap_or(0);
+        let view = crate::listview::list_view(c.letter, &rows, sel, active);
+        out.push(Effect::ShowList { view });
+    }
+
+    fn list_deadline(&self) -> Option<u64> {
+        let c = self.cycle.as_ref().filter(|c| c.list)?;
+        Some(c.list_due.unwrap_or(c.list_since + LIST_MAX_US))
+    }
+
+    fn list_tick(&mut self, now_us: u64, out: &mut Vec<Effect>) {
+        let Some(c) = self.cycle.as_mut().filter(|c| c.list) else { return };
+        if c.list_due.is_some_and(|d| d <= now_us) {
+            c.list_due = None;
+            c.list_shown = true;
+            self.send_list(out);
+        } else if now_us >= c.list_since + LIST_MAX_US {
+            out.push(Effect::Log("Lista de ventanas: 30 s sin elegir; la cierro.".into()));
+            self.drop_cycle(out);
+        }
+    }
+
+    /// Olvidar el ciclo de la letra (y cerrar la lista, si se ve).
+    fn drop_cycle(&mut self, out: &mut Vec<Effect>) {
+        if let Some(c) = self.cycle.take()
+            && c.list_shown
+        {
+            out.push(Effect::HideList);
+        }
+    }
+
+    /// Soltar Caps: sin lista, confirma (ya se enfocó); con lista, va a la
+    /// elegida.
+    fn commit_list(&mut self, now_us: u64, out: &mut Vec<Effect>) {
+        let Some(c) = self.cycle.take() else { return };
+        if !c.list {
+            return;
+        }
+        if c.list_shown {
+            out.push(Effect::HideList);
+        }
+        let Some(&target) = c.order.get(c.pos) else { return };
+        if Some(target) == c.front {
+            return;
+        }
+        if !c.snapshot.iter().any(|w| w.key == target) {
+            out.push(Effect::Log("Lista de ventanas: esa ventana ya se cerró.".into()));
+            return;
+        }
+        let app = c
+            .snapshot
+            .iter()
+            .find(|w| w.key == target)
+            .map(|w| w.app_id().name().to_owned())
+            .unwrap_or_default();
+        self.focus_window(c.letter, now_us, target, &app, &c.snapshot, c.fg, now_us, out);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2556,6 +2741,9 @@ mod tests {
         focused: Vec<WinKey>,
         launched: Vec<String>,
         quit: bool,
+        /// La lista de ventanas que se ve (plan-apps.md §8).
+        list: Option<crate::listview::ListView>,
+        list_shows: usize,
     }
 
     fn win(hwnd: isize, app: &str) -> WinInfo {
@@ -2580,6 +2768,8 @@ mod tests {
                 focused: Vec::new(),
                 launched: Vec::new(),
                 quit: false,
+                list: None,
+                list_shows: 0,
             }
         }
 
@@ -2635,6 +2825,11 @@ mod tests {
                         // Sin pantallas en esta simulación: el Survey queda sin
                         // respuesta y no se rescata nada.
                         Effect::Survey { .. } | Effect::ScreensChanged => {}
+                        Effect::ShowList { view } => {
+                            self.list = Some(view);
+                            self.list_shows += 1;
+                        }
+                        Effect::HideList => self.list = None,
                         Effect::Rescue { .. } => panic!("sin pantallas no hay rescate"),
                         Effect::InspectAt { .. }
                         | Effect::Raise { .. }
@@ -2704,11 +2899,99 @@ mod tests {
         Event::Layer(crate::keyboard::Layer::Off)
     }
 
+    fn layer_apps() -> Event {
+        Event::Layer(crate::keyboard::Layer::Apps)
+    }
+
+    fn key(vk: u8) -> Event {
+        Event::Action { action: HyperAction::Other { vk, thumb: false }, held: 0, age_ms: 2 }
+    }
+
+    /// Con hilo ui (la lista se puede dibujar) y Caps abajo.
+    fn with_list(apps: &[&str]) -> (World, Sim) {
+        let mut w = World::new(Vec::new());
+        let mut sim = Sim::new(apps);
+        sim.run(&mut w, Event::MapEnabled(true));
+        sim.run(&mut w, layer_apps());
+        (w, sim)
+    }
+
+    #[test]
+    fn with_three_windows_the_second_tap_opens_the_list_and_release_goes() {
+        let (mut w, mut sim) = with_list(&["code", "brave", "brave", "brave"]);
+        let (b1, b2, b3) = (sim.windows[1].key, sim.windows[2].key, sim.windows[3].key);
+        sim.run(&mut w, letter(b'B')); // primer toque: inmediato
+        assert_eq!(sim.focused, vec![b1]);
+        sim.run(&mut w, letter(b'B')); // segundo: lista, sin enfocar
+        sim.run(&mut w, letter(b'B'));
+        assert_eq!(sim.focused, vec![b1], "en modo lista no se enfoca nada");
+        assert!(sim.list.is_none(), "la lista espera 150 ms");
+        let effects = w.step(Event::Tick, 1_000_000 + 200_000);
+        let Some(Effect::ShowList { view }) =
+            effects.iter().find(|e| matches!(e, Effect::ShowList { .. }))
+        else {
+            panic!("{effects:?}")
+        };
+        assert_eq!(view.count, 3);
+        assert_eq!(view.selected, 2, "dos toques después del primero: la tercera");
+        sim.run(&mut w, layer_off()); // soltar: va a la elegida
+        assert_eq!(sim.focused, vec![b1, b3]);
+        let _ = b2;
+    }
+
+    #[test]
+    fn arrows_move_and_esc_stays_where_you_are() {
+        let (mut w, mut sim) = with_list(&["code", "brave", "brave", "brave"]);
+        let b1 = sim.windows[1].key;
+        sim.run(&mut w, letter(b'B'));
+        sim.run(&mut w, letter(b'B'));
+        sim.run(&mut w, key(0x28)); // ↓
+        sim.run(&mut w, key(0x26)); // ↑
+        sim.run(&mut w, Event::Action { action: HyperAction::Escape, held: 0, age_ms: 2 });
+        assert!(!sim.quit);
+        sim.run(&mut w, layer_off());
+        assert_eq!(sim.focused, vec![b1], "Esc: se queda en la del primer toque");
+        assert!(sim.list.is_none());
+    }
+
+    #[test]
+    fn two_windows_still_alternate_instantly() {
+        let (mut w, mut sim) = with_list(&["brave", "code", "brave"]);
+        let (b1, b2) = (sim.windows[0].key, sim.windows[2].key);
+        sim.run(&mut w, letter(b'B'));
+        sim.run(&mut w, letter(b'B'));
+        assert_eq!(sim.focused, vec![b2, b1]);
+        assert_eq!(sim.list_shows, 0);
+    }
+
+    #[test]
+    fn releasing_quickly_goes_without_drawing_the_list() {
+        let (mut w, mut sim) = with_list(&["code", "brave", "brave", "brave"]);
+        let (b1, b2) = (sim.windows[1].key, sim.windows[2].key);
+        sim.run(&mut w, letter(b'B'));
+        sim.run(&mut w, letter(b'B'));
+        sim.run(&mut w, layer_off());
+        assert_eq!(sim.focused, vec![b1, b2]);
+        assert_eq!(sim.list_shows, 0, "nunca se dibujó");
+    }
+
+    #[test]
+    fn another_letter_closes_the_list_and_goes_there() {
+        let (mut w, mut sim) = with_list(&["code", "brave", "brave", "brave"]);
+        let code = sim.windows[0].key;
+        sim.run(&mut w, letter(b'B'));
+        sim.run(&mut w, letter(b'B'));
+        sim.run(&mut w, letter(b'C'));
+        assert_eq!(sim.focused.last(), Some(&code));
+        assert!(sim.list.is_none());
+    }
+
     #[test]
     fn the_letter_works_like_alt_tab() {
         let mut w = World::new(Vec::new());
         let mut sim = Sim::new(&["brave", "code", "brave", "brave"]);
         let (b2, b3) = (sim.windows[2].key, sim.windows[3].key);
+        sim.run(&mut w, layer_apps()); // Caps abajo (sin hilo ui: sin lista)
         sim.run(&mut w, letter(b'B')); // ya en una de Brave: la anterior
         sim.run(&mut w, letter(b'B')); // sin soltar Caps: la tercera
         assert_eq!(sim.focused, vec![b2, b3]);

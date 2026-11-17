@@ -66,6 +66,11 @@ impl Map {
     }
 
     /// Habilitar (el hilo que lo dibuja está listo) o no. Deshabilitar oculta.
+    /// ¿Hay hilo ui para dibujar (mapa, aviso, lista)?
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+
     pub fn set_enabled(&mut self, on: bool, out: &mut Vec<MapOut>) {
         self.enabled = on;
         if !on {

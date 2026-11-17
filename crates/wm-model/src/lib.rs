@@ -10,6 +10,7 @@ pub mod desks;
 pub mod drag;
 pub mod i18n;
 pub mod keyboard;
+pub mod listview;
 pub mod map;
 pub mod mapview;
 pub mod mouse;

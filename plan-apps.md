@@ -58,3 +58,11 @@ Cada letra tiene una lista, de la ventana más reciente a la más vieja (entre t
 8. Nombre visible en mapa y avisos; README y keyboard-design.
 
 **Avance (16/11/2026, sin subir; falta la prueba del usuario):** pasos 1–7 hechos. Modelo: formato nuevo de `apps.txt` (alias, destino, nombre), identidad por exe/familia/AUMID, "Alt+Tab de la letra", `Revive` con guardia de 30 s y seguimiento a 0,3/0,8/1,5/3 s (sin el chequeo de pantalla de carga: queda para después). Plataforma: `process_info` (familia y AUMID con caché por pid), `launch::open` (exe, `.lnk` y `shell:AppsFolder` con `explorer.exe`), `Op::Revive`, `catalog` (107 apps en 120 ms en la PC del autor), `wm apps --instaladas`. Ajustes: selector que cubre la ventana, con búsqueda y secciones "Ninguna", "Abiertas ahora" y "Todas"; guarda nombres, destino y nombre visible.
+
+## 8. Elegir entre muchas ventanas de una letra (diseño de Fable 5.2, 16/11/2026)
+
+Con 3 o más ventanas en la lista de una letra, el **segundo toque** sin soltar `Caps` entra en **modo lista**: no enfoca, mueve la selección; **soltar `Caps` = ir** (Alt+Tab real). El primer toque sigue siendo inmediato; con 1 o 2 ventanas, todo como antes. La lista aparece 150 ms después del segundo toque (al instante si el mapa ya se ve), **reemplaza al mapa** en el mismo overlay, en el monitor del frente, también sobre una app a pantalla completa. Teclas: la letra = siguiente (da la vuelta); ↑ ↓; Esc = cerrar y quedarse en la ventana que se ve; otra letra = cerrar e ir a esa app; dígito o Alt = cerrar sin elegir. Orden: el del primer toque (más reciente primero). Filas: título sin la parte común (" - Brave"), cortado con "…"; a la derecha "escritorio N", "minimizada" y la app si la letra mezcla apps. Tope de 30 s.
+
+**Decisiones del usuario:** ir al soltar `Caps`; desde 3 ventanas; Esc se queda donde está; **solo títulos, sin miniaturas**. Con las recomendaciones de Fable: los dígitos no eligen filas; clic fuera de la lista cancela; accesibilidad (Narrador) queda para después.
+
+Límites conocidos: la fuente del overlay (Geist) no tiene emoji ni CJK: esos caracteres se omiten hasta sumar un respaldo.

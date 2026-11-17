@@ -81,6 +81,8 @@ enum Cmd {
     Notice(String),
     /// Borde de foco: seguir a esta ventana (`None`: apagado).
     Border(Option<isize>),
+    /// La lista de ventanas de una letra (`None`: cerrarla).
+    List(Option<wm_model::listview::ListView>),
     /// Hito 4d: cambiaron las pantallas.
     Screens,
 }
@@ -178,6 +180,11 @@ impl Ui {
         self.send(Cmd::Border(win));
     }
 
+    /// La lista de ventanas de una letra (plan-apps.md §8); `None` la cierra.
+    pub fn list(&mut self, view: Option<wm_model::listview::ListView>) {
+        self.send(Cmd::List(view));
+    }
+
     /// Hito 4d: cambiaron las pantallas; rearmar lo que haga falta ya (no
     /// en el próximo mapa).
     pub fn screens_changed(&mut self) {
@@ -242,6 +249,10 @@ struct State {
     toast_timer: usize,
     /// Borde de foco (se crea la primera vez que se pide).
     border: Option<crate::focus_border::FocusBorder>,
+    /// La lista de ventanas de una letra: monitor y visual.
+    list: Option<(usize, windows::UI::Composition::ContainerVisual)>,
+    /// La capa del mapa (para volver a mostrarlo al cerrar la lista).
+    layer: Layer,
 }
 
 fn run(brain: u32, cmds: Receiver<Cmd>, events: Sender<UiEvent>, abandoned: Arc<AtomicBool>) {
@@ -266,6 +277,8 @@ fn run(brain: u32, cmds: Receiver<Cmd>, events: Sender<UiEvent>, abandoned: Arc<
         toast: None,
         toast_timer: 0,
         border: None,
+        list: None,
+        layer: Layer::Off,
     };
     let mut msg = MSG::default();
     // SAFETY: bucle de mensajes estándar (Composition usa esta cola).
@@ -309,7 +322,10 @@ impl State {
             self.arm_timer();
         }
         match cmd {
-            Cmd::Show { layer, views, at } => match (self.shown, self.show(layer, views)) {
+            Cmd::Show { layer, views, at } => match (self.shown, {
+                self.layer = layer;
+                self.show(layer, views)
+            }) {
                 (_, Ok(None)) => UiEvent::Skipped("hay una app a pantalla completa en ese monitor"),
                 // Ya estaba visible ahí: solo se actualizó (tras cambiar de
                 // escritorio); no es una aparición nueva para el log.
@@ -325,6 +341,7 @@ impl State {
                 }
             },
             Cmd::Layer(layer) => {
+                self.layer = layer;
                 if let Some(i) = self.shown {
                     let _ = self.set_layer(i, layer);
                 }
@@ -374,6 +391,15 @@ impl State {
                     },
                     Err(e) => UiEvent::Failed(format!("no se pudo rearmar el mapa: {e}")),
                 }
+            }
+            Cmd::List(view) => {
+                if let Err(e) = self.list(view) {
+                    self.end_list();
+                    return UiEvent::Failed(format!(
+                        "no se pudo mostrar la lista de ventanas: {e}"
+                    ));
+                }
+                UiEvent::Shown { ms: 0.0, monitor: usize::MAX }
             }
             Cmd::Notice(text) => {
                 if let Err(e) = self.notice(&text) {
@@ -518,6 +544,65 @@ impl State {
         // SAFETY: temporizador de hilo (sin ventana).
         self.toast_timer = unsafe { SetTimer(None, 0, NOTICE.as_millis() as u32 + 100, None) };
         Ok(())
+    }
+
+    /// Muestra o actualiza la lista de una letra (reemplaza al mapa mientras
+    /// dura, en el mismo overlay); `None` la cierra y el mapa vuelve.
+    fn list(&mut self, view: Option<wm_model::listview::ListView>) -> windows::core::Result<()> {
+        let Some(view) = view else {
+            self.end_list();
+            return Ok(());
+        };
+        let keep = self.list.as_ref().map(|(i, _)| *i);
+        self.remove_list();
+        self.ensure_current()?;
+        let i = keep
+            .filter(|&i| i < self.overlays.screens().len())
+            .unwrap_or_else(|| pick_monitor(&self.overlays));
+        let s = &self.overlays.screens()[i];
+        let (w, h) = (s.bounds.width() as f32, s.bounds.height() as f32);
+        let visual =
+            overlay_text::build_list(self.overlays.compositor(), &s.root, w, h, s.dpi, &view)?;
+        self.map_visible(i, false);
+        if self.shown != Some(i) {
+            s.root.SetOpacity(1.0)?;
+            self.overlays.show_also(i);
+        }
+        self.list = Some((i, visual));
+        Ok(())
+    }
+
+    fn remove_list(&mut self) {
+        if let Some((i, visual)) = self.list.take()
+            && let Some(s) = self.overlays.screens().get(i)
+            && let Ok(children) = s.root.Children()
+        {
+            let _ = children.Remove(&visual);
+        }
+    }
+
+    /// Cierra la lista: el mapa vuelve si estaba; si no, la ventana se
+    /// esconde (salvo que tenga un aviso).
+    fn end_list(&mut self) {
+        let Some((i, _)) = self.list.as_ref().map(|(i, v)| (*i, v.clone())) else { return };
+        self.remove_list();
+        if self.shown == Some(i) {
+            self.map_visible(i, true);
+        } else if self.toast.as_ref().is_none_or(|(t, _)| *t != i) {
+            self.overlays.hide_one(i);
+        }
+    }
+
+    /// Esconde (o vuelve a mostrar) el mapa del monitor `i`, si está armado.
+    fn map_visible(&self, i: usize, on: bool) {
+        if on {
+            let _ = self.set_layer(i, self.layer);
+            return;
+        }
+        if let Some(Some((apps, window))) = self.built.as_ref().and_then(|b| b.screens.get(i)) {
+            let _ = apps.container.SetIsVisible(false);
+            let _ = window.container.SetIsVisible(false);
+        }
     }
 
     /// Quita el aviso (y esconde su ventana si el mapa no está ahí).
