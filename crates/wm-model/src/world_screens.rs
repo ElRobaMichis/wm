@@ -509,6 +509,17 @@ impl World {
                 m.work,
                 slot,
             ) {
+                // Para afinar la regla con apps reales: qué se vio.
+                let r = |r: Rect| format!("({}, {})–({}, {})", r.left, r.top, r.right, r.bottom);
+                out.push(Effect::Log(format!(
+                    "Pantallas: no reencajo {} ({}): está en {}, había quedado en {} (escala {} → {}).",
+                    w.info.app,
+                    placement_name(spot.placement),
+                    r(w.frame),
+                    r(achieved),
+                    spot.monitor.dpi,
+                    m.dpi
+                )));
                 continue;
             }
             let gap = edge_error(w.frame, slot);

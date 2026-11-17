@@ -173,6 +173,34 @@ pub fn still_there(
     if !(cx >= slot.left && cx < slot.right && cy >= slot.top && cy < slot.bottom) {
         return false;
     }
+    // Con otra escala, también si sigue pegada a la esquina de la pantalla
+    // de su ubicación (la que comparten la ubicación y el área), aunque el
+    // tamaño no sea el escalado: cada app reescala a su manera (Brave al
+    // volver de 125 % a 100 %, prueba del usuario).
+    let x_ok = if slot.left == work.left {
+        (frame.left - slot.left).abs() <= 16
+    } else {
+        (frame.right - slot.right).abs() <= 16
+    };
+    let y_ok = if slot.top == work.top {
+        (frame.top - slot.top).abs() <= 16
+    } else {
+        (frame.bottom - slot.bottom).abs() <= 16
+    };
+    // …y con un tamaño razonable (±35 % del de antes, escalado o no): una
+    // que el usuario achicó a mano no se agranda sola.
+    let loose = |len: i32, was: i32| {
+        [f64::from(was), f64::from(was) * k]
+            .iter()
+            .any(|want| (f64::from(len) - want).abs() <= want * 0.35)
+    };
+    if x_ok
+        && y_ok
+        && loose(frame.width(), achieved.width())
+        && loose(frame.height(), achieved.height())
+    {
+        return true;
+    }
     // Escalada ×k (las apps con DPI por monitor siguen el rectángulo que
     // sugiere Windows, aunque se pase del área) o además recortada al área.
     let near = |len: i32, was: i32, max: i32| {
@@ -887,6 +915,10 @@ mod tests {
         assert!(!still_there(achieved, small, 96, 120, old.work, slot), "redimensionada");
         let other = Rect::new(1920, 0, 2880, 1032);
         assert!(!still_there(achieved, other, 96, 120, old.work, slot), "otro lado");
+        // Pegada a su esquina con un tamaño que no es el escalado.
+        let odd = Rect::new(2, 1, 700, 600);
+        assert!(still_there(achieved, odd, 120, 96, old.work, slot), "a su manera");
+        assert!(!still_there(achieved, odd, 96, 96, old.work, slot), "misma escala: la movieron");
     }
 
     #[test]
