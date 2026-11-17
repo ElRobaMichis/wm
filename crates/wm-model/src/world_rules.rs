@@ -6,7 +6,7 @@
 use super::{Effect, Entry, NoFly, Obs, Pending, Spot, WinInfo, WinKey, World, is_fullscreen};
 use crate::place::{centered_percent, monitor_of, placement_name};
 use crate::rules::OpenRule;
-use crate::{Placement, Rect, place};
+use crate::{Placement, Rect};
 
 /// Cuándo mirar la ventana nueva (desde que se la vio).
 const ARRIVE_MS: [u64; 4] = [100, 300, 700, 1500];
@@ -310,7 +310,7 @@ impl World {
             OpenRule::Place(p) => {
                 self.record = Some(entry);
                 let spot = Spot { monitor, placement: p };
-                self.go(&quiet, spot, place(monitor.work, p), what, now_us, now_us, out);
+                self.go(&quiet, spot, self.slot(&monitor, p), what, now_us, now_us, out);
             }
             OpenRule::Centered(pct) => {
                 self.record = Some(entry);

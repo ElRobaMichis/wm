@@ -64,7 +64,7 @@ Ver §7 (se completa con las respuestas del usuario).
   - El `Scan` del seguimiento tras abrir (Caps + letra) también adopta y aplica la regla.
   - Steam (CEF) vuelve de la bandeja con la marca de maximizada y la ventana a tamaño normal: solo cuenta como maximizada si cubre el área de trabajo (también en Caps + Alt + F).
   - Cada vez que la regla no corre, el log dice por qué.
-- Falta: paso 4 (`ci-probe`), 5 (puntero), 6 (espacios), ajustes en dos pestañas, 7 (documentación).
+- Hechos sin probar todavía por el usuario: paso 4 (`ci-probe` con `wmregla.exe`), 5 (puntero), 6 (espacios), ajustes en dos pestañas. Falta: 7 (documentación).
 
 ## 9. Diseño de espacios y puntero (Fable 5.2, 17/11/2026)
 

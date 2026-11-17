@@ -39,9 +39,9 @@ use crate::keyboard::{HyperAction, Layer};
 use crate::map::{Map, MapOut};
 use crate::place::{
     Dir, MonitorObs, Move, anchor, centered, centered_percent, chord, chord_name, chord_pushes,
-    edge_error, mirror, monitor_of, neighbor, outer_for, placement_name, slot_of, step,
+    edge_error, mirror, monitor_of, neighbor, outer_for, placement_name, slot_at, slot_rect, step,
 };
-use crate::{Placement, Rect, place};
+use crate::{Placement, Rect};
 
 /// Una ventana observada con `Inspect` (siempre viene de Windows).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -714,6 +714,10 @@ enum Pending {
     /// Hito 4d.
     Survey,
     Rescue,
+    /// v1.1 (d): cambió el espacio; lo encajado con `old_gap` se reacomoda.
+    Regap {
+        old_gap: u8,
+    },
     /// Un clic sobre la lista de ventanas.
     ListHit,
     /// v1.1: observar una ventana nueva con regla "al abrir".
@@ -1329,6 +1333,9 @@ impl World {
                 if let Some(Pending::Survey) = self.pending.get(&req) {
                     self.pending.remove(&req);
                     self.on_surveyed(req, result, now_us, &mut out);
+                } else if let Some(&Pending::Regap { old_gap }) = self.pending.get(&req) {
+                    self.pending.remove(&req);
+                    self.on_regap(old_gap, result, now_us, &mut out);
                 }
             }
             Event::ListHit { req, row } => {
@@ -1368,7 +1375,12 @@ impl World {
                 }
             }
             Event::DragDone { win, result } => self.on_drag_done(win, result, &mut out),
-            Event::Options(o) => self.options = o,
+            Event::Options(o) => {
+                let old = std::mem::replace(&mut self.options, o);
+                if o.gap != old.gap {
+                    self.regap(old.gap, &mut out);
+                }
+            }
             Event::Uncloaked(win) => self.on_uncloaked(win, now_us, &mut out),
             Event::Launched { req, result } => match self.pending.remove(&req) {
                 Some(Pending::Launch { letter, app, path, retry }) => {
@@ -1573,7 +1585,7 @@ impl World {
                 let to = Spot { monitor: here.monitor, placement: p };
                 let what = format!("{what} → {} ({})", placement_name(p), obs.app);
                 self.record = Some(before);
-                self.go(&obs, to, place(to.monitor.work, p), what, key_us, now_us, out);
+                self.go(&obs, to, self.slot(&to.monitor, p), what, key_us, now_us, out);
             }
             Move::Push { dir: push, enter } => {
                 let n = index_of(&obs.monitors, here.monitor)
@@ -1582,7 +1594,7 @@ impl World {
                 // Sin vecino y no exacta (a 1 px, por ejemplo tras un cambio
                 // de escala): la tecla la deja exacta, salvo que ese marco sea
                 // lo que la app logró cuando la pusimos.
-                let fix = (obs.frame != place(here.monitor.work, here.placement)
+                let fix = (obs.frame != self.slot(&here.monitor, here.placement)
                     && !self.remembered(&obs))
                 .then_some(here);
                 let to = DeferredTo::Push { to, dir: push, from: here.placement, fix };
@@ -1632,7 +1644,7 @@ impl World {
         if target != g.origin.placement {
             let to = Spot { monitor: g.origin.monitor, placement: target };
             let what = format!("{what} → {} ({})", placement_name(target), obs.app);
-            self.go(obs, to, place(to.monitor.work, target), what, key_us, now_us, out);
+            self.go(obs, to, self.slot(&to.monitor, target), what, key_us, now_us, out);
             return;
         }
         let from = index_of(&obs.monitors, g.origin.monitor);
@@ -1646,13 +1658,13 @@ impl World {
                     placement_name(p),
                     obs.app
                 );
-                self.go(obs, to, place(to.monitor.work, p), what, key_us, now_us, out);
+                self.go(obs, to, self.slot(&to.monitor, p), what, key_us, now_us, out);
                 return;
             }
         }
         let what = format!("{what} → {} ({})", placement_name(target), obs.app);
         out.push(Effect::Log(format!("{what}: no hay otro monitor de ese lado.")));
-        let exact = place(g.origin.monitor.work, target);
+        let exact = self.slot(&g.origin.monitor, target);
         if g.origin_rect != exact && !self.remembered(obs) {
             // A 1 px de su lugar: dejarla exacta, sin entrada en Z.
             self.record = None;
@@ -1675,7 +1687,7 @@ impl World {
                 let p = to.placement;
                 let what = format!("{} → {} ({})", d.what, placement_name(p), d.obs.app);
                 self.record = Some(d.before);
-                self.go(&d.obs, to, place(to.monitor.work, p), what, d.key_us, now_us, out);
+                self.go(&d.obs, to, self.slot(&to.monitor, p), what, d.key_us, now_us, out);
                 return;
             }
             DeferredTo::Push { to, dir, from, fix } => (to, dir, from, fix),
@@ -1689,7 +1701,7 @@ impl World {
                     placement_name(to.placement),
                     d.obs.app
                 );
-                let rect = place(to.monitor.work, to.placement);
+                let rect = self.slot(&to.monitor, to.placement);
                 self.record = Some(d.before);
                 self.go(&d.obs, to, rect, what, d.key_us, now_us, out);
             }
@@ -1699,7 +1711,7 @@ impl World {
                 if let Some(spot) = fix {
                     self.record = None;
                     self.exact = true;
-                    let rect = place(spot.monitor.work, spot.placement);
+                    let rect = self.slot(&spot.monitor, spot.placement);
                     let what = format!("{what} (ajuste)");
                     self.go(&d.obs, spot, rect, what, d.key_us, now_us, out);
                 }
@@ -1725,7 +1737,7 @@ impl World {
         let placement = if obs.maximized {
             Placement::Full
         } else {
-            slot_of(monitor.work, obs.frame).unwrap_or(Placement::Full)
+            slot_at(&monitor, obs.frame, self.options.gap).unwrap_or(Placement::Full)
         };
         (Spot { monitor, placement }, obs.frame)
     }
@@ -1755,7 +1767,8 @@ impl World {
         // Un rectángulo concreto (deshacer, centrar) que coincide con una mitad
         // o esquina cuenta como esa ubicación para la tecla siguiente.
         let spot = if spot.placement == Placement::Full {
-            let placement = slot_of(spot.monitor.work, target).unwrap_or(Placement::Full);
+            let placement =
+                slot_at(&spot.monitor, target, self.options.gap).unwrap_or(Placement::Full);
             Spot { placement, ..spot }
         } else {
             spot
@@ -1956,7 +1969,8 @@ impl World {
         }
         let Some(m) = monitor_of(&obs.monitors, obs.frame) else { return };
         let monitor = obs.monitors[m];
-        let work = monitor.work;
+        // v1.1 (d): sobre el tablero (el área menos el espacio).
+        let work = self.board(&monitor);
         if !obs.maximized && obs.frame == monitor.bounds {
             out.push(Effect::Log(format!("{what}: {} está en pantalla completa.", obs.app)));
             return;
@@ -1983,9 +1997,19 @@ impl World {
                 // Según los bordes del área que toca (no solo mitades y
                 // esquinas exactas: una franja del 40 % que volvió con Z
                 // también cambia solo el ancho, prueba del usuario).
-                let near = |a: i32, b: i32| (a - b).abs() <= TOLERANCE_PX;
-                let (l, r) = (near(here_rect.left, work.left), near(here_rect.right, work.right));
-                let (t, b) = (near(here_rect.top, work.top), near(here_rect.bottom, work.bottom));
+                // Toca un borde: entre el área y el tablero (±1 px).
+                let full = monitor.work;
+                let near = |a: i32, edge: i32, inner: i32| {
+                    a >= edge.min(inner) - TOLERANCE_PX && a <= edge.max(inner) + TOLERANCE_PX
+                };
+                let (l, r) = (
+                    near(here_rect.left, full.left, work.left),
+                    near(here_rect.right, full.right, work.right),
+                );
+                let (t, b) = (
+                    near(here_rect.top, full.top, work.top),
+                    near(here_rect.bottom, full.bottom, work.bottom),
+                );
                 let (side_x, side_y) = (l != r, t != b);
                 let (full_x, full_y) = (l && r, t && b);
                 let (x, y) = if full_y && side_x {
@@ -2229,6 +2253,16 @@ impl World {
         self.go(&obs, spot, target, what, key_us, now_us, out);
     }
 
+    /// v1.1 (d): una mitad o esquina de `m` con el espacio vigente.
+    fn slot(&self, m: &MonitorObs, p: Placement) -> Rect {
+        slot_rect(m, p, self.options.gap)
+    }
+
+    /// v1.1 (d): el área de `m` menos el espacio vigente.
+    fn board(&self, m: &MonitorObs) -> Rect {
+        crate::place::board(m, self.options.gap)
+    }
+
     /// Maximizarla en el monitor `t` (no es el suyo): sacarle la marca,
     /// llevarla centrada a ese monitor y maximizarla ahí (Windows maximiza
     /// en el monitor donde está la ventana).
@@ -2358,7 +2392,11 @@ impl World {
             // tamaño que tiene (tamaño fijo o mínimo que ya estaba en ese
             // lugar): no hay nada que hacer, y la app no está colgada.
             let (w, h) = (obs.frame.width(), obs.frame.height());
-            if edge_error(obs.frame, anchor(j.target, j.spot.monitor.work, w, h)) <= TOLERANCE_PX {
+            if edge_error(
+                obs.frame,
+                anchor(j.target, crate::place::board(&j.spot.monitor, self.options.gap), w, h),
+            ) <= TOLERANCE_PX
+            {
                 self.limits.entry(win).or_default().learn(obs.frame, j.target);
                 let line = format!(
                     "{}: la app no se achica ({w}×{h}); ya estaba pegada al borde, {:.1} ms",
@@ -2407,7 +2445,8 @@ impl World {
             self.limits.entry(win).or_default().learn(obs.frame, j.target);
         }
         if resized && !j.anchored && stable {
-            let anchored = anchor(j.target, j.spot.monitor.work, w, h);
+            let anchored =
+                anchor(j.target, crate::place::board(&j.spot.monitor, self.options.gap), w, h);
             j.anchored = true;
             if edge_error(obs.frame, anchored) > TOLERANCE_PX {
                 j.target = anchored;

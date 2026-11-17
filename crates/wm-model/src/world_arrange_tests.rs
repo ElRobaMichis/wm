@@ -1882,3 +1882,102 @@ fn without_rules_nothing_moves() {
     assert_eq!(sim.win.frame, start);
     assert_eq!(sim.places, 0);
 }
+
+// ---- v1.1 (d): espacio entre ventanas ----
+
+fn gaps(g: u8) -> Event {
+    Event::Options(crate::options::Options { gap: g, ..Default::default() })
+}
+
+fn spaced(m: &MonitorObs, p: Placement) -> Rect {
+    crate::place::slot_rect(m, p, 8)
+}
+
+#[test]
+fn with_a_gap_d_goes_to_the_spaced_half_and_repeating_pushes() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.run(&mut w, gaps(8));
+    sim.key(&mut w, b'D');
+    assert_eq!(sim.win.frame, spaced(&sim.monitors[0], P::RightHalf), "{:?}", sim.logs);
+    sim.key(&mut w, b'D');
+    assert_eq!(sim.win.frame, spaced(&sim.monitors[1], P::LeftHalf), "{:?}", sim.logs);
+}
+
+#[test]
+fn with_a_gap_a_plain_half_is_adjusted_and_a_second_key_pushes() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.run(&mut w, gaps(8));
+    sim.at(1, P::LeftHalf);
+    sim.key(&mut w, b'A');
+    assert_eq!(sim.win.frame, spaced(&sim.monitors[1], P::LeftHalf), "{:?}", sim.logs);
+    sim.key(&mut w, b'A');
+    assert_eq!(sim.win.frame, spaced(&sim.monitors[0], P::RightHalf), "{:?}", sim.logs);
+}
+
+#[test]
+fn with_a_gap_a_minimum_size_sticks_to_the_spaced_edge() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.run(&mut w, gaps(8));
+    sim.win.min_width = 1200;
+    sim.key(&mut w, b'D');
+    assert_eq!(sim.win.frame.right, work().right - 8, "{:?}", sim.logs);
+    assert_eq!(sim.win.frame.width(), 1200);
+}
+
+#[test]
+fn with_a_gap_g_keeps_the_space_against_its_edge() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.run(&mut w, gaps(8));
+    sim.key(&mut w, b'A');
+    let half = sim.win.frame;
+    sim.key(&mut w, b'G');
+    assert_eq!(sim.win.frame.left, work().left + 8, "{:?}", sim.logs);
+    assert_eq!((sim.win.frame.top, sim.win.frame.bottom), (half.top, half.bottom));
+    assert!(sim.win.frame.width() > half.width(), "{:?}", sim.logs);
+    for _ in 0..12 {
+        sim.key(&mut w, b'G');
+    }
+    assert!(sim.win.frame.right <= work().right - 8, "tope en el tablero: {:?}", sim.win.frame);
+}
+
+#[test]
+fn changing_the_gap_resnaps_placed_windows_once_without_flying_or_z() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.key(&mut w, b'A');
+    assert!(sim.is_at(0, P::LeftHalf));
+    let flights = sim.flights;
+    sim.run(&mut w, gaps(8));
+    assert_eq!(sim.win.frame, spaced(&sim.monitors[0], P::LeftHalf), "{:?}", sim.logs);
+    assert_eq!(sim.flights, flights, "sin vuelo");
+    let places = sim.places;
+    sim.run(&mut w, gaps(8));
+    assert_eq!(sim.places, places, "mismas opciones: nada");
+    sim.key(&mut w, b'Z');
+    assert!(!sim.is_at(0, P::LeftHalf), "Z vuelve a antes de la A, no al espacio viejo");
+}
+
+#[test]
+fn changing_the_gap_leaves_a_moved_window_alone() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.key(&mut w, b'A');
+    sim.win.frame = Rect::new(400, 300, 1000, 900); // la movió a mano
+    let moved = sim.win.frame;
+    sim.run(&mut w, gaps(8));
+    assert_eq!(sim.win.frame, moved, "{:?}", sim.logs);
+}
+
+#[test]
+fn with_a_gap_the_open_rule_uses_the_spaced_half() {
+    let (b, _) = crate::apps::parse_bindings("b = brave | | | al abrir: derecha");
+    let mut w = World::new(b);
+    let mut sim = Sim::new();
+    sim.run(&mut w, gaps(8));
+    sim.run(&mut w, Event::Foreground(sim.win.key));
+    assert_eq!(sim.win.frame, spaced(&sim.monitors[0], P::RightHalf), "{:?}", sim.logs);
+}

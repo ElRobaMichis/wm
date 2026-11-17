@@ -392,6 +392,45 @@ pub fn slot_of(work: Rect, frame: Rect) -> Option<Placement> {
     SLOTS.into_iter().find(|&p| edge_error(crate::place(work, p), frame) <= 1)
 }
 
+/// v1.1 (d): el espacio en px reales para este monitor: `gap` (px a 100 %)
+/// escalado por su DPI y limitado a 1/16 del lado menor del área.
+pub fn gap_px(m: &MonitorObs, gap: u8) -> i32 {
+    let g = i32::from(gap) * m.dpi.max(96) as i32 / 96;
+    g.min(m.work.width().min(m.work.height()) / 16).max(0)
+}
+
+/// El tablero: el área de trabajo menos el espacio de cada lado. Las mitades,
+/// las esquinas y G/V se arman sobre él.
+pub fn board(m: &MonitorObs, gap: u8) -> Rect {
+    let g = gap_px(m, gap);
+    let w = m.work;
+    Rect::new(w.left + g, w.top + g, w.right - g, w.bottom - g)
+}
+
+/// Una mitad o esquina con espacio: `g` contra los bordes y `g` en total
+/// entre dos piezas (la mitad para cada una; el píxel impar, para la de la
+/// derecha o la de abajo). Con 0, igual que [`crate::place`].
+pub fn slot_rect(m: &MonitorObs, p: Placement, gap: u8) -> Rect {
+    let g = gap_px(m, gap);
+    let b = board(m, gap);
+    let r = crate::place(b, p);
+    if g == 0 {
+        return r;
+    }
+    let (lo, hi) = (g / 2, g - g / 2);
+    Rect::new(
+        if r.left == b.left { r.left } else { r.left + hi },
+        if r.top == b.top { r.top } else { r.top + hi },
+        if r.right == b.right { r.right } else { r.right - lo },
+        if r.bottom == b.bottom { r.bottom } else { r.bottom - lo },
+    )
+}
+
+/// Como [`slot_of`], con el espacio vigente.
+pub fn slot_at(m: &MonitorObs, frame: Rect, gap: u8) -> Option<Placement> {
+    SLOTS.into_iter().find(|&p| edge_error(slot_rect(m, p, gap), frame) <= 1)
+}
+
 /// ¿La ubicación está pegada al borde del lado `dir`? Solo desde ahí,
 /// seguir en esa dirección empuja al monitor vecino ("A siempre lleva a la
 /// izquierda": desde la mitad derecha, primero va a la mitad izquierda).
@@ -459,6 +498,65 @@ pub fn outer_for(frame: Rect, outer: Rect, target: Rect, from_dpi: u32, to_dpi: 
 mod tests {
     use super::*;
     use crate::place as place_in;
+
+    fn gmon(width: i32, height: i32, dpi: u32) -> MonitorObs {
+        let a = Rect::new(-1921, 7, -1921 + width, 7 + height);
+        MonitorObs { bounds: a, work: a, dpi }
+    }
+
+    const ALL9: [Placement; 9] = [
+        Placement::Full,
+        Placement::LeftHalf,
+        Placement::RightHalf,
+        Placement::TopHalf,
+        Placement::BottomHalf,
+        Placement::TopLeft,
+        Placement::TopRight,
+        Placement::BottomLeft,
+        Placement::BottomRight,
+    ];
+
+    #[test]
+    fn without_gap_slots_are_the_plain_halves_and_corners() {
+        for width in [1919, 1920, 2561] {
+            let m = gmon(width, 1047, 96);
+            for p in ALL9 {
+                assert_eq!(slot_rect(&m, p, 0), crate::place(m.work, p), "{width} {p:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_gap_goes_against_the_edges_and_between_pieces() {
+        for (g, width) in [(8u8, 1920), (5, 1921), (12, 2561)] {
+            let m = gmon(width, 1047, 96);
+            let w = m.work;
+            let g = i32::from(g);
+            let gap = g as u8;
+            let l = slot_rect(&m, Placement::LeftHalf, gap);
+            let r = slot_rect(&m, Placement::RightHalf, gap);
+            assert_eq!((l.left, l.top, l.bottom), (w.left + g, w.top + g, w.bottom - g));
+            assert_eq!(r.right, w.right - g);
+            assert_eq!(r.left - l.right, g, "entre mitades, {g} en total");
+            let tl = slot_rect(&m, Placement::TopLeft, gap);
+            let bl = slot_rect(&m, Placement::BottomLeft, gap);
+            assert_eq!(bl.top - tl.bottom, g, "entre esquinas");
+            assert_eq!(tl.right, l.right, "la esquina comparte el borde de su mitad");
+            assert_eq!(slot_rect(&m, Placement::Full, gap), board(&m, gap));
+        }
+        assert_eq!(gap_px(&gmon(1920, 1047, 144), 8), 12, "con la escala del monitor");
+        assert_eq!(gap_px(&gmon(320, 200, 96), 24), 12, "a lo sumo 1/16 del lado menor");
+    }
+
+    #[test]
+    fn slot_at_knows_the_slots_with_gap() {
+        let m = gmon(1920, 1047, 96);
+        for p in SLOTS {
+            assert_eq!(slot_at(&m, slot_rect(&m, p, 8), 8), Some(p), "{p:?}");
+        }
+        let plain = crate::place(m.work, Placement::LeftHalf);
+        assert_eq!(slot_at(&m, plain, 8), None, "una mitad sin espacio no cuenta");
+    }
 
     fn mon(left: i32, width: i32) -> MonitorObs {
         let bounds = Rect::new(left, 0, left + width, 1080);

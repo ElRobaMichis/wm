@@ -8,12 +8,12 @@
 use std::collections::{HashMap, HashSet};
 
 use super::{Effect, NoFly, Obs, Pending, Req, Spot, WinInfo, WinKey, World, index_of};
+use crate::Placement;
 use crate::Rect;
-use crate::place::{MonitorObs, centered, edge_error, outer_for, placement_name};
+use crate::place::{MonitorObs, centered, edge_error, outer_for, placement_name, slot_rect};
 use crate::screens::{
     ScreenEvent, Seen, StormAction, StormTracker, Verdict, rescue_plan, topology_key,
 };
-use crate::{Placement, place};
 
 /// Una ventana como la ve un `Survey`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -330,13 +330,15 @@ impl World {
         let dragging = self.dragging_win();
         let mut moves = Vec::new();
         if changed && !late {
-            self.resnap(old_placed, &survey, dragging, false, now_us, out);
+            let gap = self.options.gap;
+            self.resnap(old_placed, &survey, dragging, false, gap, "Pantallas", now_us, out);
         } else if late {
             // Windows restaura algunas ventanas (minimizadas al desconectar)
             // después de la calma: otra oportunidad de reencajarlas.
             let mut placed = std::mem::take(&mut self.placed);
             placed.extend(old_placed);
-            self.resnap(placed, &survey, dragging, true, now_us, out);
+            let gap = self.options.gap;
+            self.resnap(placed, &survey, dragging, true, gap, "Pantallas", now_us, out);
         }
         self.adopt_slots(&survey, dragging);
         let seen: Vec<Seen> = survey
@@ -427,12 +429,17 @@ impl World {
     /// Tras un cambio de topología: lo que pusimos en una mitad o esquina y
     /// sigue ahí (aunque Windows lo haya reescalado) vuelve a quedar exacto
     /// en la misma ubicación del mismo monitor. Una vez, sin Z ni vuelo.
+    /// `gap`: el espacio con que se encajaron (v1.1: cambia con la opción).
+    /// `why`: "Pantallas" o "Espacio", para el log.
+    #[allow(clippy::too_many_arguments)]
     fn resnap(
         &mut self,
         old: HashMap<WinKey, (Spot, Rect)>,
         survey: &Survey,
         dragging: Option<WinKey>,
         late: bool,
+        gap: u8,
+        why: &str,
         now_us: u64,
         out: &mut Vec<Effect>,
     ) {
@@ -445,7 +452,7 @@ impl World {
         for (win, (spot, achieved)) in old {
             let Some(w) = survey.wins.iter().find(|w| w.info.key == win) else { continue };
             if spot.placement == Placement::Full
-                || edge_error(achieved, place(spot.monitor.work, spot.placement)) > 1
+                || edge_error(achieved, slot_rect(&spot.monitor, spot.placement, gap)) > 1
             {
                 // No era un encaje exacto (G/V, tamaño mínimo): con otra
                 // topología se olvida; en el control tardío se conserva.
@@ -467,19 +474,19 @@ impl World {
             if w.maximized || w.frame == m.bounds || !self.desks.in_scope(&w.info.app) {
                 continue;
             }
-            let slot = place(m.work, spot.placement);
+            let slot = self.slot(&m, spot.placement);
             if !crate::screens::still_there(
                 achieved,
                 w.frame,
                 spot.monitor.dpi,
                 m.dpi,
-                m.work,
+                self.board(&m),
                 slot,
             ) {
                 // Para afinar la regla con apps reales: qué se vio.
                 let r = |r: Rect| format!("({}, {})–({}, {})", r.left, r.top, r.right, r.bottom);
                 out.push(Effect::Log(format!(
-                    "Pantallas: no reencajo {} ({}): está en {}, había quedado en {} (escala {} → {}).",
+                    "{why}: no reencajo {} ({}): está en {}, había quedado en {} (escala {} → {}).",
                     w.info.app,
                     placement_name(spot.placement),
                     r(w.frame),
@@ -503,11 +510,8 @@ impl World {
                 no_fly: Some(NoFly::NotFront),
                 pointer: None,
             };
-            let what = format!(
-                "Pantallas → {} ({}, reencaje)",
-                placement_name(spot.placement),
-                w.info.app
-            );
+            let what =
+                format!("{why} → {} ({}, reencaje)", placement_name(spot.placement), w.info.app);
             self.record = None;
             self.exact = true;
             self.go(
@@ -532,7 +536,7 @@ impl World {
         }
         if !names.is_empty() {
             out.push(Effect::Log(format!(
-                "Pantallas: {} reencajadas: {}.",
+                "{why}: {} reencajadas: {}.",
                 names.len(),
                 names.join(", ")
             )));
@@ -567,10 +571,35 @@ impl World {
             }
             let Some(mi) = crate::place::monitor_of(&survey.monitors, w.frame) else { continue };
             let monitor = survey.monitors[mi];
-            if let Some(&placement) = SLOTS.iter().find(|&&p| place(monitor.work, p) == w.frame) {
+            if let Some(&placement) = SLOTS.iter().find(|&&p| self.slot(&monitor, p) == w.frame) {
                 self.placed.insert(win, (Spot { monitor, placement }, w.frame));
             }
         }
+    }
+
+    /// v1.1 (d): cambió el espacio entre ventanas. Lo que estaba encajado
+    /// con el anterior se reacomoda una vez (sin Z ni vuelo); el resto, con
+    /// la próxima tecla.
+    pub(crate) fn regap(&mut self, old_gap: u8, out: &mut Vec<Effect>) {
+        if self.placed.is_empty() || self.screens.blocked() || self.screens_frozen() {
+            return;
+        }
+        let req = self.req();
+        self.pending.insert(req, Pending::Regap { old_gap });
+        out.push(Effect::Survey { req });
+    }
+
+    pub(crate) fn on_regap(
+        &mut self,
+        old_gap: u8,
+        result: Result<Survey, String>,
+        now_us: u64,
+        out: &mut Vec<Effect>,
+    ) {
+        let Ok(survey) = result else { return };
+        let placed = std::mem::take(&mut self.placed);
+        let dragging = self.dragging_win();
+        self.resnap(placed, &survey, dragging, false, old_gap, "Espacio", now_us, out);
     }
 
     pub(crate) fn on_rescued(&mut self, failed: Vec<(WinKey, String)>, out: &mut Vec<Effect>) {
