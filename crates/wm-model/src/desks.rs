@@ -27,6 +27,10 @@ pub enum Goal {
     Carry(u8),
     /// Deshacer un "llevar": la ventana vuelve al escritorio `to`.
     UndoCarry { win: WinKey, to: u8 },
+    /// v1.2 (plan-v1.2.md §5): la ventana va al escritorio `to` **y el
+    /// usuario con ella** (regla "escritorio: N" de una ventana nueva).
+    /// `undo`: Z, de vuelta al escritorio de antes.
+    Bring { win: WinKey, to: u8, undo: bool },
     /// Solo reconciliar (Explorer reinició, un destape inesperado).
     Verify,
     /// "Mostrar todas las ventanas": todas al escritorio activo.
@@ -91,9 +95,9 @@ pub struct Desks {
     /// Última ventana conocida al frente del escritorio activo (para decidir
     /// entre salto y rebote).
     last_fg: Option<WinKey>,
-    /// Solo se gestionan las ventanas de esta app (el `ci-probe`, para no
-    /// esconder las del usuario).
-    scope: Option<String>,
+    /// Solo se gestionan las ventanas de estas apps (el `ci-probe`, para no
+    /// esconder las del usuario; v1.2: una lista, `WM_SCOPE=wm,wmregla`).
+    scope: Option<Vec<String>>,
 }
 
 impl Desks {
@@ -103,11 +107,13 @@ impl Desks {
 
     /// ¿Esta app está dentro del alcance (sin alcance: todas)?
     pub fn in_scope(&self, app: &str) -> bool {
-        self.scope.as_ref().is_none_or(|s| s == app)
+        self.scope.as_ref().is_none_or(|s| s.iter().any(|a| a == app))
     }
 
-    pub fn set_scope(&mut self, app: Option<String>) {
-        self.scope = app;
+    /// `apps`: nombres separados por comas ("wm,wmregla").
+    pub fn set_scope(&mut self, apps: Option<String>) {
+        self.scope = apps
+            .map(|s| s.split(',').map(|a| a.trim().to_owned()).filter(|a| !a.is_empty()).collect());
     }
 
     /// Escritorio de una ventana conocida.
@@ -198,7 +204,7 @@ impl Desks {
         let mut set = Vec::new();
         let mut next: HashMap<WinKey, DeskWin> = HashMap::with_capacity(wins.len());
         for w in wins {
-            let out_of_scope = self.scope.as_ref().is_some_and(|s| *s != w.app);
+            let out_of_scope = !self.in_scope(&w.app);
             let mut d = match self.wins.get(&w.key) {
                 Some(d) => *d,
                 None => {
@@ -351,6 +357,36 @@ impl Desks {
                 }
                 note = format!("llevada al escritorio {n}");
             }
+            Goal::Bring { win, to, .. } => {
+                if !(1..=DESKS).contains(&to) {
+                    return Err(format!("no hay escritorio {to}"));
+                }
+                let Some(d) = self.wins.get(&win).copied() else {
+                    return Err("la ventana ya no existe".to_owned());
+                };
+                if d.sticky {
+                    // Elevada o fuera del alcance: no se lleva (no se podría
+                    // esconder al volver).
+                    return Err("la ventana no se puede esconder; queda donde está".to_owned());
+                }
+                if d.desk == to && prev_active == to {
+                    return Err(format!("ya está en el escritorio {to}"));
+                }
+                self.wins.get_mut(&win).expect("recién visto").desk = to;
+                set.retain(|(k, _)| *k != win);
+                set.push((win, to));
+                if self.last_fg == Some(win) {
+                    self.last_fg = None;
+                }
+                let slot = &mut self.last_focus[usize::from(prev_active - 1)];
+                if *slot == Some(win) {
+                    *slot = None;
+                }
+                self.last_focus[usize::from(to - 1)] = Some(win);
+                self.active = to;
+                focus = FocusTo::Win(win);
+                note = format!("escritorio {to}, con la ventana");
+            }
             Goal::UndoCarry { win, to } => {
                 let Some(d) = self.wins.get_mut(&win) else {
                     return Err("la ventana ya no existe".to_owned());
@@ -367,8 +403,8 @@ impl Desks {
             Goal::ShowAll => {
                 let active = self.active();
                 for (k, d) in &mut self.wins {
-                    d.sticky = self.scope.is_some()
-                        && known(*k).is_some_and(|w| Some(&w.app) != self.scope.as_ref());
+                    d.sticky = known(*k)
+                        .is_some_and(|w| self.scope.as_ref().is_some_and(|s| !s.contains(&w.app)));
                     d.strikes = 0;
                     if !d.sticky && d.desk != active {
                         d.desk = active;

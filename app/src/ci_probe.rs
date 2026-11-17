@@ -593,7 +593,7 @@ fn spawn_core_relaunched(
         .env("APPDATA", probe_appdata())
         // Escritorios: solo esconde sus títeres (app "wm"), nunca las
         // ventanas del usuario.
-        .env("WM_SCOPE", "wm")
+        .env("WM_SCOPE", "wm,wmregla")
         .env_remove("WM_TEST")
         .env_remove("WM_ANIM")
         .stdin(Stdio::null())
@@ -929,6 +929,109 @@ r = wmregla | | | al abrir: derecha
     }
 }
 
+/// v1.2 (plan-v1.2.md §5): "escritorio: 2". Otra app (la copia `wmregla` de
+/// [`rules_check`]) se abre: wm la lleva al 2 y va con ella; Z vuelve con
+/// ella al 1.
+fn desk_rule_check(r: &mut Report, lines: &std::sync::mpsc::Receiver<String>) {
+    const NAME: &str = "escritorio al abrir";
+    const CAPS: u8 = 0x14;
+    const ALT: u8 = 0xA4;
+    let copy = std::env::temp_dir().join("wm-ci-probe-rule").join("wmregla.exe");
+    if !copy.exists() {
+        return r.check(NAME, Status::Skip, "falta la copia de wm.exe de la regla al abrir".into());
+    }
+    let apps = std::env::temp_dir().join("wm-ci-probe-appdata").join("wm").join("apps.txt");
+    let write = |text: &str| {
+        let tmp = apps.with_extension("tmp");
+        std::fs::write(&tmp, text).and_then(|()| std::fs::rename(&tmp, &apps))
+    };
+    while lines.try_recv().is_ok() {}
+    if let Err(e) = write(
+        "q = wm
+r = wmregla | | | escritorio: 2
+",
+    ) {
+        return r.check(NAME, Status::Fail, format!("no se pudo escribir apps.txt: {e}"));
+    }
+    let wait_line = |what: &str, limit: Duration| {
+        let start = Instant::now();
+        loop {
+            match lines.recv_timeout(Duration::from_millis(50)) {
+                Ok(l) if l.contains(what) => break true,
+                Ok(_) => {}
+                Err(_) if start.elapsed() > limit => break false,
+                Err(_) => {}
+            }
+        }
+    };
+    let detail = (|| -> Result<String, String> {
+        if !wait_line("apps.txt recargado", Duration::from_secs(2)) {
+            return Err("apps.txt no se recargó".into());
+        }
+        let mut child = Command::new(&copy)
+            .args(["puppet", "1"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("no se pudo abrir el títere: {e}"))?;
+        let pid = child.id();
+        let result = (|| -> Result<String, String> {
+            let opened = Instant::now();
+            let id = loop {
+                if let Some(id) =
+                    puppet::find_puppets().into_iter().find(|&id| session::window_pid(id) == pid)
+                {
+                    break id;
+                }
+                if opened.elapsed() > Duration::from_secs(5) {
+                    return Err("el títere no apareció en 5 s".into());
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            };
+            let _ = windows_list::activate(id);
+            if !wait_line(
+                "Escritorios (al abrir) → escritorio 2, con la ventana",
+                Duration::from_secs(4),
+            ) {
+                return Err("no se fue al escritorio 2 con la ventana nueva en 4 s".into());
+            }
+            let went = opened.elapsed();
+            std::thread::sleep(Duration::from_millis(200));
+            session::send_keys(&[
+                (CAPS, true),
+                (ALT, true),
+                (b'Z', true),
+                (b'Z', false),
+                (ALT, false),
+                (CAPS, false),
+            ]);
+            if !wait_line("deshacer → escritorio 1, con la ventana", Duration::from_secs(2)) {
+                return Err("Caps + Alt + Z no volvió al escritorio 1 con ella".into());
+            }
+            Ok(format!(
+                "otra app con \"escritorio: 2\" → wm fue con ella al 2 a los {}; Z volvió al 1",
+                ms(went)
+            ))
+        })();
+        let _ = child.kill();
+        let _ = child.wait();
+        result
+    })();
+    let _ = write(
+        "q = wm
+",
+    );
+    if detail.is_err() {
+        // Que lo que sigue no quede en el escritorio 2.
+        session::send_keys(&[(CAPS, true), (b'1', true), (b'1', false), (CAPS, false)]);
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    match detail {
+        Ok(d) => r.check(NAME, Status::Ok, d),
+        Err(d) => r.check(NAME, Status::Fail, d),
+    }
+}
+
 /// v1.2 (plan-v1.2.md §4): "Abrir siempre así". Un títere (app `wm`, la Q
 /// en el `apps.txt` de la sonda) va a la mitad izquierda y la orden de la
 /// bandeja guarda la regla; después se borra, para que los títeres que se
@@ -1048,6 +1151,7 @@ fn core(r: &mut Report, puppets: &[WindowId]) {
     reload_check(r, &lines, puppets);
     options_check(r, &lines, puppets, child.id());
     rules_check(r, &lines);
+    desk_rule_check(r, &lines);
     keep_check(r, &lines, puppets);
     hard_checks(r);
     hung_check(r);

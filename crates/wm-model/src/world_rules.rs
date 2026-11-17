@@ -2,6 +2,9 @@
 //! vez, a la primera ventana principal de una app con regla, cuando la app
 //! termina de ubicarla (dos observaciones iguales); si la app se reubica
 //! después, gana la app. Sin animación; Z la devuelve adonde la abrió la app.
+//!
+//! v1.2 (plan-v1.2.md §5): "escritorio: N" se aplica con la primera
+//! observación: la ventana va al escritorio N y el usuario con ella.
 
 use super::{Effect, Entry, NoFly, Obs, Pending, Spot, WinInfo, WinKey, World, is_fullscreen};
 use crate::place::{centered_percent, edge_error, monitor_of, placement_name};
@@ -32,10 +35,19 @@ pub(super) struct Unseen {
     step: usize,
 }
 
+/// Lo que la app pide al abrirse.
+#[derive(Debug, Clone)]
+pub(super) struct Want {
+    open: Option<OpenRule>,
+    desk: Option<u8>,
+    /// Para el log y los avisos.
+    name: String,
+}
+
 /// Una ventana nueva esperando su regla.
 #[derive(Debug, Clone)]
 pub(super) struct Arrival {
-    rule: OpenRule,
+    want: Want,
     since_us: u64,
     /// Próximo chequeo (índice en `ARRIVE_MS`).
     step: usize,
@@ -94,10 +106,18 @@ impl World {
                 continue;
             }
             let id = w.app_id();
-            let Some(b) = self.bindings.iter().find(|b| b.open.is_some() && b.matches(&id)) else {
+            let Some(b) = self
+                .bindings
+                .iter()
+                .find(|b| (b.open.is_some() || b.desk.is_some()) && b.matches(&id))
+            else {
                 continue;
             };
-            let rule = b.open.expect("filtrada");
+            let want = Want {
+                open: b.open,
+                desk: b.desk,
+                name: b.label.clone().unwrap_or_else(|| crate::mapview::display_name(&b.app)),
+            };
             let others = windows.iter().any(|o| o.key != w.key && o.main && b.matches(&o.app_id()));
             let why = if !w.main {
                 Some("no es la ventana principal (pantalla de carga o diálogo)")
@@ -119,14 +139,14 @@ impl World {
                 // Apareció detrás: la regla corre solo si pasa al frente
                 // pronto; una que se abre de verdad en segundo plano no.
                 None if fg != Some(w.key) && came_first != Some(w.key) => {
-                    self.behind.insert(w.key, (rule, now_us));
+                    self.behind.insert(w.key, (want, now_us));
                     out.push(Effect::Log(format!(
                         "Regla al abrir ({app}): «{title}» apareció detrás; espera a pasar al frente."
                     )));
                 }
                 None => {
                     let arrival =
-                        Arrival { rule, since_us: now_us, step: 0, inspecting: false, last: None };
+                        Arrival { want, since_us: now_us, step: 0, inspecting: false, last: None };
                     self.arrivals.insert(w.key, arrival);
                 }
             }
@@ -137,7 +157,7 @@ impl World {
     /// aparecido detrás, empieza a seguirla.
     pub(super) fn came_forward(&mut self, win: WinKey, now_us: u64, out: &mut Vec<Effect>) {
         self.behind.retain(|_, (_, seen)| now_us.saturating_sub(*seen) <= BEHIND_MS * 1000);
-        let Some((rule, _)) = self.behind.remove(&win) else { return };
+        let Some((want, _)) = self.behind.remove(&win) else { return };
         if self.paused || self.screens_frozen() {
             out.push(Effect::Log(
                 "Regla al abrir: pasó al frente, pero wm está en pausa o cambiando las pantallas."
@@ -145,7 +165,7 @@ impl World {
             ));
             return;
         }
-        let arrival = Arrival { rule, since_us: now_us, step: 0, inspecting: false, last: None };
+        let arrival = Arrival { want, since_us: now_us, step: 0, inspecting: false, last: None };
         self.arrivals.insert(win, arrival);
     }
 
@@ -153,7 +173,7 @@ impl World {
     /// buscando hasta que aparezca en la lista (o se rinde a los 10 s). Sin
     /// reglas, nada extra.
     pub(super) fn watch_unseen(&mut self, win: WinKey, now_us: u64) {
-        if self.paused || !self.bindings.iter().any(|b| b.open.is_some()) {
+        if self.paused || !self.bindings.iter().any(|b| b.open.is_some() || b.desk.is_some()) {
             return;
         }
         self.unseen = Some(Unseen { win, since_us: now_us, step: 0 });
@@ -236,9 +256,14 @@ impl World {
             out.push(Effect::Log(format!("Regla al abrir ({}): no la muevo: {why}.", obs.app)));
             return;
         }
+        // El escritorio, con la primera observación (§5).
+        if let Some(n) = a.want.desk.take() {
+            self.apply_desk(win, n, &a.want.name, a.since_us, now_us, out);
+        }
+        let Some(rule) = a.want.open else { return };
         let now = (obs.frame, obs.maximized);
         if a.last == Some(now) {
-            self.apply_rule(a.rule, obs, now_us, out);
+            self.apply_rule(rule, obs, now_us, out);
             return;
         }
         a.last = Some(now);
@@ -252,6 +277,42 @@ impl World {
             return;
         }
         self.arrivals.insert(win, a);
+    }
+
+    /// "escritorio: N": la ventana nueva va al N y el usuario con ella. Z
+    /// (después de deshacer la posición) vuelve con ella al de antes.
+    fn apply_desk(
+        &mut self,
+        win: WinKey,
+        n: u8,
+        name: &str,
+        since_us: u64,
+        now_us: u64,
+        out: &mut Vec<Effect>,
+    ) {
+        let active = self.desks.active();
+        if active == n {
+            out.push(Effect::Log(format!("Escritorio al abrir ({name}): ya estás en el {n}.")));
+            return;
+        }
+        // Una tecla de escritorio del usuario gana.
+        if self.user_desk_since(since_us) {
+            out.push(Effect::Log(format!(
+                "Escritorio al abrir ({name}): cambiaste de escritorio; la dejo donde está."
+            )));
+            return;
+        }
+        let tag = self.fresh_tag();
+        self.remember(Entry {
+            win,
+            frame: Rect::new(0, 0, 0, 0),
+            maximized: false,
+            tag,
+            desk: Some(active),
+            went: true,
+        });
+        out.push(Effect::Log(format!("Escritorio al abrir → {name}: escritorio {n}.")));
+        self.start_sync(crate::desks::Goal::Bring { win, to: n, undo: false }, now_us, out);
     }
 
     fn apply_rule(&mut self, rule: OpenRule, obs: Obs, now_us: u64, out: &mut Vec<Effect>) {
@@ -277,6 +338,7 @@ impl World {
             maximized: obs.maximized,
             tag: self.next_gesture,
             desk: None,
+            went: false,
         };
         let name = match rule {
             OpenRule::Place(p) => placement_name(p).to_owned(),

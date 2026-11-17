@@ -196,10 +196,23 @@ struct State {
     /// Opciones al abrir (`settings.txt`).
     options: Options,
     /// v1.1: la regla "al abrir" de cada letra (A–Z) y la del archivo.
-    rules: Vec<Option<OpenRule>>,
-    original_rules: Vec<Option<OpenRule>>,
+    rules: Vec<Rule>,
+    original_rules: Vec<Rule>,
     /// Campos que esta versión no entiende, por letra: se conservan.
     extras: Vec<Vec<String>>,
+}
+
+/// Lo que hace una app al abrirse: dónde (v1.1) y en qué escritorio (v1.2).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct Rule {
+    open: Option<OpenRule>,
+    desk: Option<u8>,
+}
+
+impl Rule {
+    fn of(b: &AppBinding) -> Self {
+        Self { open: b.open, desk: b.desk }
+    }
 }
 
 /// Las reglas que ofrece el desplegable "Al abrir" (plan-v1.1.md §7: cinco;
@@ -239,8 +252,10 @@ fn refresh(ui: &SettingsWindow, st: &State) {
                     .map_or_else(SharedString::new, |a| st.catalog.entries[a].name.as_str().into()),
                 exe: a.map_or_else(SharedString::new, |a| {
                     let rule =
-                        st.rules[i].map_or_else(String::new, |r| format!(" · {}", r.short()));
-                    format!("{}.exe{rule}", st.catalog.entries[a].names[0]).into()
+                        st.rules[i].open.map_or_else(String::new, |r| format!(" · {}", r.short()));
+                    let desk =
+                        st.rules[i].desk.map_or_else(String::new, |n| format!(" · escritorio {n}"));
+                    format!("{}.exe{rule}{desk}", st.catalog.entries[a].names[0]).into()
                 }),
                 assigned: a.is_some(),
             }
@@ -255,14 +270,19 @@ fn refresh(ui: &SettingsWindow, st: &State) {
         app.map_or_else(|| ui.get_none_text(), |a| st.catalog.entries[a].name.as_str().into()),
     );
     ui.set_assigned(st.assigned.iter().filter(|(_, a)| a.is_some()).count() as i32);
-    let rule = st.rules[st.current];
-    let (options, chosen) = open_options(ui, rule);
-    ui.set_open_options(ModelRc::new(VecModel::from(options)));
-    ui.set_open_choice(chosen);
+    show_rule(ui, st.rules[st.current]);
     ui.set_choice_assigned(app.is_some());
     ui.set_dirty(
         st.assigned != st.original || st.rules != st.original_rules || options_of(ui) != st.options,
     );
+}
+
+/// Las filas "Al abrir" y "En el escritorio" de la letra elegida.
+fn show_rule(ui: &SettingsWindow, rule: Rule) {
+    let (options, chosen) = open_options(ui, rule.open);
+    ui.set_open_options(ModelRc::new(VecModel::from(options)));
+    ui.set_open_choice(chosen);
+    ui.set_desk_choice(rule.desk.map_or(0, i32::from));
 }
 
 fn options_of(ui: &SettingsWindow) -> Options {
@@ -332,7 +352,8 @@ fn save(path: &Path, st: &State) -> std::io::Result<()> {
                 aliases: aliases.to_vec(),
                 launch: e.launch.clone(),
                 label,
-                open: rules[i],
+                open: rules[i].open,
+                desk: rules[i].desk,
                 extra: st.extras[i].clone(),
             })
         })
@@ -370,11 +391,11 @@ fn assign(st: &mut State, app: Option<usize>) -> Note {
         app.and_then(|a| (0..st.assigned.len()).find(|&j| j != cur && st.assigned[j].1 == Some(a)));
     if let Some(j) = other {
         st.assigned[j].1 = None;
-        st.rules[cur] = st.rules[j].take();
+        st.rules[cur] = std::mem::take(&mut st.rules[j]);
         st.extras[cur] = std::mem::take(&mut st.extras[j]);
         note.moved_from = Some(st.assigned[j].0);
     } else {
-        st.rules[cur] = None;
+        st.rules[cur] = Rule::default();
         st.extras[cur].clear();
     }
     st.assigned[cur].1 = app;
@@ -429,7 +450,7 @@ fn show_note(ui: &SettingsWindow, st: &State, note: &Note) {
 /// Las reglas a guardar: las de esta ventana, salvo en las letras que acá
 /// no cambiaron (ni la app ni la regla) y que en el archivo de ahora tienen
 /// la misma app con otra regla (la escribió la bandeja mientras tanto).
-fn merged_rules(st: &State, now_text: &str) -> Vec<Option<OpenRule>> {
+fn merged_rules(st: &State, now_text: &str) -> Vec<Rule> {
     let (now, _) = parse_bindings(now_text);
     (0..st.rules.len())
         .map(|i| {
@@ -439,7 +460,7 @@ fn merged_rules(st: &State, now_text: &str) -> Vec<Option<OpenRule>> {
                 .iter()
                 .find(|b| usize::from(b.letter - b'A') == i && Some(b.app.as_str()) == app);
             match outside {
-                Some(b) if untouched => b.open,
+                Some(b) if untouched => Rule::of(b),
                 _ => st.rules[i],
             }
         })
@@ -483,8 +504,8 @@ fn main() -> Result<(), slint::PlatformError> {
     let file_text = path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
     let (bindings, _errors) = parse_bindings(&file_text);
     let catalog = Catalog::new(&bindings);
-    let rules: Vec<Option<OpenRule>> = (b'A'..=b'Z')
-        .map(|l| bindings.iter().find(|b| b.letter == l).and_then(|b| b.open))
+    let rules: Vec<Rule> = (b'A'..=b'Z')
+        .map(|l| bindings.iter().find(|b| b.letter == l).map(Rule::of).unwrap_or_default())
         .collect();
     let extras: Vec<Vec<String>> = (b'A'..=b'Z')
         .map(|l| {
@@ -585,9 +606,7 @@ fn main() -> Result<(), slint::PlatformError> {
             ));
             // La fila "Al abrir" de esta letra (v1.1): antes se quedaba con la
             // de la letra de cuando se abrió la ventana.
-            let (options, chosen) = open_options(&ui, st.rules[i]);
-            ui.set_open_options(ModelRc::new(VecModel::from(options)));
-            ui.set_open_choice(chosen);
+            show_rule(&ui, st.rules[i]);
             ui.set_choice_assigned(app.is_some());
         }
     });
@@ -637,8 +656,17 @@ fn main() -> Result<(), slint::PlatformError> {
         let mut st = s.borrow_mut();
         let cur = st.current;
         if let Some(&rule) = OPEN_CHOICES.get(i.max(0) as usize) {
-            st.rules[cur] = rule;
+            st.rules[cur].open = rule;
         }
+        refresh(&ui, &st);
+    });
+    let weak = ui.as_weak();
+    let s = st.clone();
+    ui.on_desk_chosen(move |i| {
+        let Some(ui) = weak.upgrade() else { return };
+        let mut st = s.borrow_mut();
+        let cur = st.current;
+        st.rules[cur].desk = u8::try_from(i).ok().filter(|n| (1..=4).contains(n));
         refresh(&ui, &st);
     });
     let weak = ui.as_weak();
@@ -765,8 +793,8 @@ mod tests {
             (b'A'..=b'Z').map(|l| (l as char, None)).collect();
         assigned[1].1 = Some(0);
         assigned[13].1 = Some(1);
-        let mut rules = vec![None; 26];
-        rules[1] = Some(OpenRule::Maximized);
+        let mut rules = vec![Rule::default(); 26];
+        rules[1] = Rule { open: Some(OpenRule::Maximized), desk: Some(2) };
         let mut extras = vec![Vec::new(); 26];
         extras[1] = vec!["zona: 3".to_owned()];
         State {
@@ -793,8 +821,8 @@ mod tests {
         assert_eq!(note.moved_from, Some('B'));
         assert_eq!(st.assigned[1].1, None, "la B queda libre");
         assert_eq!(st.assigned[23].1, Some(0));
-        assert_eq!(st.rules[23], Some(OpenRule::Maximized));
-        assert_eq!(st.rules[1], None);
+        assert_eq!(st.rules[23], Rule { open: Some(OpenRule::Maximized), desk: Some(2) });
+        assert_eq!(st.rules[1], Rule::default());
         assert_eq!(st.extras[23], vec!["zona: 3".to_owned()]);
         assert!(st.extras[1].is_empty());
         assert!(note.lost.is_empty(), "nada abierto empieza con X");
@@ -806,7 +834,7 @@ mod tests {
         st.current = 1; // B: Brave → Word
         let note = assign(&mut st, Some(4));
         assert_eq!(note, Note::default(), "la B ya estaba ocupada: no tapa a nadie nuevo");
-        assert_eq!(st.rules[1], None);
+        assert_eq!(st.rules[1], Rule::default());
         assert!(st.extras[1].is_empty());
     }
 
@@ -832,12 +860,19 @@ mod tests {
 n = notion
 ";
         assert_eq!(
-            merged_rules(&st, now)[1],
+            merged_rules(&st, now)[1].open,
             Some(OpenRule::Place(wm_model::Placement::RightHalf))
         );
         // Acá se cambió la regla de la B: gana esta ventana.
-        st.rules[1] = Some(OpenRule::Centered(80));
-        assert_eq!(merged_rules(&st, now)[1], Some(OpenRule::Centered(80)));
+        st.rules[1].open = Some(OpenRule::Centered(80));
+        assert_eq!(merged_rules(&st, now)[1].open, Some(OpenRule::Centered(80)));
+        // También si lo que cambió acá es el escritorio.
+        let mut st = state();
+        st.rules[1].desk = Some(3);
+        assert_eq!(
+            merged_rules(&st, now)[1],
+            Rule { open: Some(OpenRule::Maximized), desk: Some(3) }
+        );
         // Otra app en la B afuera: no se mezcla.
         let st = state();
         assert_eq!(
@@ -845,7 +880,8 @@ n = notion
                 &st,
                 "b = bitwarden | | | al abrir: derecha
 "
-            )[1],
+            )[1]
+            .open,
             Some(OpenRule::Maximized)
         );
     }
@@ -855,6 +891,6 @@ n = notion
         let mut st = state();
         st.current = 1;
         assert_eq!(assign(&mut st, Some(0)), Note::default());
-        assert_eq!(st.rules[1], Some(OpenRule::Maximized), "la regla se queda");
+        assert_eq!(st.rules[1].open, Some(OpenRule::Maximized), "la regla se queda");
     }
 }

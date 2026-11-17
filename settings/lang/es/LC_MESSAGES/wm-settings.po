@@ -161,3 +161,21 @@ msgstr "Registro de uso"
 
 msgid "Counts which shortcuts you use, only on this PC. Nothing is sent anywhere."
 msgstr "Cuenta qué atajos usás, solo en esta PC. No se envía a ningún lado."
+
+msgid "On desk"
+msgstr "En el escritorio"
+
+msgid "The one you are on"
+msgstr "En el que estés"
+
+msgid "Desk 1"
+msgstr "Escritorio 1"
+
+msgid "Desk 2"
+msgstr "Escritorio 2"
+
+msgid "Desk 3"
+msgstr "Escritorio 3"
+
+msgid "Desk 4"
+msgstr "Escritorio 4"

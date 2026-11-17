@@ -22,13 +22,42 @@ fn label(goal: Goal) -> String {
         Goal::Carry(n) => format!("Caps + Alt + {n}"),
         Goal::Window(_) => "Caps + letra".to_owned(),
         Goal::Foreign(_) => "Ventana de otro escritorio al frente".to_owned(),
-        Goal::UndoCarry { .. } => "Caps + Alt + Z → deshacer".to_owned(),
+        Goal::UndoCarry { .. } | Goal::Bring { undo: true, .. } => {
+            "Caps + Alt + Z → deshacer".to_owned()
+        }
+        Goal::Bring { undo: false, .. } => "Escritorios (al abrir)".to_owned(),
         Goal::Verify => "Escritorios (reconciliar)".to_owned(),
         Goal::ShowAll => "Mostrar todas las ventanas".to_owned(),
     }
 }
 
+/// Prioridad en la espera: tecla del usuario > `Bring` > avisos de Windows.
+fn rank(goal: Goal) -> u8 {
+    match goal {
+        Goal::Verify | Goal::Foreign(_) => 0,
+        Goal::Bring { undo: false, .. } => 1,
+        _ => 2,
+    }
+}
+
 impl World {
+    /// ¿El usuario pidió un cambio de escritorio (tecla, bandeja) desde
+    /// `since_us`, o hay uno en curso o en espera?
+    pub(super) fn user_desk_since(&self, since_us: u64) -> bool {
+        self.user_desk_us >= since_us
+            || self.sync.as_ref().is_some_and(|s| rank(s.goal) == 2)
+            || self.queued.is_some_and(|(g, _)| rank(g) == 2)
+    }
+
+    fn note_user_desk(&mut self, goal: Goal, key_us: u64) {
+        // `Window` (Caps + letra) también: el usuario fue a otra ventana.
+        if rank(goal) == 2
+            && !matches!(goal, Goal::Boot { .. } | Goal::UndoCarry { .. } | Goal::Bring { .. })
+        {
+            self.user_desk_us = self.user_desk_us.max(key_us);
+        }
+    }
+
     /// Solo se gestionan (esconden) las ventanas de esta app: para el
     /// `ci-probe`, que no puede tocar las ventanas del usuario.
     pub fn set_desk_scope(&mut self, app: Option<String>) {
@@ -109,6 +138,7 @@ impl World {
 
     /// Empieza una transacción (o la deja en espera si hay otra).
     pub(super) fn start_sync(&mut self, goal: Goal, key_us: u64, out: &mut Vec<Effect>) {
+        self.note_user_desk(goal, key_us);
         if self.queue_if_busy(goal, key_us) {
             return;
         }
@@ -128,6 +158,7 @@ impl World {
         now_us: u64,
         out: &mut Vec<Effect>,
     ) {
+        self.note_user_desk(goal, key_us);
         if self.queue_if_busy(goal, key_us) {
             return;
         }
@@ -140,9 +171,9 @@ impl World {
             return false;
         }
         // Lo que sale de un aviso de Windows (reconciliar, una ventana de otro
-        // escritorio al frente) no pisa una tecla del usuario.
-        let automatic = |g: Goal| matches!(g, Goal::Verify | Goal::Foreign(_));
-        if !automatic(goal) || self.queued.is_none_or(|(g, _)| automatic(g)) {
+        // escritorio al frente) no pisa nada; "escritorio al abrir" pisa eso
+        // pero no una tecla del usuario (plan-v1.2.md §5).
+        if self.queued.is_none_or(|(g, _)| rank(goal) >= rank(g)) {
             self.queued = Some((goal, key_us));
         }
         true
@@ -232,6 +263,7 @@ impl World {
                         maximized: false,
                         tag,
                         desk: Some(from),
+                        went: false,
                     });
                 }
                 if let Some(s) = self.sync.as_mut() {

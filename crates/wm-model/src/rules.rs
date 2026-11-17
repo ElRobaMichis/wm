@@ -114,6 +114,14 @@ pub fn rule_like(
 /// El campo de `apps.txt`: "al abrir: derecha".
 pub const OPEN_KEY: &str = "al abrir:";
 
+/// v1.2 (plan-v1.2.md §5): "escritorio: 2", el escritorio donde se abre.
+pub const DESK_KEY: &str = "escritorio:";
+
+/// El escritorio de "escritorio: 2" (1 a 4).
+pub fn parse_desk(v: &str) -> Option<u8> {
+    v.trim().parse::<u8>().ok().filter(|n| (1..=crate::desks::DESKS).contains(n))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

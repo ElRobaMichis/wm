@@ -36,6 +36,13 @@ pub fn notice_for(line: &str) -> Option<String> {
             format!("{} está en pantalla completa", display_name(app))
         });
     }
+    // v1.2 §5: "Escritorio al abrir → Brave: escritorio 2."
+    if let Some((app, n)) = l
+        .strip_prefix("Escritorio al abrir → ")
+        .and_then(|r| r.trim_end_matches('.').rsplit_once(": escritorio "))
+    {
+        return Some(format!("{app} se abre en el escritorio {n}"));
+    }
     // Hito 4d: "… Ventanas traídas a la pantalla: 2."
     if let Some(rest) = l.split("Ventanas traídas a la pantalla: ").nth(1) {
         let n: u32 = rest.trim_end_matches('.').trim().parse().unwrap_or(0);
@@ -97,6 +104,7 @@ mod tests {
     fn user_facing_failures_become_notices() {
         let cases = [
             ("Caps + Q: no hay ninguna app abierta con la Q.", "Ninguna app abierta empieza con Q"),
+            ("Escritorio al abrir → Brave: escritorio 2.", "Brave se abre en el escritorio 2"),
             (
                 "Caps + Alt + A → mitad izquierda (brave): no hay otro monitor a la izquierda.",
                 "No hay otro monitor a la izquierda",
@@ -133,6 +141,8 @@ mod tests {
             "Caps + B → brave «x»: ok en 1.2 ms (desde la tecla 2.0 ms)",
             "Mapa de teclado visible (monitor 1), 5.0 ms.",
             "Caps + 2 → escritorio 2: 1 mostradas, 2 escondidas, 9.0 ms desde la tecla",
+            "Escritorios (al abrir) → escritorio 2, con la ventana: 1 mostradas, 2 escondidas, 3.0 ms desde la tecla",
+            "Escritorio al abrir (Brave): ya estás en el 2.",
         ] {
             assert_eq!(notice_for(line), None, "{line}");
         }

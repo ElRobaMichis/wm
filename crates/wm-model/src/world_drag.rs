@@ -183,7 +183,8 @@ impl World {
         self.centers.remove(&win);
         self.sizing.remove(&win);
         let tag = self.fresh_tag();
-        let before = Entry { win, frame: obs.frame, maximized: obs.maximized, tag, desk: None };
+        let before =
+            Entry { win, frame: obs.frame, maximized: obs.maximized, tag, desk: None, went: false };
         self.dragging =
             Some(Dragging { win, before, app_resize: matches!(mode, Mode::Resize { .. }) });
         if let Some(p) = self.pointer.as_mut() {

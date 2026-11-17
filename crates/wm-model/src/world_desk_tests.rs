@@ -76,6 +76,7 @@ impl Plat {
                 marked: w.marked,
                 concealed: w.cloaked || w.minimized,
                 minimized: w.minimized,
+                main: true,
                 ..WinInfo::default()
             })
             .collect()
@@ -135,6 +136,14 @@ impl Plat {
                         self.fg = None;
                         let report = FocusReport { ok: true, neutral_key: false, elapsed_us: 500 };
                         queue.push_back(Event::Focused { req, result: Ok(report) });
+                    }
+                    // v1.2 §5: la regla "escritorio: N" mira la ventana nueva.
+                    Effect::Inspect { req, win: Some(win) } => {
+                        let result = match self.wins.iter().find(|w| w.key == win) {
+                            Some(w) => Ok(obs_of(w)),
+                            None => Err("no existe".into()),
+                        };
+                        queue.push_back(Event::Inspected { req, result });
                     }
                     Effect::Log(line) => self.logs.push(line),
                     Effect::Notice(_) | Effect::MovePointer { .. } => {}
@@ -238,6 +247,112 @@ impl Plat {
             );
         }
     }
+}
+
+/// Lo que `Inspect` ve de una ventana (un monitor, tamaño fijo).
+fn obs_of(w: &W) -> crate::world::Obs {
+    let frame = crate::Rect::new(100, 100, 900, 700);
+    crate::world::Obs {
+        key: w.key,
+        app: w.app.clone(),
+        title: w.app.clone(),
+        frame,
+        outer: frame,
+        dpi: 96,
+        maximized: false,
+        minimized: w.minimized,
+        monitors: vec![crate::place::MonitorObs {
+            bounds: crate::Rect::new(0, 0, 1920, 1080),
+            work: crate::Rect::new(0, 0, 1920, 1032),
+            dpi: 96,
+        }],
+        no_fly: None,
+        pointer: None,
+    }
+}
+
+/// Como [`boot`], con asignaciones de `apps.txt`.
+fn boot_with(apps: &[&str], text: &str) -> (World, Plat) {
+    let mut world = World::new(crate::apps::parse_bindings(text).0);
+    let mut p = Plat::new(apps);
+    p.run(&mut world, Event::Boot { recover: false });
+    p.check(&world);
+    (world, p)
+}
+
+/// Se abre una ventana nueva (con el foco, como Windows) y wm la ve.
+fn open_new(world: &mut World, p: &mut Plat, app: &str) -> WinKey {
+    let k = p.open(app);
+    p.run(world, Event::Foreground(k));
+    p.settle(world);
+    k
+}
+
+#[test]
+fn a_new_window_with_a_desk_goes_there_and_takes_you_with_it() {
+    let (mut world, mut p) = boot_with(&["aaa", "bbb"], "n = nueva | | | escritorio: 2");
+    let old = p.fg.expect("foco");
+    let new = open_new(&mut world, &mut p, "nueva");
+    p.check(&world);
+    assert_eq!(world.active_desk(), 2, "{:?}", p.logs);
+    assert_eq!(world.desk_of(new), Some(2));
+    assert_eq!(p.fg, Some(new));
+    assert!(!p.visible(old));
+    assert!(
+        p.logs.iter().any(|l| l == "Escritorio al abrir → Nueva: escritorio 2."),
+        "{:?}",
+        p.logs
+    );
+    // Z: de vuelta al 1, con ella.
+    p.undo(&mut world);
+    p.settle(&mut world);
+    p.check(&world);
+    assert_eq!(world.active_desk(), 1, "{:?}", p.logs);
+    assert_eq!(world.desk_of(new), Some(1));
+    assert!(p.visible(old));
+    assert_eq!(p.fg, Some(new));
+}
+
+#[test]
+fn a_desk_rule_does_nothing_when_you_are_already_there() {
+    let (mut world, mut p) = boot_with(&["aaa"], "n = nueva | | | escritorio: 2");
+    p.go(&mut world, 2);
+    let new = open_new(&mut world, &mut p, "nueva");
+    p.check(&world);
+    assert_eq!(world.desk_of(new), Some(2));
+    assert!(p.logs.iter().any(|l| l.contains("ya estás en el 2")), "{:?}", p.logs);
+    p.undo(&mut world);
+    assert!(p.logs.iter().any(|l| l.contains("no hay nada para deshacer")), "{:?}", p.logs);
+}
+
+#[test]
+fn a_desk_key_after_the_window_opens_wins() {
+    let (mut world, mut p) = boot_with(&["aaa"], "n = nueva | | | escritorio: 2");
+    let new = p.open("nueva");
+    p.run(&mut world, Event::Foreground(new));
+    // Antes de la primera observación (100 ms), Caps + 3.
+    p.go(&mut world, 3);
+    p.settle(&mut world);
+    p.check(&world);
+    assert_eq!(world.active_desk(), 3, "{:?}", p.logs);
+    assert_eq!(world.desk_of(new), Some(1));
+    assert!(p.logs.iter().any(|l| l.contains("cambiaste de escritorio")), "{:?}", p.logs);
+}
+
+#[test]
+fn a_second_window_or_an_unmarkable_one_is_not_brought() {
+    let (mut world, mut p) = boot_with(&["nueva"], "n = nueva | | | escritorio: 2");
+    let second = open_new(&mut world, &mut p, "nueva");
+    assert_eq!(world.active_desk(), 1, "{:?}", p.logs);
+    assert_eq!(world.desk_of(second), Some(1));
+    // Elevada: no se puede anotar ni esconder.
+    let (mut world, mut p) = boot_with(&["aaa"], "e = elevada | | | escritorio: 2");
+    let k = p.open("elevada");
+    p.get(k).expect("recién abierta").unmarkable = true;
+    p.run(&mut world, Event::Foreground(k));
+    p.settle(&mut world);
+    p.check(&world);
+    assert_eq!(world.active_desk(), 1, "{:?}", p.logs);
 }
 
 fn boot(apps: &[&str]) -> (World, Plat) {

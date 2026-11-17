@@ -140,6 +140,9 @@ struct Entry {
     /// `Some(n)`: un "llevar" desde el escritorio n (hito 4); deshacerla la
     /// devuelve ahí (`frame` y `maximized` no se usan).
     desk: Option<u8>,
+    /// v1.2: con `desk`, el usuario fue con la ventana ("escritorio al
+    /// abrir"): deshacer vuelve con ella al escritorio de antes.
+    went: bool,
 }
 
 /// Los pasos de centrar (C): primero sin cambiar el tamaño; repetir alterna
@@ -823,13 +826,16 @@ pub struct World {
     /// v1.1: ventanas nuevas con regla que aparecieron detrás (IntelliJ:
     /// Java la muestra y la activa un momento después). Si pasan al frente
     /// pronto, la regla corre: (regla, cuándo se vieron).
-    behind: HashMap<WinKey, (crate::rules::OpenRule, u64)>,
+    behind: HashMap<WinKey, (world_rules::Want, u64)>,
     /// v1.1: una ventana pasó al frente pero el `Scan` no la vio (Java la
     /// activa antes de terminar de mostrarla): se la vuelve a buscar.
     unseen: Option<world_rules::Unseen>,
     /// v1.2: la regla que "Abrir siempre así" mandó a guardar; al volver
     /// en `apps.txt`, se confirma con un aviso.
     keeping: Option<(u8, crate::rules::OpenRule)>,
+    /// v1.2: cuándo pidió el usuario el último cambio de escritorio (µs):
+    /// después de abrirse una ventana, gana sobre "escritorio: N".
+    user_desk_us: u64,
 }
 
 /// La lista de una letra mientras `Caps` sigue abajo.
@@ -1593,8 +1599,14 @@ impl World {
             seen: bit,
             key_us,
         });
-        let before =
-            Entry { win: obs.key, frame: here_rect, maximized: origin_max, tag: id, desk: None };
+        let before = Entry {
+            win: obs.key,
+            frame: here_rect,
+            maximized: origin_max,
+            tag: id,
+            desk: None,
+            went: false,
+        };
         match step(here.placement, dir) {
             // Desde una esquina, una tecla puede ser la primera de un acorde
             // a otra esquina (mismo tamaño: se anima): esperar la segunda.
@@ -1643,6 +1655,7 @@ impl World {
             maximized: g.origin_max,
             tag: g.id,
             desk: None,
+            went: false,
         };
         // Más tarde que la espera: la primera tecla ya salió sola (se vio un
         // paso intermedio). Queda en el log para afinar la espera.
@@ -1945,6 +1958,7 @@ impl World {
             maximized: world_rules::looks_maximized(&obs),
             tag,
             desk: None,
+            went: false,
         });
         self.ground(obs.key, out);
         self.sizing.remove(&obs.key);
@@ -2097,6 +2111,7 @@ impl World {
             maximized: obs.maximized,
             tag,
             desk: None,
+            went: false,
         });
         let spot = Spot { monitor, placement: Placement::Full };
         let what = format!("{what} → {verb}, {label} ({})", obs.app);
@@ -2168,6 +2183,7 @@ impl World {
             maximized: obs.maximized,
             tag,
             desk: None,
+            went: false,
         });
         let what = format!("{what} → {label} ({})", obs.app);
         self.go(&obs, spot, target, what, key_us, now_us, out);
@@ -2217,8 +2233,13 @@ impl World {
             return;
         }
         match self.journal.pop_back() {
-            Some(Entry { win, desk: Some(to), .. }) => {
-                self.start_sync(crate::desks::Goal::UndoCarry { win, to }, key_us, out);
+            Some(Entry { win, desk: Some(to), went, .. }) => {
+                let goal = if went {
+                    crate::desks::Goal::Bring { win, to, undo: true }
+                } else {
+                    crate::desks::Goal::UndoCarry { win, to }
+                };
+                self.start_sync(goal, key_us, out);
             }
             Some(entry) => {
                 let req = self.req();
@@ -3512,6 +3533,7 @@ mod fullscreen_tests {
             maximized: false,
             tag: 1,
             desk: None,
+            went: false,
         };
         let mut out = Vec::new();
         w.undo(entry, full, 0, 0, &mut out);

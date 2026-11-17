@@ -29,6 +29,12 @@ export component SettingsWindow inherits Window {
     in property <[string]> open-options;
     in-out property <int> open-choice;
     callback open-chosen(int);
+    // v1.2: el escritorio donde se abre (0 = el que estés).
+    in-out property <int> desk-choice;
+    callback desk-chosen(int);
+    out property <[string]> desk-options: [
+        @tr("The one you are on"), @tr("Desk 1"), @tr("Desk 2"), @tr("Desk 3"), @tr("Desk 4")
+    ];
     out property <[string]> open-labels: [
         @tr("Do nothing"), @tr("Left half"), @tr("Right half"), @tr("Maximized"), @tr("Centered")
     ];
@@ -285,21 +291,41 @@ export component SettingsWindow inherits Window {
                 // v1.1: dónde va la app al abrirse (plan-v1.1.md).
                 if root.choice-assigned: VerticalLayout {
                     Rectangle { height: Theme.s2; }
-                    HorizontalLayout {
+                    GridLayout {
                         spacing: Theme.s3;
-                        Text {
-                            text: @tr("When it opens");
-                            color: Theme.text-2;
-                            vertical-alignment: center;
+                        Row {
+                            Text {
+                                text: @tr("When it opens");
+                                color: Theme.text-2;
+                                vertical-alignment: center;
+                            }
+                            Select {
+                                horizontal-stretch: 1;
+                                model: root.open-options;
+                                window-height: root.height;
+                                label: @tr("When it opens");
+                                current <=> root.open-choice;
+                                selected(index) => {
+                                    root.open-chosen(index);
+                                }
+                            }
                         }
-                        Select {
-                            horizontal-stretch: 1;
-                            model: root.open-options;
-                            window-height: root.height;
-                            label: @tr("When it opens");
-                            current <=> root.open-choice;
-                            selected(index) => {
-                                root.open-chosen(index);
+                        // v1.2 (plan-v1.2.md §5): wm va con la ventana.
+                        Row {
+                            Text {
+                                text: @tr("On desk");
+                                color: Theme.text-2;
+                                vertical-alignment: center;
+                            }
+                            Select {
+                                horizontal-stretch: 1;
+                                model: root.desk-options;
+                                window-height: root.height;
+                                label: @tr("On desk");
+                                current <=> root.desk-choice;
+                                selected(index) => {
+                                    root.desk-chosen(index);
+                                }
                             }
                         }
                     }
