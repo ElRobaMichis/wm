@@ -42,7 +42,9 @@ target/release/wmw
 | Mantener `Caps` | El mapa de teclado (con Alt, la capa de ventana) |
 | `Caps` (toque corto) | Bloq Mayús normal |
 
-Línea de comandos (con `wm` corriendo): `wm quit`, `wm pause`, `wm resume`, `wm undo`, `wm ajustes`, `wm mostrar` (todas las ventanas al escritorio activo); `wm autostart on|off` (iniciar con Windows); `wm apps` muestra a qué app apunta cada letra; `wm restore` muestra cualquier ventana que haya quedado escondida. El log está en `%LOCALAPPDATA%\wm\wm.log`.
+Al conectar o desconectar un monitor, cambiar la resolución o la escala, volver del reposo o desbloquear, `wm` espera a que Windows termine de acomodar y trae entera a la pantalla más cercana cualquier ventana que haya quedado afuera (también las de otros escritorios). "Mostrar todas las ventanas" hace lo mismo en el momento.
+
+Línea de comandos (con `wm` corriendo): `wm quit`, `wm pause`, `wm resume`, `wm undo`, `wm ajustes`, `wm mostrar` (todas las ventanas al escritorio activo); `wm autostart on|off` (iniciar con Windows); `wm apps` muestra a qué app apunta cada letra; `wm restore` muestra cualquier ventana que haya quedado escondida; `wm fuera` dice si hay ventanas fuera de pantalla (solo mira). El log está en `%LOCALAPPDATA%\wm\wm.log`.
 
 Sin configuración, cada letra va a la app abierta más reciente cuyo nombre de ejecutable empieza con esa letra. Para fijar letras, usar los ajustes o editar `%APPDATA%\wm\apps.txt` (se recarga solo al guardar):
 
@@ -59,7 +61,7 @@ n = notion | C:\Users\yo\AppData\Local\Programs\Notion\Notion.exe
 - [keyboard-design.md](keyboard-design.md): modelo de interacción y mapa de atajos ("Apps primero").
 - [architecture.md](architecture.md): arquitectura técnica y plan de spikes.
 - [design.md](design.md): lenguaje de diseño (principios, tokens y componentes).
-- [plan-core.md](plan-core.md): plan de la primera versión (hitos 0–5), con [plan-hito4.md](plan-hito4.md) y [plan-hito5.md](plan-hito5.md).
+- [plan-core.md](plan-core.md): plan de la primera versión (hitos 0–5), con [plan-hito4.md](plan-hito4.md), [plan-hito4d.md](plan-hito4d.md) (monitores) y [plan-hito5.md](plan-hito5.md).
 - [plan-update.md](plan-update.md): instalar y actualizar sin terminal.
 - [funciones-ocultas.md](funciones-ocultas.md): lo que se escondió de los ajustes en la primera versión, por qué y qué falta para mostrarlo.
 
