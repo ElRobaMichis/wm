@@ -15,6 +15,19 @@ const ARRIVE_MS: [u64; 4] = [100, 300, 700, 1500];
 /// detrás (la de IntelliJ, tras su pantalla de carga).
 const BEHIND_MS: u64 = 5_000;
 
+/// Cuándo volver a buscar una ventana que pasó al frente y el `Scan` no vio
+/// (desde el `FOREGROUND`).
+const UNSEEN_MS: [u64; 6] = [250, 600, 1200, 2500, 5000, 10_000];
+
+/// Una ventana al frente que todavía no aparece en la lista.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Unseen {
+    win: WinKey,
+    since_us: u64,
+    /// Próxima búsqueda (índice en `UNSEEN_MS`).
+    step: usize,
+}
+
 /// Una ventana nueva esperando su regla.
 #[derive(Debug, Clone)]
 pub(super) struct Arrival {
@@ -38,6 +51,17 @@ impl World {
         now_us: u64,
         out: &mut Vec<Effect>,
     ) {
+        if let Some(u) = self.unseen
+            && windows.iter().any(|w| w.key == u.win)
+        {
+            self.unseen = None;
+            if u.step > 0 {
+                out.push(Effect::Log(format!(
+                    "Ventana nueva: apareció en la lista {} ms después de pasar al frente.",
+                    now_us.saturating_sub(u.since_us) / 1000
+                )));
+            }
+        }
         if self.paused {
             return;
         }
@@ -98,6 +122,34 @@ impl World {
         }
         let arrival = Arrival { rule, since_us: now_us, step: 0, inspecting: false, last: None };
         self.arrivals.insert(win, arrival);
+    }
+
+    /// `FOREGROUND` de una ventana desconocida: si hay reglas, se la sigue
+    /// buscando hasta que aparezca en la lista (o se rinde a los 10 s). Sin
+    /// reglas, nada extra.
+    pub(super) fn watch_unseen(&mut self, win: WinKey, now_us: u64) {
+        if self.paused || !self.bindings.iter().any(|b| b.open.is_some()) {
+            return;
+        }
+        self.unseen = Some(Unseen { win, since_us: now_us, step: 0 });
+    }
+
+    pub(super) fn unseen_deadline(&self) -> Option<u64> {
+        let u = self.unseen?;
+        UNSEEN_MS.get(u.step).map(|ms| u.since_us + ms * 1000)
+    }
+
+    pub(super) fn unseen_tick(&mut self, now_us: u64, out: &mut Vec<Effect>) {
+        let Some(due) = self.unseen_deadline() else { return };
+        if due > now_us {
+            return;
+        }
+        let Some(u) = self.unseen.as_mut() else { return };
+        u.step += 1;
+        if u.step >= UNSEEN_MS.len() {
+            self.unseen = None;
+        }
+        self.start_sync(crate::desks::Goal::Verify, now_us, out);
     }
 
     pub(super) fn arrival_deadline(&self) -> Option<u64> {

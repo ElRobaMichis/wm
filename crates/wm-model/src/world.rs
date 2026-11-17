@@ -807,6 +807,9 @@ pub struct World {
     /// Java la muestra y la activa un momento después). Si pasan al frente
     /// pronto, la regla corre: (regla, cuándo se vieron).
     behind: HashMap<WinKey, (crate::rules::OpenRule, u64)>,
+    /// v1.1: una ventana pasó al frente pero el `Scan` no la vio (Java la
+    /// activa antes de terminar de mostrarla): se la vuelve a buscar.
+    unseen: Option<world_rules::Unseen>,
 }
 
 /// La lista de una letra mientras `Caps` sigue abajo.
@@ -961,6 +964,7 @@ impl World {
             .chain(self.follow_deadline())
             .chain(self.list_deadline())
             .chain(self.arrival_deadline())
+            .chain(self.unseen_deadline())
             .min()
     }
 
@@ -2243,6 +2247,7 @@ impl World {
         self.pointer_tick(now_us, out);
         self.follow_tick(now_us, out);
         self.arrival_tick(now_us, out);
+        self.unseen_tick(now_us, out);
         self.list_tick(now_us, out);
         self.screens_tick(now_us, out);
         if self.verify_due.is_some_and(|t| t <= now_us) {

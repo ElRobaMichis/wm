@@ -155,7 +155,10 @@ impl World {
     pub(super) fn on_foreground(&mut self, win: WinKey, now_us: u64, out: &mut Vec<Effect>) {
         self.came_forward(win, now_us);
         match self.desks.desk_of(win) {
-            None => self.start_sync(Goal::Verify, now_us, out),
+            None => {
+                self.watch_unseen(win, now_us);
+                self.start_sync(Goal::Verify, now_us, out)
+            }
             Some(d) if self.desks.is_sticky(win) || d == self.desks.active() => {
                 self.desks.note_foreground(win)
             }

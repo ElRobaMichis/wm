@@ -86,6 +86,8 @@ struct Sim {
     fly_fail: Option<FlyFail>,
     /// El `Scan` dice que la ventana no está al frente (apareció detrás).
     behind: bool,
+    /// Tantos `Scan` más no ven la ventana (todavía sin mostrarse).
+    unlisted: usize,
 }
 
 fn monitor(left: i32) -> MonitorObs {
@@ -125,6 +127,7 @@ impl Sim {
             lands: 0,
             fly_fail: None,
             behind: false,
+            unlisted: 0,
         }
     }
 
@@ -297,7 +300,13 @@ impl Sim {
                                 ..Default::default()
                             };
                             let fg = (!self.behind).then_some(self.win.key);
-                            queue.push_back(Event::Windows { req, result: Ok((vec![info], fg)) });
+                            let list = if self.unlisted > 0 {
+                                self.unlisted -= 1;
+                                Vec::new()
+                            } else {
+                                vec![info]
+                            };
+                            queue.push_back(Event::Windows { req, result: Ok((list, fg)) });
                         }
                         Effect::SetDesks { req, .. } => {
                             queue.push_back(Event::DesksSet { req, failed: Vec::new() })
@@ -1707,12 +1716,38 @@ fn a_window_that_appears_behind_gets_its_rule_when_it_comes_to_the_front() {
     let mut w = World::new(b);
     let mut sim = Sim::new();
     sim.behind = true;
-    sim.run(&mut w, Event::Foreground(WinKey { hwnd: 99, pid: 99 })); // dispara el Scan
+    // Dispara el `Scan` (la 99 no aparece: se la sigue buscando un rato).
+    let first = Event::Foreground(WinKey { hwnd: 99, pid: 99 });
+    sim.run_until(&mut w, vec![first], sim.now + 100 * MS);
     assert_eq!(sim.places, 0, "detrás no se toca todavía: {:?}", sim.logs);
     sim.behind = false;
     sim.now += 800 * MS;
     sim.run(&mut w, Event::Foreground(sim.win.key));
     assert!(sim.is_at(0, P::RightHalf), "{:?} {:?}", sim.win.frame, sim.logs);
+}
+
+#[test]
+fn a_window_that_comes_to_the_front_before_it_is_listed_still_gets_its_rule() {
+    // Como IntelliJ: Java la activa antes de terminar de mostrarla; el
+    // primer `Scan` no la ve y Windows no vuelve a avisar.
+    let (b, _) = crate::apps::parse_bindings("i = idea64, brave | | | al abrir: derecha");
+    let mut w = World::new(b);
+    let mut sim = Sim::new();
+    sim.unlisted = 2;
+    sim.run(&mut w, Event::Foreground(sim.win.key));
+    assert!(sim.is_at(0, P::RightHalf), "{:?} {:?}", sim.win.frame, sim.logs);
+    assert!(sim.logs.iter().any(|l| l.contains("después de pasar al frente")), "{:?}", sim.logs);
+}
+
+#[test]
+fn without_rules_an_unlisted_window_is_not_searched_again() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.unlisted = 1;
+    sim.run(&mut w, Event::Foreground(sim.win.key));
+    assert_eq!(sim.unlisted, 0);
+    sim.run(&mut w, Event::Tick);
+    assert_eq!(w.deadline(), None, "ningún plazo pendiente");
 }
 
 #[test]
