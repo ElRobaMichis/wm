@@ -553,16 +553,29 @@ impl State {
             self.end_list();
             return Ok(());
         };
-        let keep = self.list.as_ref().map(|(i, _)| *i);
-        self.remove_list();
-        self.ensure_current()?;
-        let i = keep
+        // Primero la nueva encima y después se quita la vieja: si se quitaba
+        // antes, mientras se armaban los textos se veía un cuadro vacío
+        // (parpadeo al apretar la letra seguido; prueba del usuario).
+        if self.ensure_current()? {
+            self.list = None; // las ventanas se rearmaron: la vieja ya no está
+        }
+        let old = self.list.take();
+        let i = old
+            .as_ref()
+            .map(|(i, _)| *i)
             .filter(|&i| i < self.overlays.screens().len())
             .unwrap_or_else(|| pick_monitor(&self.overlays));
         let s = &self.overlays.screens()[i];
         let (w, h) = (s.bounds.width() as f32, s.bounds.height() as f32);
-        let visual =
-            overlay_text::build_list(self.overlays.compositor(), &s.root, w, h, s.dpi, &view)?;
+        let built =
+            overlay_text::build_list(self.overlays.compositor(), &s.root, w, h, s.dpi, &view);
+        if let Some((oi, visual)) = old
+            && let Some(os) = self.overlays.screens().get(oi)
+            && let Ok(children) = os.root.Children()
+        {
+            let _ = children.Remove(&visual);
+        }
+        let visual = built?;
         self.map_visible(i, false);
         if self.shown != Some(i) {
             s.root.SetOpacity(1.0)?;
