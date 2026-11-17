@@ -415,6 +415,11 @@ pub enum Event {
         req: Req,
         result: Result<Survey, String>,
     },
+    /// La fila de la lista en el punto del clic (`None`: afuera).
+    ListHit {
+        req: Req,
+        row: Option<usize>,
+    },
     /// Hito 4d: resultado de `Rescue` (las que no se pudieron mover).
     Rescued {
         req: Req,
@@ -455,6 +460,9 @@ pub enum Effect {
     Launch {
         req: Req,
         path: String,
+        /// Sus ejecutables: si ya hay uno con una ventana a la vista (la
+        /// pantalla de carga de AutoCAD o Revit), no se abre otra vez.
+        names: Vec<String>,
     },
     /// Abrir de nuevo una app que corre sin ventanas (en la bandeja), desde
     /// el ejecutable de su proceso. Responde con `Launched`.
@@ -588,6 +596,12 @@ pub enum Effect {
         view: crate::listview::ListView,
     },
     HideList,
+    /// ¿Qué fila de la lista hay en `(x, y)`? Responde con `ListHit`.
+    ListHit {
+        req: Req,
+        x: i32,
+        y: i32,
+    },
 }
 
 /// Antigüedad máxima de una acción para ejecutarla: una que llega tarde (el
@@ -689,6 +703,8 @@ enum Pending {
     /// Hito 4d.
     Survey,
     Rescue,
+    /// Un clic sobre la lista de ventanas.
+    ListHit,
 }
 
 /// El estado del core.
@@ -816,6 +832,10 @@ struct Follow {
 
 /// Cuándo mirar si la app recién abierta ya tiene ventana.
 const FOLLOW_MS: [u64; 4] = [300, 800, 1500, 3000];
+/// Respuesta de `Launch`/`Revive` cuando la app ya se está abriendo (tiene
+/// una ventana a la vista que todavía no es "de usuario": su pantalla de
+/// carga). No es un error: se espera su ventana.
+pub const LOADING: &str = "cargando";
 /// Cuánto dura la protección contra abrir dos veces.
 const LAUNCH_GUARD_US: u64 = 30_000_000;
 
@@ -979,8 +999,8 @@ impl World {
             active: self.desks.active(),
             counts: self.desks.counts(),
         };
-        let targets: Vec<(u8, String)> =
-            (b'A'..=b'Z').filter_map(|l| self.predict(l).map(|a| (l, a))).collect();
+        let targets: Vec<(u8, String, usize)> =
+            (b'A'..=b'Z').filter_map(|l| self.predict(l).map(|(a, n)| (l, a, n))).collect();
         let views = vec![
             crate::mapview::map_view_targets(Layer::Apps, &self.bindings, &open, desks, &targets),
             crate::mapview::map_view_targets(Layer::Window, &self.bindings, &open, desks, &targets),
@@ -990,7 +1010,7 @@ impl World {
 
     /// A qué app va el próximo toque de `letter` (lo mismo que `pick`, sin
     /// cambiar nada), con las ventanas de cuando se armó el mapa.
-    fn predict(&self, letter: u8) -> Option<String> {
+    fn predict(&self, letter: u8) -> Option<(String, usize)> {
         let list: Vec<(WinKey, crate::apps::AppId)> =
             self.map_wins.iter().map(|w| (w.key, w.app_id())).collect();
         let Target::Focus { windows: order, .. } = resolve(letter, &self.bindings, &list) else {
@@ -1010,7 +1030,8 @@ impl World {
                 None => order.first().copied(),
             },
         }?;
-        self.map_wins.iter().find(|w| w.key == next).map(|w| w.app_id().name().to_owned())
+        let n = order.len();
+        self.map_wins.iter().find(|w| w.key == next).map(|w| (w.app_id().name().to_owned(), n))
     }
 
     /// Una ventana pasó al frente con el mapa visible: va arriba en el orden
@@ -1263,6 +1284,12 @@ impl World {
                     self.on_surveyed(req, result, now_us, &mut out);
                 }
             }
+            Event::ListHit { req, row } => {
+                if let Some(Pending::ListHit) = self.pending.get(&req) {
+                    self.pending.remove(&req);
+                    self.list_clicked(row, now_us, &mut out);
+                }
+            }
             Event::Rescued { req, failed } => {
                 if self.pending.remove(&req).is_some() {
                     self.on_rescued(failed, &mut out);
@@ -1300,6 +1327,12 @@ impl World {
                 Some(Pending::Launch { letter, app, path }) => {
                     let key = letter as char;
                     match result {
+                        Err(e) if e.starts_with(LOADING) => {
+                            out.push(Effect::Log(format!(
+                                "Caps + {key}: abriendo {app}… (espera)"
+                            )));
+                            self.start_follow(letter, now_us);
+                        }
                         Ok(()) => {
                             out.push(Effect::Log(format!(
                                 "Caps + {key} → abriendo {app} ({path})"
@@ -1317,6 +1350,12 @@ impl World {
                 Some(Pending::Revive { letter, app }) => {
                     let key = letter as char;
                     match result {
+                        Err(e) if e.starts_with(LOADING) => {
+                            out.push(Effect::Log(format!(
+                                "Caps + {key}: abriendo {app}… (espera)"
+                            )));
+                            self.start_follow(letter, now_us);
+                        }
                         Ok(()) => {
                             out.push(Effect::Log(format!(
                                 "Caps + {key} → {app} no tenía ventana (¿en la bandeja?): la abro de nuevo"
@@ -2388,7 +2427,13 @@ impl World {
                 let pending = Pending::Launch { letter, app: app.clone(), path: path.clone() };
                 self.pending.insert(req, pending);
                 self.follow_fg = foreground;
-                out.push(Effect::Launch { req, path });
+                let names = self
+                    .bindings
+                    .iter()
+                    .find(|b| b.letter == letter.to_ascii_uppercase())
+                    .map(|b| b.names().map(str::to_owned).collect())
+                    .unwrap_or_default();
+                out.push(Effect::Launch { req, path, names });
             }
             Target::Revive { app, names } => {
                 if self.guarded(&app, key, now_us, out) {
@@ -2518,6 +2563,46 @@ impl World {
             out.push(Effect::Log("Lista de ventanas: 30 s sin elegir; la cierro.".into()));
             self.drop_cycle(out);
         }
+    }
+
+    /// Un clic con la lista a la vista: preguntar qué fila es. `false` si no
+    /// hay lista (el clic sigue su camino: arrastrar).
+    pub(super) fn list_click(
+        &mut self,
+        button: crate::mouse::Button,
+        at: (i32, i32),
+        out: &mut Vec<Effect>,
+    ) -> bool {
+        if !self.cycle.as_ref().is_some_and(|c| c.list && c.list_shown) {
+            return false;
+        }
+        if button != crate::mouse::Button::Left {
+            return true; // otro botón: nada (ni arrastrar)
+        }
+        let req = self.req();
+        self.pending.insert(req, Pending::ListHit);
+        out.push(Effect::ListHit { req, x: at.0, y: at.1 });
+        true
+    }
+
+    /// La fila del clic (`row`: entre las visibles): ir a esa ventana; afuera
+    /// de la lista, cerrarla y quedarse donde está.
+    fn list_clicked(&mut self, row: Option<usize>, now_us: u64, out: &mut Vec<Effect>) {
+        let Some(row) = row else {
+            self.drop_cycle(out);
+            return;
+        };
+        let active = self.desks.active();
+        let Some(c) = self.cycle.as_mut() else { return };
+        let rows: Vec<WinKey> =
+            c.order.iter().copied().filter(|w| c.snapshot.iter().any(|s| s.key == *w)).collect();
+        let infos: Vec<WinInfo> =
+            rows.iter().filter_map(|k| c.snapshot.iter().find(|s| s.key == *k).cloned()).collect();
+        let sel = c.order.get(c.pos).and_then(|k| rows.iter().position(|r| r == k)).unwrap_or(0);
+        let view = crate::listview::list_view(c.letter, &infos, sel, active);
+        let Some(&key) = rows.get(view.above + row) else { return };
+        c.pos = c.order.iter().position(|&w| w == key).unwrap_or(c.pos);
+        self.commit_list(now_us, out);
     }
 
     /// Olvidar el ciclo de la letra (y cerrar la lista, si se ve).
@@ -2744,6 +2829,8 @@ mod tests {
         /// La lista de ventanas que se ve (plan-apps.md §8).
         list: Option<crate::listview::ListView>,
         list_shows: usize,
+        /// La fila que "cae" bajo un clic (`None`: afuera de la lista).
+        hit: Option<usize>,
     }
 
     fn win(hwnd: isize, app: &str) -> WinInfo {
@@ -2770,6 +2857,7 @@ mod tests {
                 quit: false,
                 list: None,
                 list_shows: 0,
+                hit: None,
             }
         }
 
@@ -2800,7 +2888,7 @@ mod tests {
                             };
                             queue.push(Event::Focused { req, result: Ok(report) });
                         }
-                        Effect::Launch { req, path } => {
+                        Effect::Launch { req, path, .. } => {
                             self.launched.push(path);
                             queue.push(Event::Launched { req, result: Ok(()) });
                         }
@@ -2830,6 +2918,9 @@ mod tests {
                             self.list_shows += 1;
                         }
                         Effect::HideList => self.list = None,
+                        Effect::ListHit { req, .. } => {
+                            queue.push(Event::ListHit { req, row: self.hit })
+                        }
                         Effect::Rescue { .. } => panic!("sin pantallas no hay rescate"),
                         Effect::InspectAt { .. }
                         | Effect::Raise { .. }
@@ -2937,6 +3028,48 @@ mod tests {
         sim.run(&mut w, layer_off()); // soltar: va a la elegida
         assert_eq!(sim.focused, vec![b1, b3]);
         let _ = b2;
+    }
+
+    fn click() -> Event {
+        Event::Pointer { button: crate::mouse::Button::Left, down: true, x: 500, y: 400 }
+    }
+
+    fn open_list(w: &mut World, sim: &mut Sim) {
+        sim.run(w, letter(b'B'));
+        sim.run(w, letter(b'B'));
+        let effects = w.step(Event::Tick, 1_000_000 + 200_000);
+        for e in effects {
+            if let Effect::ShowList { view } = e {
+                sim.list = Some(view);
+            }
+        }
+        assert!(sim.list.is_some(), "la lista a la vista");
+    }
+
+    #[test]
+    fn a_click_on_a_row_goes_to_that_window() {
+        let (mut w, mut sim) = with_list(&["code", "brave", "brave", "brave"]);
+        let (b1, b3) = (sim.windows[1].key, sim.windows[3].key);
+        open_list(&mut w, &mut sim);
+        sim.hit = Some(2);
+        sim.run(&mut w, click());
+        assert_eq!(sim.focused, vec![b1, b3], "{:?}", sim.logs);
+        assert!(sim.list.is_none());
+        // Soltar Caps después no vuelve a enfocar nada.
+        sim.run(&mut w, layer_off());
+        assert_eq!(sim.focused.len(), 2);
+    }
+
+    #[test]
+    fn a_click_outside_the_list_closes_it_and_stays() {
+        let (mut w, mut sim) = with_list(&["code", "brave", "brave", "brave"]);
+        let b1 = sim.windows[1].key;
+        open_list(&mut w, &mut sim);
+        sim.hit = None;
+        sim.run(&mut w, click());
+        assert!(sim.list.is_none());
+        sim.run(&mut w, layer_off());
+        assert_eq!(sim.focused, vec![b1], "se queda donde estaba");
     }
 
     #[test]
@@ -3047,14 +3180,22 @@ mod tests {
         let mut sim = Sim::new(&["claude", "notepad", "nanofy"]);
         w.map_wins = sim.windows.clone();
         w.map_fg = sim.foreground;
-        assert_eq!(w.predict(b'N').as_deref(), Some("notepad"));
+        assert_eq!(w.predict(b'N').map(|(a, _)| a).as_deref(), Some("notepad"));
         sim.run(&mut w, letter(b'N')); // va a Notepad; Caps sigue abajo
         assert!(sim.logs.last().unwrap().contains("→ notepad «notepad»"), "{:?}", sim.logs);
-        assert_eq!(w.predict(b'N').as_deref(), Some("nanofy"), "el próximo toque va a Nanofy");
+        assert_eq!(
+            w.predict(b'N').map(|(a, _)| a).as_deref(),
+            Some("nanofy"),
+            "el próximo toque va a Nanofy"
+        );
         sim.run(&mut w, letter(b'N'));
         assert!(sim.logs.last().unwrap().contains("→ nanofy «nanofy»"), "{:?}", sim.logs);
         sim.run(&mut w, layer_off());
-        assert_eq!(w.predict(b'N').as_deref(), Some("notepad"), "soltado: la anterior");
+        assert_eq!(
+            w.predict(b'N').map(|(a, _)| a).as_deref(),
+            Some("notepad"),
+            "soltado: la anterior"
+        );
     }
 
     #[test]

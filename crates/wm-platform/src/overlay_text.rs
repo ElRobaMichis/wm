@@ -689,9 +689,25 @@ pub struct ListVisual {
     pill: windows::UI::Composition::CompositionRoundedRectangleGeometry,
     /// Arriba de cada fila (en `rows`).
     row_y: Vec<f32>,
+    /// Dónde quedó el panel en la ventana del monitor y con qué escala
+    /// (para saber qué fila hay bajo un clic).
+    origin: (f32, f32),
+    scale: f32,
 }
 
 impl ListVisual {
+    /// La fila en `(x, y)`, relativo a la ventana del monitor (`None`:
+    /// afuera del panel o en el encabezado o el pie).
+    pub fn row_at(&self, x: f32, y: f32) -> Option<usize> {
+        const W: f32 = 640.0;
+        const ROW: f32 = 36.0;
+        let (lx, ly) = ((x - self.origin.0) / self.scale, (y - self.origin.1) / self.scale);
+        if !(0.0..=W).contains(&lx) {
+            return None;
+        }
+        self.row_y.iter().position(|&top| ly >= top && ly < top + ROW)
+    }
+
     pub fn select(&self, i: usize) -> windows::core::Result<()> {
         let Some(&y) = self.row_y.get(i) else { return Ok(()) };
         self.pill.SetOffset(Vector2 { X: 8.0, Y: y + 2.0 })
@@ -811,7 +827,13 @@ pub fn build_list(
     shape_text(compositor, &shapes, g, &text2, (W - fw) / 2.0, line_y(y + PAD / 2.0, FOOT, SMALL))?;
 
     container.Children()?.InsertAtTop(&visual)?;
-    let list = ListVisual { container, pill: pill_geom, row_y };
+    let list = ListVisual {
+        container,
+        pill: pill_geom,
+        row_y,
+        origin: ((area_w - sw) / 2.0, (area_h - sh) / 2.0),
+        scale,
+    };
     list.select(view.selected)?;
     parent.Children()?.InsertAtTop(&list.container)?;
     Ok(list)

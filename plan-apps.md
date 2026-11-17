@@ -66,3 +66,5 @@ Con 3 o más ventanas en la lista de una letra, el **segundo toque** sin soltar 
 **Decisiones del usuario:** ir al soltar `Caps`; desde 3 ventanas; Esc se queda donde está; **solo títulos, sin miniaturas**. Con las recomendaciones de Fable: los dígitos no eligen filas; clic fuera de la lista cancela; accesibilidad (Narrador) queda para después.
 
 Límites conocidos: la fuente del overlay (Geist) no tiene emoji ni CJK: esos caracteres se omiten hasta sumar un respaldo.
+
+**Detalles (17/11/2026, sin subir):** una app que **arrancó hace menos de 2 minutos** y todavía no tiene ventana se considera cargando (AutoCAD, Revit): `Caps` + letra avisa "Abriendo…" y espera su ventana en vez de abrir otra (Steam en la bandeja corre hace rato: se reabre igual). La tecla del mapa dice "Brave · 5" cuando la letra tiene lista (3 o más). Clic en una fila de la lista = ir a esa ventana; clic afuera = cerrarla y quedarse.

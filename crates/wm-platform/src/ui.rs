@@ -55,6 +55,11 @@ pub enum UiEvent {
     /// completa en ese monitor).
     Skipped(&'static str),
     Failed(String),
+    /// La fila de la lista en un clic (`None`: afuera).
+    ListHit {
+        req: u64,
+        row: Option<usize>,
+    },
     /// Hito 4d: tras un cambio de pantallas, ¿se rearmaron las ventanas?
     Screens {
         n: usize,
@@ -83,6 +88,12 @@ enum Cmd {
     Border(Option<isize>),
     /// La lista de ventanas de una letra (`None`: cerrarla).
     List(Option<wm_model::listview::ListView>),
+    /// ¿Qué fila de la lista hay en `(x, y)` (pantalla)?
+    ListHit {
+        req: u64,
+        x: i32,
+        y: i32,
+    },
     /// Hito 4d: cambiaron las pantallas.
     Screens,
 }
@@ -183,6 +194,11 @@ impl Ui {
     /// La lista de ventanas de una letra (plan-apps.md §8); `None` la cierra.
     pub fn list(&mut self, view: Option<wm_model::listview::ListView>) {
         self.send(Cmd::List(view));
+    }
+
+    /// Qué fila de la lista hay en `(x, y)`; responde `UiEvent::ListHit`.
+    pub fn list_hit(&mut self, req: u64, x: i32, y: i32) {
+        self.send(Cmd::ListHit { req, x, y });
     }
 
     /// Hito 4d: cambiaron las pantallas; rearmar lo que haga falta ya (no
@@ -392,6 +408,14 @@ impl State {
                     },
                     Err(e) => UiEvent::Failed(format!("no se pudo rearmar el mapa: {e}")),
                 }
+            }
+            Cmd::ListHit { req, x, y } => {
+                let row = self.list.as_ref().and_then(|(i, visual, _)| {
+                    let s = self.overlays.screens().get(*i)?;
+                    let (lx, ly) = ((x - s.bounds.left) as f32, (y - s.bounds.top) as f32);
+                    visual.row_at(lx, ly)
+                });
+                UiEvent::ListHit { req, row }
             }
             Cmd::List(view) => {
                 if let Err(e) = self.list(view) {

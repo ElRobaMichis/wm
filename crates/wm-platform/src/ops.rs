@@ -94,7 +94,8 @@ pub enum Op {
     /// Mostrar todo lo marcado.
     RestoreAll,
     /// Abrir un programa (crear un proceso puede tardar: antivirus, disco).
-    Launch(String),
+    /// `names`: sus ejecutables (si ya hay uno cargando, no se abre otro).
+    Launch { path: String, names: Vec<String> },
     /// Abrir de nuevo una app viva sin ventanas, desde el ejecutable de su
     /// proceso (plan-apps.md §3).
     Revive(Vec<String>),
@@ -142,7 +143,7 @@ impl Op {
             Op::Survey => Duration::from_millis(150),
             Op::MoveMany(_) => Duration::from_millis(200),
             Op::RestoreAll => Duration::from_secs(1),
-            Op::Launch(_) | Op::Revive(_) => Duration::from_secs(2),
+            Op::Launch { .. } | Op::Revive(_) => Duration::from_secs(2),
             Op::Stall { lane, .. } => match lane {
                 Lane::Focus => Duration::from_millis(300),
                 Lane::Win => Duration::from_millis(50),
@@ -408,7 +409,7 @@ fn route(op: &Op) -> Lane {
         Op::Focus(..) => Lane::Focus,
         Op::Place { .. }
         | Op::Scan
-        | Op::Launch(_)
+        | Op::Launch { .. }
         | Op::Revive(_)
         | Op::Inspect(_)
         | Op::Normalize(_)
@@ -574,10 +575,22 @@ impl Context {
             }
             Op::Scan => Ok(Output::Windows(windows_list::user_windows())),
             Op::RestoreAll => Ok(Output::Restored(hide::restore_all())),
-            Op::Launch(path) => {
+            Op::Launch { path, names } => {
+                if crate::process_info::loading(names) {
+                    return Err(format!(
+                        "{}: tiene una ventana a la vista",
+                        wm_model::world::LOADING
+                    ));
+                }
                 crate::launch::open(path).map(|()| Output::Nothing).map_err(|e| e.to_string())
             }
             Op::Revive(names) => {
+                if crate::process_info::loading(names) {
+                    return Err(format!(
+                        "{}: tiene una ventana a la vista",
+                        wm_model::world::LOADING
+                    ));
+                }
                 let path = crate::process_info::running_exe(names)
                     .ok_or_else(|| "no está corriendo y no tiene ruta".to_owned())?;
                 crate::launch::open(&path).map(|()| Output::Nothing).map_err(|e| e.to_string())

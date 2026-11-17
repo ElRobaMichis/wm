@@ -503,6 +503,7 @@ impl Brain {
                     .log
                     .line(format!("Mapa y avisos rearmados para {n} monitores ({ms:.1} ms).")),
                 UiEvent::Screens { .. } => {}
+                UiEvent::ListHit { req, row } => self.feed(Event::ListHit { req, row }),
                 UiEvent::Failed(e) => self.log.line(e),
                 UiEvent::Skipped(why) => {
                     self.log.line(format!("Mapa de teclado no mostrado: {why}."))
@@ -560,8 +561,8 @@ impl Brain {
                     let t = self.ops.submit(Op::Focus(WindowId(win.hwnd), win.pid));
                     self.waits.insert(t, Wait::Focus(req));
                 }
-                Effect::Launch { req, path } => {
-                    let t = self.ops.submit(Op::Launch(path));
+                Effect::Launch { req, path, names } => {
+                    let t = self.ops.submit(Op::Launch { path, names });
                     self.waits.insert(t, Wait::Launch(req));
                 }
                 Effect::Revive { req, names } => {
@@ -696,6 +697,10 @@ impl Brain {
                         ui.list(None);
                     }
                 }
+                Effect::ListHit { req, x, y } => match self.ui.as_mut() {
+                    Some(ui) => ui.list_hit(req, x, y),
+                    None => self.feed(Event::ListHit { req, row: None }),
+                },
                 Effect::ScreensChanged => {
                     if let Some(ui) = self.ui.as_mut() {
                         ui.screens_changed();

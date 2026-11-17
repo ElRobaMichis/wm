@@ -167,7 +167,7 @@ pub fn map_view_targets(
     bindings: &[AppBinding],
     open: &[&str],
     desks: DeskSummary,
-    targets: &[(u8, String)],
+    targets: &[(u8, String, usize)],
 ) -> MapView {
     let cell = |letter: char| -> KeyCell {
         let (label, tone) = match layer {
@@ -186,7 +186,23 @@ pub fn map_view_targets(
                             && !bindings.iter().any(|b| b.names().any(|n| n == **app))
                     })
                 };
-                let target = targets.iter().find(|(l, _)| *l == letter as u8).map(|(_, a)| a);
+                let found = targets.iter().find(|(l, _, _)| *l == letter as u8);
+                let target = found.map(|(_, a, _)| a);
+                // Con 3 o más ventanas en la letra (hay lista): "Brave · 5".
+                let count = found.map_or(0, |(_, _, n)| *n);
+                let with_count = |name: String| -> String {
+                    if count < 3 {
+                        return shorten(&name);
+                    }
+                    let tail = format!(" · {count}");
+                    let room = LABEL_MAX.saturating_sub(tail.chars().count()).max(3);
+                    let base: String = if name.chars().count() > room {
+                        name.chars().take(room - 1).collect::<String>() + "…"
+                    } else {
+                        name
+                    };
+                    base + &tail
+                };
                 match bound {
                     Some(b) => {
                         let tone = if target.is_some() || b.names().any(|n| open.contains(&n)) {
@@ -195,10 +211,10 @@ pub fn map_view_targets(
                             Tone::Normal
                         };
                         let name = b.label.clone().unwrap_or_else(|| display_name(&b.app));
-                        (shorten(&name), tone)
+                        (with_count(name), tone)
                     }
                     None if target.is_some() => {
-                        (shorten(&display_name(target.expect("visto"))), Tone::Normal)
+                        (with_count(display_name(target.expect("visto"))), Tone::Normal)
                     }
                     None => match auto() {
                         Some(app) => (shorten(&display_name(app)), Tone::Normal),
@@ -216,6 +232,20 @@ pub fn map_view_targets(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_letter_with_a_list_shows_how_many_windows() {
+        let targets = vec![(b'B', "brave".to_owned(), 5), (b'N', "notepad".to_owned(), 2)];
+        let v = map_view_targets(Layer::Apps, &[], &[], DeskSummary::default(), &targets);
+        let b = v.cells.iter().find(|c| c.letter == 'B').unwrap();
+        assert_eq!(b.label, "Brave · 5");
+        let n = v.cells.iter().find(|c| c.letter == 'N').unwrap();
+        assert_eq!(n.label, "Notepad", "con 2 no hay lista");
+        let long = vec![(b'K', "kicadpcbnewer".to_owned(), 12)];
+        let v = map_view_targets(Layer::Apps, &[], &[], DeskSummary::default(), &long);
+        let k = v.cells.iter().find(|c| c.letter == 'K').unwrap();
+        assert!(k.label.ends_with(" · 12") && k.label.chars().count() <= LABEL_MAX, "{}", k.label);
+    }
+
     use super::*;
     use crate::apps::parse_bindings;
 

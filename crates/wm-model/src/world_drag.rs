@@ -83,6 +83,11 @@ impl World {
         now_us: u64,
         out: &mut Vec<Effect>,
     ) {
+        // Con la lista de ventanas a la vista, un clic elige una fila (o,
+        // afuera, la cierra) en vez de arrastrar.
+        if down && self.list_click(button, at, out) {
+            return;
+        }
         if !down {
             if let Some(p) = self.pointer.take()
                 && let Phase::Dragging(win) = p.phase

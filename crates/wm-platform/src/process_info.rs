@@ -211,6 +211,31 @@ pub fn running_exe(names: &[String]) -> Option<String> {
         .next()
 }
 
+/// Cuánto puede tardar en abrir una app pesada (AutoCAD, Revit) sin que se
+/// la abra otra vez.
+const LOADING_SECS: u64 = 120;
+
+/// ¿Alguna de estas apps arrancó hace menos de 2 minutos? Se usa cuando no
+/// tiene ventanas "de usuario": entonces se está abriendo (pantalla de
+/// carga) y no hay que abrirla otra vez. Una app que vive en la bandeja
+/// (Steam) corre hace rato: esa sí se abre de nuevo para que muestre su
+/// ventana. Solo lecturas de proceso.
+pub fn loading(names: &[String]) -> bool {
+    use windows::Win32::System::SystemInformation::GetSystemTimeAsFileTime;
+    if names.is_empty() {
+        return false;
+    }
+    // SAFETY: sin precondiciones.
+    let now = unsafe { GetSystemTimeAsFileTime() };
+    let now = (u64::from(now.dwHighDateTime) << 32) | u64::from(now.dwLowDateTime);
+    parents().into_iter().any(|(pid, (_, name))| {
+        names.iter().any(|n| stem(&name) == *n)
+            && open(pid)
+                .and_then(|p| creation(&p))
+                .is_some_and(|born| now.saturating_sub(born) / 10_000_000 < LOADING_SECS)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
