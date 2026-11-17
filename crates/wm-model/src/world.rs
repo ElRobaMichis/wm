@@ -259,7 +259,8 @@ enum DeferredTo {
     /// Una ubicación en el mismo monitor.
     Here(Spot),
     /// `Some`: al monitor vecino; `None`: no hay vecino (solo se informa).
-    Push { to: Option<Spot>, dir: Dir, from: Placement },
+    /// `fix`: sin vecino y a 1 px de su lugar, dejarla exacta ahí.
+    Push { to: Option<Spot>, dir: Dir, from: Placement, fix: Option<Spot> },
 }
 
 /// Identificador de un pedido del modelo a la plataforma.
@@ -681,6 +682,9 @@ pub struct World {
     sizing: HashMap<WinKey, Sizing>,
     /// El `go` en curso viene de G/V (conserva el ancla).
     sizing_move: bool,
+    /// El `go` en curso pide el lugar exacto (sin la tolerancia de 1 px):
+    /// ajuste sin vecino o reencaje tras un cambio de pantallas.
+    exact: bool,
     gesture: Option<Gesture>,
     deferred: Option<Deferred>,
     /// Dónde dejamos cada ventana y qué marco logró: mientras siga igual, la
@@ -1279,7 +1283,13 @@ impl World {
                 let n = index_of(&obs.monitors, here.monitor)
                     .and_then(|i| neighbor(&obs.monitors, i, push));
                 let to = n.map(|n| Spot { monitor: obs.monitors[n], placement: enter });
-                let to = DeferredTo::Push { to, dir: push, from: here.placement };
+                // Sin vecino y no exacta (a 1 px, por ejemplo tras un cambio
+                // de escala): la tecla la deja exacta, salvo que ese marco sea
+                // lo que la app logró cuando la pusimos.
+                let fix = (obs.frame != place(here.monitor.work, here.placement)
+                    && !self.remembered(&obs))
+                .then_some(here);
+                let to = DeferredTo::Push { to, dir: push, from: here.placement, fix };
                 let due_us = now_us + CHORD_WAIT_US;
                 self.deferred = Some(Deferred { due_us, before, obs, what, key_us, to });
             }
@@ -1346,11 +1356,25 @@ impl World {
         }
         let what = format!("{what} → {} ({})", placement_name(target), obs.app);
         out.push(Effect::Log(format!("{what}: no hay otro monitor de ese lado.")));
+        let exact = place(g.origin.monitor.work, target);
+        if g.origin_rect != exact && !self.remembered(obs) {
+            // A 1 px de su lugar: dejarla exacta, sin entrada en Z.
+            self.record = None;
+            self.exact = true;
+            self.go(obs, g.origin, exact, format!("{what} (ajuste)"), key_us, now_us, out);
+            return;
+        }
         self.go(obs, g.origin, g.origin_rect, what, key_us, now_us, out);
     }
 
+    /// El marco es el que la app logró cuando la pusimos (tamaño mínimo,
+    /// redondeo propio): no hay nada que ajustar.
+    fn remembered(&self, obs: &Obs) -> bool {
+        self.placed.get(&obs.key).is_some_and(|(_, a)| edge_error(obs.frame, *a) <= TOLERANCE_PX)
+    }
+
     fn run_deferred(&mut self, d: Deferred, now_us: u64, out: &mut Vec<Effect>) {
-        let (to, dir, from) = match d.to {
+        let (to, dir, from, fix) = match d.to {
             DeferredTo::Here(to) => {
                 let p = to.placement;
                 let what = format!("{} → {} ({})", d.what, placement_name(p), d.obs.app);
@@ -1358,7 +1382,7 @@ impl World {
                 self.go(&d.obs, to, place(to.monitor.work, p), what, d.key_us, now_us, out);
                 return;
             }
-            DeferredTo::Push { to, dir, from } => (to, dir, from),
+            DeferredTo::Push { to, dir, from, fix } => (to, dir, from, fix),
         };
         match to {
             Some(to) => {
@@ -1373,13 +1397,17 @@ impl World {
                 self.record = Some(d.before);
                 self.go(&d.obs, to, rect, what, d.key_us, now_us, out);
             }
-            None => out.push(Effect::Log(format!(
-                "{} → {} ({}): no hay otro monitor {}.",
-                d.what,
-                placement_name(from),
-                d.obs.app,
-                dir.toward()
-            ))),
+            None => {
+                let what = format!("{} → {} ({})", d.what, placement_name(from), d.obs.app);
+                out.push(Effect::Log(format!("{what}: no hay otro monitor {}.", dir.toward())));
+                if let Some(spot) = fix {
+                    self.record = None;
+                    self.exact = true;
+                    let rect = place(spot.monitor.work, spot.placement);
+                    let what = format!("{what} (ajuste)");
+                    self.go(&d.obs, spot, rect, what, d.key_us, now_us, out);
+                }
+            }
         }
     }
 
@@ -1420,6 +1448,7 @@ impl World {
         out: &mut Vec<Effect>,
     ) {
         let record = self.record.take();
+        let tolerance = if std::mem::take(&mut self.exact) { 0 } else { TOLERANCE_PX };
         // El ancla de G/V vale solo si el último movimiento de la ventana fue
         // G o V: con cualquier otro (A/D/W/S, esquina, C, Z) se olvida. Antes
         // se deducía por la posición y una mitad recién puesta podía pasar
@@ -1439,7 +1468,7 @@ impl World {
             return; // ya va hacia ahí
         }
         if !obs.maximized
-            && edge_error(obs.frame, target) <= TOLERANCE_PX
+            && edge_error(obs.frame, target) <= tolerance
             && !self.jobs.contains_key(&obs.key)
         {
             self.placed.insert(obs.key, (spot, obs.frame));

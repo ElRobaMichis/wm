@@ -148,6 +148,43 @@ pub fn rescue_plan(monitors: &[MonitorObs], seen: &[Seen]) -> Vec<(usize, Verdic
     plan
 }
 
+/// Hito 4d (ajuste): ¿la ventana sigue en la ubicación donde la dejamos,
+/// aunque Windows la haya reescalado? `achieved`: el marco que logró;
+/// `slot`: la misma ubicación en el área nueva (`work`). Sí si nadie la
+/// tocó (a ≤ 16 px de donde quedó) o, con otra escala, si su centro cae en
+/// la ubicación nueva y cada lado mide ±10 % de lo esperado (escalado y
+/// recortado al área). No si la arrastraron o la cambiaron de tamaño.
+pub fn still_there(
+    achieved: Rect,
+    frame: Rect,
+    old_dpi: u32,
+    new_dpi: u32,
+    work: Rect,
+    slot: Rect,
+) -> bool {
+    if crate::place::edge_error(frame, achieved) <= 16 {
+        return true;
+    }
+    if old_dpi == new_dpi || old_dpi == 0 {
+        return false;
+    }
+    let k = f64::from(new_dpi) / f64::from(old_dpi);
+    let (cx, cy) = ((frame.left + frame.right) / 2, (frame.top + frame.bottom) / 2);
+    if !(cx >= slot.left && cx < slot.right && cy >= slot.top && cy < slot.bottom) {
+        return false;
+    }
+    // Escalada ×k (las apps con DPI por monitor siguen el rectángulo que
+    // sugiere Windows, aunque se pase del área) o además recortada al área.
+    let near = |len: i32, was: i32, max: i32| {
+        let scaled = f64::from(was) * k;
+        [scaled, scaled.min(f64::from(max))]
+            .iter()
+            .any(|want| (f64::from(len) - want).abs() <= want * 0.10)
+    };
+    near(frame.width(), achieved.width(), work.width())
+        && near(frame.height(), achieved.height(), work.height())
+}
+
 /// Un destino absoluto (Z) que puede ser de un monitor que ya no está: si no
 /// es alcanzable, el mismo tamaño (achicado si no entra) dentro del área del
 /// monitor más cercano, lo más cerca posible de donde estaba.
@@ -796,6 +833,60 @@ mod tests {
         assert!(!t.active(), "reconciliado");
         assert_eq!(t.tick(3650), Some(StormAction::Snapshot));
         assert!(!t.active(), "el control tardío no es tormenta");
+    }
+
+    #[test]
+    fn still_there_after_windows_rescales_but_not_after_the_user_moved_it() {
+        use crate::Placement;
+        use crate::place;
+        let old = mon(0, 0, 1920, 1080, 96);
+        for (dpi, work_h) in [(120u32, 1020), (77, 1040), (144, 1008)] {
+            let new = MonitorObs { work: Rect::new(0, 0, 1920, work_h), ..old };
+            let k = f64::from(dpi) / 96.0;
+            for p in [
+                Placement::LeftHalf,
+                Placement::RightHalf,
+                Placement::TopHalf,
+                Placement::BottomHalf,
+                Placement::TopLeft,
+                Placement::TopRight,
+                Placement::BottomLeft,
+                Placement::BottomRight,
+            ] {
+                let achieved = place(old.work, p);
+                let slot = place(new.work, p);
+                let w = ((f64::from(achieved.width()) * k) as i32).min(new.work.width());
+                let h = ((f64::from(achieved.height()) * k) as i32).min(new.work.height());
+                // Windows escala desde la esquina de arriba a la izquierda…
+                let corner =
+                    Rect::new(achieved.left, achieved.top, achieved.left + w, achieved.top + h);
+                // …o desde el origen de la pantalla.
+                let (l, t) =
+                    ((f64::from(achieved.left) * k) as i32, (f64::from(achieved.top) * k) as i32);
+                let origin = Rect::new(l, t, l + w, t + h);
+                for frame in [corner, origin] {
+                    let center_in = {
+                        let (cx, cy) =
+                            ((frame.left + frame.right) / 2, (frame.top + frame.bottom) / 2);
+                        cx >= slot.left && cx < slot.right && cy >= slot.top && cy < slot.bottom
+                    };
+                    if center_in {
+                        assert!(
+                            still_there(achieved, frame, 96, dpi, new.work, slot),
+                            "{p:?} a {dpi}: {frame:?}"
+                        );
+                    }
+                }
+            }
+        }
+        let achieved = place(old.work, Placement::LeftHalf);
+        let slot = achieved;
+        let moved = Rect::new(300, 0, 1260, 1032);
+        assert!(!still_there(achieved, moved, 96, 96, old.work, slot), "arrastrada");
+        let small = Rect::new(0, 0, 576, 619);
+        assert!(!still_there(achieved, small, 96, 120, old.work, slot), "redimensionada");
+        let other = Rect::new(1920, 0, 2880, 1032);
+        assert!(!still_there(achieved, other, 96, 120, old.work, slot), "otro lado");
     }
 
     #[test]

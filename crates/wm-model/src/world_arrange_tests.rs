@@ -258,6 +258,45 @@ impl Sim {
                         Effect::Log(line) => self.logs.push(line),
                         Effect::Notice(text) => self.notices.push(text),
                         Effect::MovePointer { .. } => {}
+                        // Hito 4d: pantallas.
+                        Effect::Survey { req } => {
+                            let o = self.obs();
+                            let info = crate::world::WinInfo {
+                                key: o.key,
+                                app: o.app.clone(),
+                                title: o.title.clone(),
+                                desk: Some(1),
+                                ..Default::default()
+                            };
+                            let survey = crate::world::Survey {
+                                monitors: self.monitors.clone(),
+                                wins: vec![crate::world::SurveyWin {
+                                    info,
+                                    frame: o.frame,
+                                    outer: o.outer,
+                                    maximized: o.maximized,
+                                    parked: false,
+                                }],
+                            };
+                            queue.push_back(Event::Surveyed { req, result: Ok(survey) });
+                        }
+                        Effect::Rescue { req, .. } => {
+                            queue.push_back(Event::Rescued { req, failed: Vec::new() })
+                        }
+                        Effect::ScreensChanged => {}
+                        Effect::Scan { req } => {
+                            let info = crate::world::WinInfo {
+                                key: self.win.key,
+                                app: "brave".into(),
+                                title: "Brave".into(),
+                                desk: Some(1),
+                                ..Default::default()
+                            };
+                            queue.push_back(Event::Windows { req, result: Ok((vec![info], None)) });
+                        }
+                        Effect::SetDesks { req, .. } => {
+                            queue.push_back(Event::DesksSet { req, failed: Vec::new() })
+                        }
                         other => panic!("efecto inesperado: {other:?}"),
                     }
                 }
@@ -1514,4 +1553,93 @@ fn z_to_a_monitor_that_is_gone_lands_on_the_nearest_one() {
         "{:?}",
         sim.logs
     );
+}
+
+// ---- Hito 4d (ajuste): reencaje tras un cambio de escala ----
+
+/// Windows reescala la ventana al cambiar la escala de su monitor: el
+/// rectángulo exterior crece ×k desde la esquina y los bordes invisibles
+/// también.
+fn rescale(sim: &mut Sim, dpi: u32, work_bottom: i32) {
+    let k = f64::from(dpi) / f64::from(sim.win.dpi);
+    sim.monitors[0].dpi = dpi;
+    sim.monitors[0].work.bottom = work_bottom;
+    let o = sim.win.outer();
+    let (w, h) = ((f64::from(o.width()) * k) as i32, (f64::from(o.height()) * k) as i32);
+    let outer = Rect::new(o.left, o.top, o.left + w, o.top + h);
+    sim.win.dpi = dpi;
+    let (l, t, r, b) = sim.win.margins_now();
+    sim.win.frame = Rect::new(outer.left + l, outer.top + t, outer.right - r, outer.bottom - b);
+}
+
+#[test]
+fn a_scale_change_snaps_a_half_back_exactly_without_z_or_flight() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.monitors = vec![monitor(0)];
+    sim.key(&mut w, b'A');
+    assert!(sim.is_at(0, P::LeftHalf));
+    let flights = sim.flights;
+    rescale(&mut sim, 120, 1020);
+    assert!(!sim.is_at(0, P::LeftHalf), "Windows la despegó");
+    sim.run(&mut w, Event::Screen(crate::screens::ScreenEvent::Changed));
+    assert!(sim.is_at(0, P::LeftHalf), "reencajada: {:?} {:?}", sim.win.frame, sim.logs);
+    assert_eq!(sim.flights, flights, "sin vuelo");
+    assert!(sim.logs.iter().any(|l| l.contains("reencajadas")), "{:?}", sim.logs);
+    // Z deshace la A, no el reencaje: vuelve a donde estaba antes de la A.
+    let places = sim.places;
+    sim.key(&mut w, b'A');
+    assert_eq!(sim.places, places, "ya está exacta: A no la mueve");
+    assert!(sim.logs.last().unwrap().contains("no hay otro monitor"), "{:?}", sim.logs);
+}
+
+#[test]
+fn a_window_moved_by_hand_is_not_snapped_after_a_scale_change() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.monitors = vec![monitor(0)];
+    sim.key(&mut w, b'A');
+    sim.win.frame = Rect::new(400, 300, 1000, 900);
+    let places = sim.places;
+    rescale(&mut sim, 120, 1020);
+    sim.run(&mut w, Event::Screen(crate::screens::ScreenEvent::Changed));
+    assert_eq!(sim.places, places, "{:?}", sim.logs);
+}
+
+#[test]
+fn one_pixel_off_without_a_neighbor_a_makes_it_exact_once() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.monitors = vec![monitor(0)];
+    sim.at(0, P::LeftHalf);
+    sim.win.frame.right -= 1;
+    sim.key(&mut w, b'A');
+    assert!(sim.is_at(0, P::LeftHalf), "{:?}", sim.logs);
+    assert!(sim.logs.iter().any(|l| l.contains("no hay otro monitor")));
+    let places = sim.places;
+    sim.key(&mut w, b'A');
+    assert_eq!(sim.places, places, "la segunda A no pide nada");
+    sim.key(&mut w, b'Z');
+    assert!(sim.is_at(0, P::LeftHalf), "el ajuste no deja entrada en Z");
+}
+
+#[test]
+fn one_pixel_off_with_a_neighbor_a_still_pushes() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.at(1, P::LeftHalf);
+    sim.win.frame.left += 1;
+    sim.key(&mut w, b'A');
+    assert!(sim.is_at(0, P::RightHalf), "{:?}", sim.logs);
+}
+
+#[test]
+fn a_corner_one_pixel_off_without_a_neighbor_ends_exact() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.monitors = vec![monitor(0)];
+    sim.at(0, P::TopLeft);
+    sim.win.frame.bottom += 1;
+    sim.chord(&mut w, b"WA", true);
+    assert!(sim.is_at(0, P::TopLeft), "{:?} {:?}", sim.win.frame, sim.logs);
 }

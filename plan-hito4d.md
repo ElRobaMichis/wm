@@ -344,3 +344,11 @@ Un commit cada uno; cada paso cerrado se anota en `plan-core.md` §7.
 | Posteo de `WM_WTSSESSION_CHANGE` entre procesos [S] | Si no llega, el bloqueo queda cubierto solo por las pruebas puras 9 y 23 y por el guion |
 | `rebuild_screens` nunca corrió con un cambio real | 4d.8, o el paso 4 del guion |
 | Windows 10 | El "recordar ubicaciones por monitor" es de Windows 11: en 10 habrá más rescates reales, y es justo el caso para el que existe 4d [S] |
+
+## 10. Ajustes tras la prueba del usuario (16/11/2026)
+
+Prueba con cables y bloqueo: todo bien (Windows acomodó las visibles; se rescató solo la escondida del escritorio 2; nada se movió con la sesión bloqueada). Apagar el monitor con su botón no le avisa nada a Windows en esa PC (no aplica). Dos ajustes, con diseño de Fable 5.2:
+
+1. **Cambio de escala o de área de trabajo:** las ventanas que pusimos en una mitad o esquina **y siguen ahí** (`screens::still_there`: a ≤ 16 px de donde quedaron, o con otra escala, centro en la ubicación nueva y lados ±10 % de lo escalado) se **reencajan exactas** en la misma ubicación del mismo monitor, una vez tras la calma, sin Z ni vuelo (`World::resnap`). Cambia la regla de §3 ("no se reaplican mitades"): se reaplican solo las que pusimos nosotros y nadie movió. Antes, Brave quedaba despegada y A decía "no hay otro monitor" (a 1 px contaba como la mitad).
+2. **Una tecla a 1 px de su lugar, sin vecino:** la deja exacta (además del cartel), sin entrada en Z; con vecino empuja como siempre.
+3. **Escondida rescatada que vuelve:** al rescatar se guarda de dónde salió (con la topología de antes); si esa topología vuelve y nadie la movió, vuelve a su lugar (`return_home`). Windows lo hace solo con las visibles.

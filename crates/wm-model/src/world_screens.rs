@@ -5,14 +5,15 @@
 //! inalcanzable (`screens::rescue_plan`). Windows mueve; nosotros no
 //! recordamos destinos ni peleamos con su re-acomodo.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use super::{Effect, Pending, Req, WinInfo, WinKey, World};
+use super::{Effect, NoFly, Obs, Pending, Req, Spot, WinInfo, WinKey, World, index_of};
 use crate::Rect;
-use crate::place::{MonitorObs, centered, outer_for};
+use crate::place::{MonitorObs, centered, edge_error, outer_for, placement_name};
 use crate::screens::{
     ScreenEvent, Seen, StormAction, StormTracker, Verdict, rescue_plan, topology_key,
 };
+use crate::{Placement, place};
 
 /// Una ventana como la ve un `Survey`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +77,24 @@ pub(crate) struct Screens {
     /// sin animaciones hasta la calma. El arranque o el área de trabajo no.
     frozen: bool,
     stats: ScreenStats,
+    /// Escondidas que rescatamos, para devolverlas cuando vuelva su
+    /// topología (ajuste del 4d).
+    homes: HashMap<WinKey, Home>,
+    /// La topología de antes, si esta tormenta la cambió (0 si no): las
+    /// casas que se guardan ahora son de ella.
+    home_key: u64,
+}
+
+/// De dónde sacamos una ventana al rescatarla.
+#[derive(Debug, Clone, Copy)]
+struct Home {
+    /// Topología en la que estaba ahí.
+    key: u64,
+    /// Esquina exterior antes y después del rescate.
+    from: (i32, i32),
+    to: (i32, i32),
+    /// Marco de antes (para saber si vuelve a ser alcanzable).
+    frame: Rect,
 }
 
 impl Screens {
@@ -207,6 +226,11 @@ impl World {
             if j.flying {
                 out.push(Effect::Land { win });
             }
+            // Un reencaje (o una tecla) a medio camino: la memoria de la
+            // ubicación queda para reencajar tras la próxima calma.
+            if j.spot.placement != Placement::Full {
+                self.placed.insert(win, (j.spot, j.target));
+            }
         }
         self.deferred = None;
         self.gesture = None;
@@ -305,10 +329,14 @@ impl World {
             }
         };
         let changed = key != self.screens.last_key;
+        if !late {
+            self.screens.home_key = if changed { self.screens.last_key } else { 0 };
+        }
+        let mut old_placed = HashMap::new();
         if changed {
             // Memorias de "repetir" (plan-core §3.3): con otros monitores
-            // valen como primera vez.
-            self.placed.clear();
+            // valen como primera vez. Lo que pusimos se reencaja abajo.
+            old_placed = std::mem::take(&mut self.placed);
             self.centers.clear();
             self.sizing.clear();
             self.limits.clear();
@@ -321,6 +349,11 @@ impl World {
             self.screens.last_key = key;
         }
         let dragging = self.dragging_win();
+        let mut moves = Vec::new();
+        if changed && !late {
+            self.resnap(old_placed, &survey, dragging, now_us, out);
+            self.return_home(key, &survey, &mut moves, out);
+        }
         let seen: Vec<Seen> = survey
             .wins
             .iter()
@@ -336,7 +369,6 @@ impl World {
             })
             .collect();
         let plan = rescue_plan(&survey.monitors, &seen);
-        let mut moves = Vec::new();
         let mut names = Vec::new();
         let mut gave_up = Vec::new();
         for (i, verdict) in plan {
@@ -352,6 +384,15 @@ impl World {
                 Verdict::Move { dx, dy } => {
                     let to = shift(w.outer, dx, dy);
                     moves.push((win, to.left, to.top));
+                    if self.screens.home_key != 0 {
+                        let home = Home {
+                            key: self.screens.home_key,
+                            from: (w.outer.left, w.outer.top),
+                            to: (to.left, to.top),
+                            frame: w.frame,
+                        };
+                        self.screens.homes.insert(win, home);
+                    }
                     names.push(format!("{} ({dx:+}, {dy:+})", w.info.app));
                 }
                 Verdict::Remaximize { on } => {
@@ -405,6 +446,137 @@ impl World {
             self.start_sync(crate::desks::Goal::Verify, now_us, out);
         }
         self.screens.booted = true;
+    }
+
+    /// Tras un cambio de topología: lo que pusimos en una mitad o esquina y
+    /// sigue ahí (aunque Windows lo haya reescalado) vuelve a quedar exacto
+    /// en la misma ubicación del mismo monitor. Una vez, sin Z ni vuelo.
+    fn resnap(
+        &mut self,
+        old: HashMap<WinKey, (Spot, Rect)>,
+        survey: &Survey,
+        dragging: Option<WinKey>,
+        now_us: u64,
+        out: &mut Vec<Effect>,
+    ) {
+        let mut names = Vec::new();
+        for (win, (spot, achieved)) in old {
+            if spot.placement == Placement::Full
+                || edge_error(achieved, place(spot.monitor.work, spot.placement)) > 1
+            {
+                continue; // no era un encaje exacto (G/V, tamaño mínimo)
+            }
+            let Some(mi) = index_of(&survey.monitors, spot.monitor) else { continue };
+            let m = survey.monitors[mi];
+            let Some(w) = survey.wins.iter().find(|w| w.info.key == win) else { continue };
+            if w.info.minimized
+                || w.maximized
+                || w.parked
+                || w.frame == m.bounds
+                || self.jobs.contains_key(&win)
+                || dragging == Some(win)
+                || !self.desks.in_scope(&w.info.app)
+            {
+                continue;
+            }
+            let slot = place(m.work, spot.placement);
+            if !crate::screens::still_there(
+                achieved,
+                w.frame,
+                spot.monitor.dpi,
+                m.dpi,
+                m.work,
+                slot,
+            ) {
+                continue;
+            }
+            let gap = edge_error(w.frame, slot);
+            let obs = Obs {
+                key: win,
+                app: w.info.app.clone(),
+                title: w.info.title.clone(),
+                frame: w.frame,
+                outer: w.outer,
+                dpi: m.dpi,
+                maximized: false,
+                minimized: false,
+                monitors: survey.monitors.clone(),
+                no_fly: Some(NoFly::NotFront),
+            };
+            let what = format!(
+                "Pantallas → {} ({}, reencaje)",
+                placement_name(spot.placement),
+                w.info.app
+            );
+            self.record = None;
+            self.exact = true;
+            self.go(
+                &obs,
+                Spot { monitor: m, placement: spot.placement },
+                slot,
+                what,
+                now_us,
+                now_us,
+                out,
+            );
+            if gap > 0 {
+                names.push(format!(
+                    "{} ({}, estaba a {gap} px)",
+                    w.info.app,
+                    placement_name(spot.placement)
+                ));
+            }
+        }
+        if !names.is_empty() {
+            out.push(Effect::Log(format!(
+                "Pantallas: {} reencajadas: {}.",
+                names.len(),
+                names.join(", ")
+            )));
+        }
+    }
+
+    /// Volvió la topología de la que sacamos una ventana al rescatarla: si
+    /// sigue donde la dejamos, vuelve a su lugar (Windows lo hace con las
+    /// visibles; no con las escondidas en otro escritorio).
+    fn return_home(
+        &mut self,
+        key: u64,
+        survey: &Survey,
+        moves: &mut Vec<(WinKey, i32, i32)>,
+        out: &mut Vec<Effect>,
+    ) {
+        let areas: Vec<Rect> = survey.monitors.iter().map(|m| m.work).collect();
+        let min = crate::screens::min_visible(&survey.monitors);
+        let near = |a: (i32, i32), b: (i32, i32)| (a.0 - b.0).abs() <= 1 && (a.1 - b.1).abs() <= 1;
+        let mut back = Vec::new();
+        let homes = std::mem::take(&mut self.screens.homes);
+        for (win, home) in homes {
+            let Some(w) = survey.wins.iter().find(|w| w.info.key == win) else { continue };
+            // Nadie la movió desde el rescate; si no, la casa se olvida.
+            if !near((w.outer.left, w.outer.top), home.to) {
+                continue;
+            }
+            let ok = home.key == key
+                && !w.info.minimized
+                && !w.maximized
+                && !w.parked
+                && !self.jobs.contains_key(&win)
+                && crate::screens::reachable(home.frame, &areas, min);
+            if ok {
+                moves.push((win, home.from.0, home.from.1));
+                back.push(w.info.app.clone());
+            } else {
+                self.screens.homes.insert(win, home);
+            }
+        }
+        if !back.is_empty() {
+            out.push(Effect::Log(format!(
+                "Pantallas: {} devuelta(s) a su monitor: {}.",
+                back.len(),
+                back.join(", ")
+            )));
+        }
     }
 
     pub(crate) fn on_rescued(&mut self, failed: Vec<(WinKey, String)>, out: &mut Vec<Effect>) {

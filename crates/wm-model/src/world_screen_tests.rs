@@ -372,3 +372,65 @@ fn only_a_real_change_turns_animations_off() {
     sim.wait(&mut w, 2_000);
     assert!(!w.screens_frozen(), "hasta la calma");
 }
+
+#[test]
+fn a_rescued_window_goes_back_when_its_monitor_returns() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    let start = Rect::new(2500, 100, 3300, 700);
+    let win = sim.add(1, start);
+    sim.screen(&mut w, ScreenEvent::WorkArea); // primera lectura (como el arranque)
+    sim.wait(&mut w, 5_000);
+    sim.monitors = vec![monitor(0)];
+    sim.screen(&mut w, ScreenEvent::Changed);
+    sim.wait(&mut w, 5_000);
+    assert!(sim.reachable(win));
+    assert_ne!(sim.frame(win), start);
+    sim.monitors = vec![monitor(0), monitor(1920)];
+    sim.screen(&mut w, ScreenEvent::Changed);
+    sim.wait(&mut w, 5_000);
+    assert_eq!(sim.frame(win), start, "{:?}", sim.logs);
+    assert!(sim.logs.iter().any(|l| l.contains("devuelta(s) a su monitor")), "{:?}", sim.logs);
+}
+
+#[test]
+fn a_rescued_window_moved_in_between_stays_where_it_is() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    let win = sim.add(1, Rect::new(2500, 100, 3300, 700));
+    sim.screen(&mut w, ScreenEvent::WorkArea);
+    sim.wait(&mut w, 5_000);
+    sim.monitors = vec![monitor(0)];
+    sim.screen(&mut w, ScreenEvent::Changed);
+    sim.wait(&mut w, 5_000);
+    let moved = Rect::new(200, 200, 1000, 800);
+    sim.get(win).frame = moved;
+    sim.monitors = vec![monitor(0), monitor(1920)];
+    sim.screen(&mut w, ScreenEvent::Changed);
+    sim.wait(&mut w, 5_000);
+    assert_eq!(sim.frame(win), moved);
+}
+
+#[test]
+fn another_topology_in_between_does_not_bring_it_back_yet() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    let start = Rect::new(2500, 100, 3300, 700);
+    let win = sim.add(1, start);
+    sim.screen(&mut w, ScreenEvent::WorkArea);
+    sim.wait(&mut w, 5_000);
+    sim.monitors = vec![monitor(0)];
+    sim.screen(&mut w, ScreenEvent::Changed);
+    sim.wait(&mut w, 5_000);
+    let rescued = sim.frame(win);
+    // Otra topología (barra de tareas más alta), todavía sin el monitor 2.
+    sim.monitors[0].work.bottom -= 20;
+    sim.screen(&mut w, ScreenEvent::WorkArea);
+    sim.wait(&mut w, 5_000);
+    assert_eq!(sim.frame(win), rescued);
+    // Vuelve la original: ahora sí.
+    sim.monitors = vec![monitor(0), monitor(1920)];
+    sim.screen(&mut w, ScreenEvent::Changed);
+    sim.wait(&mut w, 5_000);
+    assert_eq!(sim.frame(win), start, "{:?}", sim.logs);
+}
