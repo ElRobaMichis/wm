@@ -17,7 +17,8 @@ const BEHIND_MS: u64 = 5_000;
 
 /// Cuándo volver a buscar una ventana que pasó al frente y el `Scan` no vio
 /// (desde el `FOREGROUND`).
-const UNSEEN_MS: [u64; 6] = [250, 600, 1200, 2500, 5000, 10_000];
+const UNSEEN_MS: [u64; 12] =
+    [250, 500, 750, 1000, 1500, 2000, 2500, 3000, 4000, 5000, 7000, 10_000];
 
 /// Una ventana al frente que todavía no aparece en la lista.
 #[derive(Debug, Clone, Copy)]
@@ -114,10 +115,14 @@ impl World {
 
     /// `FOREGROUND` de una ventana: si era una nueva con regla que había
     /// aparecido detrás, empieza a seguirla.
-    pub(super) fn came_forward(&mut self, win: WinKey, now_us: u64) {
+    pub(super) fn came_forward(&mut self, win: WinKey, now_us: u64, out: &mut Vec<Effect>) {
         self.behind.retain(|_, (_, seen)| now_us.saturating_sub(*seen) <= BEHIND_MS * 1000);
         let Some((rule, _)) = self.behind.remove(&win) else { return };
         if self.paused || self.screens_frozen() {
+            out.push(Effect::Log(
+                "Regla al abrir: pasó al frente, pero wm está en pausa o cambiando las pantallas."
+                    .into(),
+            ));
             return;
         }
         let arrival = Arrival { rule, since_us: now_us, step: 0, inspecting: false, last: None };
@@ -189,10 +194,26 @@ impl World {
         out: &mut Vec<Effect>,
     ) {
         let Some(mut a) = self.arrivals.remove(&win) else { return };
-        let Ok(obs) = result else { return }; // se cerró
+        let obs = match result {
+            Ok(obs) => obs,
+            Err(e) => {
+                out.push(Effect::Log(format!(
+                    "Regla al abrir: la ventana ya no está ({e}); no la muevo."
+                )));
+                return;
+            }
+        };
         // El usuario ya la movió (Caps + Alt, arrastre) o la puso a pantalla
         // completa: la regla no corre.
-        if self.jobs.contains_key(&win) || self.dragging_win() == Some(win) || is_fullscreen(&obs) {
+        let why = if self.jobs.contains_key(&win) || self.dragging_win() == Some(win) {
+            Some("la moviste tú antes de que se quedara quieta")
+        } else if is_fullscreen(&obs) {
+            Some("está a pantalla completa")
+        } else {
+            None
+        };
+        if let Some(why) = why {
+            out.push(Effect::Log(format!("Regla al abrir ({}): no la muevo: {why}.", obs.app)));
             return;
         }
         let now = (obs.frame, obs.maximized);
@@ -214,7 +235,13 @@ impl World {
     }
 
     fn apply_rule(&mut self, rule: OpenRule, obs: Obs, now_us: u64, out: &mut Vec<Effect>) {
-        let Some(m) = monitor_of(&obs.monitors, obs.frame) else { return };
+        let Some(m) = monitor_of(&obs.monitors, obs.frame) else {
+            out.push(Effect::Log(format!(
+                "Regla al abrir ({}): no está en ningún monitor ({:?}); no la muevo.",
+                obs.app, obs.frame
+            )));
+            return;
+        };
         let monitor = obs.monitors[m];
         self.next_gesture += 1;
         let entry = Entry {
@@ -235,6 +262,10 @@ impl World {
         match rule {
             OpenRule::Maximized => {
                 if obs.maximized {
+                    out.push(Effect::Log(format!(
+                        "Regla al abrir ({}): ya se abrió maximizada (marco {:?}).",
+                        obs.app, obs.frame
+                    )));
                     return;
                 }
                 self.remember(entry);

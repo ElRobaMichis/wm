@@ -1193,6 +1193,8 @@ impl World {
                 if let Some(Pending::FollowScan) = self.pending.get(&req) {
                     self.pending.remove(&req);
                     if let Ok((windows, fg)) = result {
+                        // Suele ser el primero en ver la ventana nueva.
+                        self.adopt_scan(&windows, fg, now_us, &mut out);
                         self.follow_scanned(&windows, fg, now_us, &mut out);
                     } else if let Some(f) = self.follow.as_mut() {
                         f.scanning = false;

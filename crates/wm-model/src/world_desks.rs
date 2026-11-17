@@ -153,7 +153,7 @@ impl World {
     /// otro escritorio (clic en la barra, Alt+Tab, o Windows activó una
     /// escondida): saltar o rebotar ([`Goal::Foreign`]).
     pub(super) fn on_foreground(&mut self, win: WinKey, now_us: u64, out: &mut Vec<Effect>) {
-        self.came_forward(win, now_us);
+        self.came_forward(win, now_us, out);
         match self.desks.desk_of(win) {
             None => {
                 self.watch_unseen(win, now_us);
