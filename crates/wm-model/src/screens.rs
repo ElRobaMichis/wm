@@ -124,10 +124,10 @@ pub fn rescue_plan(monitors: &[MonitorObs], seen: &[Seen]) -> Vec<(usize, Verdic
         }
         if s.maximized {
             let (cx, cy) = ((f.left + f.right) / 2, (f.top + f.bottom) / 2);
-            if !monitors.iter().any(|m| inside(m.bounds, cx, cy)) {
-                if let Some(on) = monitor_of(monitors, f) {
-                    plan.push((i, Verdict::Remaximize { on }));
-                }
+            if !monitors.iter().any(|m| inside(m.bounds, cx, cy))
+                && let Some(on) = monitor_of(monitors, f)
+            {
+                plan.push((i, Verdict::Remaximize { on }));
             }
             continue;
         }
