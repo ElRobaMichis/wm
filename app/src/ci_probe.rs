@@ -32,6 +32,8 @@
 //!     del área pegada al borde y V la devuelve a la mitad;
 //! 14. **mapa** (hito 2a): mantener Caps lo muestra a ~400 ms y soltar lo
 //!     oculta; un toque y un atajo rápido no lo muestran; Bloq Mayús intacto.
+//! 15. **regla al abrir** (v1.1): un títere de otra app con "al abrir:
+//!     derecha" va solo a la mitad derecha al abrirse, y Z lo devuelve.
 //!
 //! "Llegó" exige además que la ventana no esté escondida: durante un vuelo,
 //! el marco real ya está en el destino pero con cloak.
@@ -799,6 +801,124 @@ fn options_check(
 
 /// Llegó a `target` y se ve: durante un vuelo el marco real ya está en el
 /// destino, pero con cloak.
+/// v1.1: regla "al abrir". Un títere de otra app (`wm.exe` copiado como
+/// `wmregla.exe`, para que no tenga otra ventana de la misma app) con "al
+/// abrir: derecha": al abrirse y pasar al frente va solo a la mitad derecha
+/// de su monitor, y `Caps` + Alt + Z lo devuelve adonde lo abrió la app.
+fn rules_check(r: &mut Report, lines: &std::sync::mpsc::Receiver<String>) {
+    use wm_model::place::{MonitorObs, monitor_of};
+    const NAME: &str = "regla al abrir";
+    const CAPS: u8 = 0x14;
+    const ALT: u8 = 0xA4;
+    let Ok(exe) = std::env::current_exe() else {
+        return r.check(NAME, Status::Skip, "no se encontró el ejecutable".into());
+    };
+    let copy = std::env::temp_dir().join("wm-ci-probe-rule").join("wmregla.exe");
+    let copied = std::fs::create_dir_all(copy.parent().expect("tiene carpeta"))
+        .and_then(|()| std::fs::copy(&exe, &copy));
+    if let Err(e) = copied {
+        return r.check(NAME, Status::Fail, format!("no se pudo copiar wm.exe: {e}"));
+    }
+    let apps = std::env::temp_dir().join("wm-ci-probe-appdata").join("wm").join("apps.txt");
+    let write = |text: &str| {
+        let tmp = apps.with_extension("tmp");
+        std::fs::write(&tmp, text).and_then(|()| std::fs::rename(&tmp, &apps))
+    };
+    while lines.try_recv().is_ok() {}
+    if let Err(e) = write(
+        "q = wm
+r = wmregla | | | al abrir: derecha
+",
+    ) {
+        return r.check(NAME, Status::Fail, format!("no se pudo escribir apps.txt: {e}"));
+    }
+    let start = Instant::now();
+    let reloaded = loop {
+        match lines.recv_timeout(Duration::from_millis(50)) {
+            Ok(l) if l.starts_with("apps.txt recargado") => break true,
+            Ok(_) => {}
+            Err(_) if start.elapsed() > Duration::from_secs(2) => break false,
+            Err(_) => {}
+        }
+    };
+    let detail =
+        if reloaded { rules_run(&copy, lines) } else { Err("apps.txt no se recargó".into()) };
+    let _ = write(
+        "q = wm
+",
+    );
+    match detail {
+        Ok(d) => r.check(NAME, Status::Ok, d),
+        Err(d) => r.check(NAME, Status::Fail, d),
+    }
+
+    fn rules_run(
+        copy: &std::path::Path,
+        lines: &std::sync::mpsc::Receiver<String>,
+    ) -> Result<String, String> {
+        let mut child = Command::new(copy)
+            .args(["puppet", "1"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("no se pudo abrir el títere: {e}"))?;
+        let result = rules_steps(child.id(), lines);
+        let _ = child.kill();
+        let _ = child.wait();
+        result
+    }
+
+    fn rules_steps(pid: u32, lines: &std::sync::mpsc::Receiver<String>) -> Result<String, String> {
+        let opened = Instant::now();
+        let id = loop {
+            if let Some(id) =
+                puppet::find_puppets().into_iter().find(|&id| session::window_pid(id) == pid)
+            {
+                break id;
+            }
+            if opened.elapsed() > Duration::from_secs(5) {
+                return Err("el títere no apareció en 5 s".into());
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let first = wm_platform::ghost::frame_bounds(id).ok_or("no se pudo leer el marco")?;
+        // Si Windows no lo dejó pasar al frente solo, lo trae la sonda (como
+        // IntelliJ, que la activa un momento después).
+        let _ = windows_list::activate(id);
+        let monitors: Vec<MonitorObs> = wm_platform::monitors()
+            .iter()
+            .map(|m| MonitorObs { bounds: m.bounds, work: m.work_area, dpi: m.dpi })
+            .collect();
+        let m = monitor_of(&monitors, first).ok_or("no hay monitores")?;
+        let target = place(monitors[m].work, Placement::RightHalf);
+        wait_for(Duration::from_secs(4), || landed(id, target))
+            .ok_or("no llegó a la mitad derecha en 4 s")?;
+        let placed = opened.elapsed();
+        let said = lines.try_iter().any(|l| l.contains("Regla al abrir → mitad derecha"));
+        if !said {
+            return Err("llegó, pero el log no dice \"Regla al abrir\"".into());
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        let _ = windows_list::activate(id);
+        std::thread::sleep(Duration::from_millis(100));
+        session::send_keys(&[
+            (CAPS, true),
+            (ALT, true),
+            (b'Z', true),
+            (b'Z', false),
+            (ALT, false),
+            (CAPS, false),
+        ]);
+        let undone = wait_for(Duration::from_millis(1500), || landed(id, first))
+            .ok_or("Caps + Alt + Z no lo devolvió adonde se abrió")?;
+        Ok(format!(
+            "otra app con \"al abrir: derecha\" → mitad derecha a los {} de abrirse; Z la devolvió en {}",
+            ms(placed),
+            ms(undone)
+        ))
+    }
+}
+
 fn landed(id: WindowId, target: wm_model::Rect) -> bool {
     !wm_platform::ghost::is_cloaked(id)
         && hide::hidden_with(id).is_none()
@@ -845,6 +965,7 @@ fn core(r: &mut Report, puppets: &[WindowId]) {
     tray_checks(r, puppets);
     reload_check(r, &lines, puppets);
     options_check(r, &lines, puppets, child.id());
+    rules_check(r, &lines);
     hard_checks(r);
     hung_check(r);
     desks_check(r, &lines, puppets);
