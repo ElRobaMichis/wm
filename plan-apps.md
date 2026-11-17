@@ -68,3 +68,5 @@ Con 3 o más ventanas en la lista de una letra, el **segundo toque** sin soltar 
 Límites conocidos: la fuente del overlay (Geist) no tiene emoji ni CJK: esos caracteres se omiten hasta sumar un respaldo.
 
 **Detalles (17/11/2026, sin subir):** una app que **arrancó hace menos de 2 minutos** y todavía no tiene ventana se considera cargando (AutoCAD, Revit): `Caps` + letra avisa "Abriendo…" y espera su ventana en vez de abrir otra (Steam en la bandeja corre hace rato: se reabre igual). La tecla del mapa dice "Brave · 5" cuando la letra tiene lista (3 o más). Clic en una fila de la lista = ir a esa ventana; clic afuera = cerrarla y quedarse.
+
+**Ajuste (17/11/2026):** se quitó el criterio "arrancó hace menos de 2 minutos = está cargando": una IntelliJ recién cerrada (su proceso todavía vivo o recién abierta antes) quedaba "abriendo" sin abrirse. Ahora la protección contra abrir dos veces es solo para lo que abrió `wm`: hasta que aparece su ventana o 90 s; el seguimiento busca la ventana hasta 60 s (AutoCAD y Revit). El mapa aparece a los 600 ms de mantener `Caps` (eran 400: aparecía sin querer).

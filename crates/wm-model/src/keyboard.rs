@@ -27,14 +27,15 @@ pub const VK_LMENU: u8 = 0xA4;
 pub const VK_RMENU: u8 = 0xA5;
 
 /// Mantener Caps sola este tiempo muestra el mapa de teclado
-/// (keyboard-design.md §10.1, plan-core.md §5.1).
-pub const MAP_DELAY_MS: u32 = 400;
+/// (keyboard-design.md §10.1, plan-core.md §5.1). Era 400 ms; subió a 600 ms
+/// porque aparecía cuando el usuario no lo quería (prueba del 17/11/2026).
+pub const MAP_DELAY_MS: u32 = 600;
 
 /// Un toque de Caps (Bloq Mayús) dura menos que esto. Es menor que
 /// [`MAP_DELAY_MS`] a propósito: el toque se mide con la hora del hook (tick
 /// de 10–16 ms) y el mapa con el reloj del brain, así que con el mismo
 /// umbral una pulsación de ~400–416 ms podía mostrar el mapa y además
-/// cambiar Bloq Mayús. Entre 350 y 400 ms no pasa nada (banda muerta).
+/// cambiar Bloq Mayús. Entre 350 y 600 ms no pasa nada (banda muerta).
 pub const TAP_MAX_MS: u32 = 350;
 
 /// Modificadores que, si llegaron al sistema antes de Hyper, necesitan una

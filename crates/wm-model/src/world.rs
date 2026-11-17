@@ -830,14 +830,15 @@ struct Follow {
     scanning: bool,
 }
 
-/// Cuándo mirar si la app recién abierta ya tiene ventana.
-const FOLLOW_MS: [u64; 4] = [300, 800, 1500, 3000];
-/// Respuesta de `Launch`/`Revive` cuando la app ya se está abriendo (tiene
-/// una ventana a la vista que todavía no es "de usuario": su pantalla de
-/// carga). No es un error: se espera su ventana.
-pub const LOADING: &str = "cargando";
-/// Cuánto dura la protección contra abrir dos veces.
-const LAUNCH_GUARD_US: u64 = 30_000_000;
+/// Cuándo mirar si la app recién abierta ya tiene ventana (las pesadas,
+/// como AutoCAD o Revit, tardan cerca de un minuto).
+const FOLLOW_MS: [u64; 8] = [300, 800, 1500, 3000, 6000, 12_000, 30_000, 60_000];
+/// Cuánto dura la protección contra abrir dos veces: hasta que aparece su
+/// ventana o 90 s (AutoCAD y Revit tardan). Solo la que abrimos nosotros:
+/// una app que el usuario cerró se abre de nuevo al toque (antes se miraba
+/// la edad del proceso, y una IntelliJ recién cerrada quedaba "abriendo" sin
+/// abrirse; prueba del 17/11/2026).
+const LAUNCH_GUARD_US: u64 = 90_000_000;
 
 /// Tamaños que una ventana no aceptó. Antes se marcaba la ventana entera y
 /// después de un solo V hasta el límite (Brave no baja de 502 px) ningún
@@ -1327,12 +1328,6 @@ impl World {
                 Some(Pending::Launch { letter, app, path }) => {
                     let key = letter as char;
                     match result {
-                        Err(e) if e.starts_with(LOADING) => {
-                            out.push(Effect::Log(format!(
-                                "Caps + {key}: abriendo {app}… (espera)"
-                            )));
-                            self.start_follow(letter, now_us);
-                        }
                         Ok(()) => {
                             out.push(Effect::Log(format!(
                                 "Caps + {key} → abriendo {app} ({path})"
@@ -1350,12 +1345,6 @@ impl World {
                 Some(Pending::Revive { letter, app }) => {
                     let key = letter as char;
                     match result {
-                        Err(e) if e.starts_with(LOADING) => {
-                            out.push(Effect::Log(format!(
-                                "Caps + {key}: abriendo {app}… (espera)"
-                            )));
-                            self.start_follow(letter, now_us);
-                        }
                         Ok(()) => {
                             out.push(Effect::Log(format!(
                                 "Caps + {key} → {app} no tenía ventana (¿en la bandeja?): la abro de nuevo"
@@ -3380,11 +3369,11 @@ mod command_tests {
         let mut w = World::new(Vec::new());
         w.step(Event::MapEnabled(true), 0);
         w.step(Event::Layer(Layer::Apps), 0);
-        let out = w.step(Event::Tick, 500_000);
+        let out = w.step(Event::Tick, 700_000);
         let Some(Effect::Scan { req }) = out.first().cloned() else { panic!("{out:?}") };
-        w.step(Event::Windows { req, result: Ok((Vec::new(), None)) }, 500_000);
+        w.step(Event::Windows { req, result: Ok((Vec::new(), None)) }, 700_000);
         assert!(w.map_visible());
-        let out = w.step(Event::Command(Command::SetPaused(true)), 600_000);
+        let out = w.step(Event::Command(Command::SetPaused(true)), 800_000);
         assert!(out.contains(&Effect::HideMap), "{out:?}");
         assert!(!w.map_visible());
     }

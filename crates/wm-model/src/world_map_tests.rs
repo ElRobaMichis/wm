@@ -137,7 +137,7 @@ impl Rig {
 }
 
 #[test]
-fn holding_caps_shows_the_map_at_400_ms() {
+fn holding_caps_shows_the_map_after_the_delay() {
     let mut r = Rig::new();
     r.key(VK_CAPITAL, true);
     r.wait(u64::from(MAP_DELAY_MS) - 1);
@@ -180,7 +180,7 @@ fn the_thumb_picks_the_layer_before_and_after_showing() {
     r.key(VK_CAPITAL, true);
     r.wait(100);
     r.key(VK_LMENU, true); // el pulgar no es una acción
-    r.wait(400);
+    r.wait(u64::from(MAP_DELAY_MS));
     assert_eq!(r.shown, Some(Layer::Window));
     r.key(VK_LMENU, false);
     assert_eq!(r.shown, Some(Layer::Apps));
@@ -195,7 +195,7 @@ fn the_thumb_picks_the_layer_before_and_after_showing() {
 fn an_action_with_the_map_visible_keeps_it_and_escape_closes_it_without_quitting() {
     let mut r = Rig::new();
     r.key(VK_CAPITAL, true);
-    r.wait(500);
+    r.wait(u64::from(MAP_DELAY_MS) + 100);
     r.key(b'W', true);
     r.key(b'W', false);
     assert!(r.visible(), "D7: sigue visible");
@@ -216,7 +216,7 @@ fn an_action_with_the_map_visible_keeps_it_and_escape_closes_it_without_quitting
 fn a_keyboard_reset_hides_the_map() {
     let mut r = Rig::new();
     r.key(VK_CAPITAL, true);
-    r.wait(500);
+    r.wait(u64::from(MAP_DELAY_MS) + 100);
     assert!(r.visible());
     r.kb.reset();
     r.feed(Event::KeyboardReset);
@@ -230,7 +230,7 @@ fn the_map_gives_up_after_30_seconds_and_resets_the_keyboard() {
     // pegado y Hyper no queda trabado.
     let mut r = Rig::new();
     r.key(VK_CAPITAL, true);
-    r.wait(500);
+    r.wait(u64::from(MAP_DELAY_MS) + 100);
     r.wait(MAP_MAX_US / MS);
     assert!(!r.visible());
     assert_eq!(r.resets, 1);
@@ -244,7 +244,7 @@ fn using_the_map_for_more_than_30_seconds_does_not_reset_the_keyboard() {
     // el mapa visible; el tope reiniciaba el teclado en pleno uso.
     let mut r = Rig::new();
     r.key(VK_CAPITAL, true);
-    r.wait(500);
+    r.wait(u64::from(MAP_DELAY_MS) + 100);
     assert!(r.visible());
     for _ in 0..6 {
         r.wait(10_000);
@@ -267,12 +267,12 @@ fn a_repeated_layer_after_a_silent_reset_starts_a_new_press() {
     // vuelve a armar Hyper.
     let mut r = Rig::new();
     r.key(VK_CAPITAL, true);
-    r.wait(500);
+    r.wait(u64::from(MAP_DELAY_MS) + 100);
     assert!(r.visible());
     r.kb.reset();
     r.key(VK_CAPITAL, true); // repetición: Layer(Apps) otra vez
     assert!(!r.visible(), "se oculta y se vuelve a armar");
-    r.wait(400);
+    r.wait(u64::from(MAP_DELAY_MS));
     assert!(r.visible());
     r.key(VK_CAPITAL, false);
     assert!(!r.visible());
@@ -374,7 +374,7 @@ fn the_map_lists_the_open_apps_and_lights_the_key_just_used() {
         ..WinInfo::default()
     }];
     r.key(VK_CAPITAL, true);
-    r.wait(500);
+    r.wait(u64::from(MAP_DELAY_MS) + 100);
     let apps = &r.views[0];
     let b = apps.cells.iter().find(|c| c.letter == 'B').unwrap();
     assert_eq!((b.label.as_str(), b.tone), ("Brave", Tone::Normal), "automática por inicial");
@@ -388,7 +388,7 @@ fn the_map_lists_the_open_apps_and_lights_the_key_just_used() {
 fn releasing_caps_before_the_scan_answers_shows_nothing() {
     let mut r = Rig::new();
     r.key(VK_CAPITAL, true);
-    r.wait(399);
+    r.wait(u64::from(MAP_DELAY_MS) - 1);
     // El plazo vence y pide las ventanas; Caps se suelta antes de la respuesta.
     r.now_us += 1000;
     let effects = r.w.step(Event::Tick, r.now_us);

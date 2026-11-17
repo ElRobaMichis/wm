@@ -383,8 +383,8 @@ fn focus(r: &mut Report, puppets: &[WindowId]) {
 }
 
 /// El core real (`wm core`) en otro proceso, manejado con teclas inyectadas.
-/// Hito 2a: el mapa de teclado con el core real. Mantener Caps 600 ms lo
-/// muestra (a los ~400 ms) y soltar lo oculta, sin tocar Bloq Mayús; un
+/// Hito 2a: el mapa de teclado con el core real. Mantener Caps 800 ms lo
+/// muestra (a los ~600 ms) y soltar lo oculta, sin tocar Bloq Mayús; un
 /// toque no lo muestra (y sí cambia Bloq Mayús); un atajo rápido lo suprime
 /// toda la pulsación; con el mapa visible, una acción no lo cierra.
 /// Hito 3b: órdenes de la bandeja con el core real (por `wm.command`, como
@@ -446,10 +446,10 @@ fn map_checks(r: &mut Report, core_pid: u32) {
     std::thread::sleep(Duration::from_millis(300));
     session::send_keys(&[(CAPS, true)]);
     let start = Instant::now();
-    let shown = wait_for(Duration::from_millis(900), visible);
+    let shown = wait_for(Duration::from_millis(1100), visible);
     let held = start.elapsed();
-    if held < Duration::from_millis(600) {
-        std::thread::sleep(Duration::from_millis(600) - held);
+    if held < Duration::from_millis(800) {
+        std::thread::sleep(Duration::from_millis(800) - held);
     }
     let still = visible();
     session::send_keys(&[(CAPS, false)]);
@@ -459,7 +459,7 @@ fn map_checks(r: &mut Report, core_pid: u32) {
     let kept_caps = session::caps_lock_on() == caps_before;
     ok &= in_time && still && hidden.is_some() && kept_caps;
     parts.push(format!(
-        "Caps 600 ms → visible {}; al soltar se oculta {}; Bloq Mayús {}",
+        "Caps 800 ms → visible {}; al soltar se oculta {}; Bloq Mayús {}",
         shown.map_or_else(|| "NUNCA".into(), |d| format!("a los {}", ms(d))),
         hidden.map_or_else(|| "NO".into(), |d| format!("en {}", ms(d))),
         if kept_caps { "igual" } else { "CAMBIÓ" },

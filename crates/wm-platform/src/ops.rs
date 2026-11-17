@@ -575,22 +575,10 @@ impl Context {
             }
             Op::Scan => Ok(Output::Windows(windows_list::user_windows())),
             Op::RestoreAll => Ok(Output::Restored(hide::restore_all())),
-            Op::Launch { path, names } => {
-                if crate::process_info::loading(names) {
-                    return Err(format!(
-                        "{}: tiene una ventana a la vista",
-                        wm_model::world::LOADING
-                    ));
-                }
+            Op::Launch { path, .. } => {
                 crate::launch::open(path).map(|()| Output::Nothing).map_err(|e| e.to_string())
             }
             Op::Revive(names) => {
-                if crate::process_info::loading(names) {
-                    return Err(format!(
-                        "{}: tiene una ventana a la vista",
-                        wm_model::world::LOADING
-                    ));
-                }
                 let path = crate::process_info::running_exe(names)
                     .ok_or_else(|| "no está corriendo y no tiene ruta".to_owned())?;
                 crate::launch::open(&path).map(|()| Output::Nothing).map_err(|e| e.to_string())
