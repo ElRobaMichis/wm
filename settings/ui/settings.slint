@@ -44,6 +44,9 @@ export component SettingsWindow inherits Window {
     // vuelve a verse tal cual.
     in property <bool> show-unfinished: false;
     in-out property <int> selected: 0;
+    // v1.1: pestaña 0 = letras, 1 = opciones.
+    in-out property <int> tab: 0;
+    property <int> focus-search: 0;
     in-out property <string> query;
     in-out property <int> profile: 0;
     in-out property <bool> focus-border: true;
@@ -74,8 +77,6 @@ export component SettingsWindow inherits Window {
     callback cancel();
     pure callback find-letter(string) -> int;
 
-    forward-focus: search;
-
     FocusScope {
         // Atajos de toda la ventana: Esc cierra, Ctrl+S guarda, / busca.
         key-pressed(event) => {
@@ -89,8 +90,9 @@ export component SettingsWindow inherits Window {
                 }
                 return accept;
             }
-            if (event.text == "/" && !search.has-focus) {
-                search.focus();
+            if (event.text == "/") {
+                root.tab = 0;
+                root.focus-search += 1;
                 return accept;
             }
             reject
@@ -148,161 +150,177 @@ export component SettingsWindow inherits Window {
 
             Rectangle { height: Theme.s4; }
 
-            search := SearchField {
-                placeholder: @tr("Search an app or a letter");
-                label: @tr("Search");
-                shortcut: "/";
-                text <=> root.query;
-                edited(text) => {
-                    root.search(text);
-                }
+            // v1.1: dos pestañas (plan-v1.1.md §4).
+            Segmented {
+                options: [@tr("Letters"), @tr("Options")];
+                label: @tr("Section");
+                current <=> root.tab;
             }
 
-            // Perfil "Apps primero / Ventanas primero" (funciones-ocultas.md §1).
-            if root.show-unfinished: VerticalLayout {
-                Rectangle { height: Theme.s6; }
-                SectionLabel {
-                    text: @tr("What do you want closest at hand?");
-                }
-                Rectangle { height: Theme.s2; }
-                Segmented {
-                    options: [@tr("Apps first"), @tr("Windows first")];
-                    label: @tr("What do you want closest at hand?");
-                    current <=> root.profile;
-                }
-            }
-
-            Rectangle { height: Theme.s6; }
-
-            HorizontalLayout {
-                SectionLabel {
-                    text: @tr("Letters");
-                }
-                Rectangle {
-                    horizontal-stretch: 1;
-                }
-                Text {
-                    text: @tr("↑ ↓ or type a letter");
-                    color: Theme.text-3;
-                    font-size: Theme.t-small;
-                }
-            }
-            Rectangle { height: Theme.s2; }
-
-            // Tarjeta con la lista (radio 14 = fila 8 + relleno 6).
-            Rectangle {
+            if root.tab == 0: VerticalLayout {
                 vertical-stretch: 1;
-                min-height: 5 * Theme.h-row + 2 * Theme.card-pad;
-                border-radius: Theme.r-card;
-                background: Theme.surface;
-                border-width: 1px;
-                border-color: Theme.border;
-                clip: true;
-                VerticalLayout {
-                    padding: Theme.card-pad;
-                    LetterList {
-                        items: root.items;
-                        label: @tr("Letters");
-                        free-text: root.free-text;
-                        current <=> root.selected;
-                        current-changed(index) => {
-                            root.select(index);
-                        }
-                        find-letter(text) => {
-                            return root.find-letter(text);
-                        }
+                // "/" pide el foco para la búsqueda.
+                property <int> focus-req: root.focus-search;
+                changed focus-req => {
+                    search.focus();
+                }
+                Rectangle { height: Theme.s4; }
+
+                search := SearchField {
+                    placeholder: @tr("Search an app or a letter");
+                    label: @tr("Search");
+                    shortcut: "/";
+                    text <=> root.query;
+                    edited(text) => {
+                        root.search(text);
+                    }
+                    init => {
+                        self.focus();
                     }
                 }
-            }
 
-            Rectangle { height: Theme.s3; }
-
-            // La app de la letra elegida.
-            HorizontalLayout {
-                spacing: Theme.s3;
-                VerticalLayout {
-                    alignment: center;
-                    Keycap {
-                        letter: root.selected-letter;
+                // Perfil "Apps primero / Ventanas primero" (funciones-ocultas.md §1).
+                if root.show-unfinished: VerticalLayout {
+                    Rectangle { height: Theme.s6; }
+                    SectionLabel {
+                        text: @tr("What do you want closest at hand?");
+                    }
+                    Rectangle { height: Theme.s2; }
+                    Segmented {
+                        options: [@tr("Apps first"), @tr("Windows first")];
+                        label: @tr("What do you want closest at hand?");
+                        current <=> root.profile;
                     }
                 }
-                Text {
-                    text: @tr("opens");
-                    color: Theme.text-2;
-                    vertical-alignment: center;
-                }
-                PickField {
-                    horizontal-stretch: 1;
-                    text: root.choice-name;
-                    label: @tr("App for “{}”", root.selected-letter);
-                    open => {
-                        root.picker-query = "";
-                        root.picker-open();
-                        root.picking = true;
+
+                Rectangle { height: Theme.s6; }
+
+                HorizontalLayout {
+                    SectionLabel {
+                        text: @tr("Letters");
+                    }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                    }
+                    Text {
+                        text: @tr("↑ ↓ or type a letter");
+                        color: Theme.text-3;
+                        font-size: Theme.t-small;
                     }
                 }
-            }
-
-            // v1.1: dónde va la app al abrirse (plan-v1.1.md).
-            if root.choice-assigned: VerticalLayout {
                 Rectangle { height: Theme.s2; }
+
+                // Tarjeta con la lista (radio 14 = fila 8 + relleno 6).
+                Rectangle {
+                    vertical-stretch: 1;
+                    min-height: 5 * Theme.h-row + 2 * Theme.card-pad;
+                    border-radius: Theme.r-card;
+                    background: Theme.surface;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    clip: true;
+                    VerticalLayout {
+                        padding: Theme.card-pad;
+                        LetterList {
+                            items: root.items;
+                            label: @tr("Letters");
+                            free-text: root.free-text;
+                            current <=> root.selected;
+                            current-changed(index) => {
+                                root.select(index);
+                            }
+                            find-letter(text) => {
+                                return root.find-letter(text);
+                            }
+                        }
+                    }
+                }
+
+                Rectangle { height: Theme.s3; }
+
+                // La app de la letra elegida.
                 HorizontalLayout {
                     spacing: Theme.s3;
+                    VerticalLayout {
+                        alignment: center;
+                        Keycap {
+                            letter: root.selected-letter;
+                        }
+                    }
                     Text {
-                        text: @tr("When it opens");
+                        text: @tr("opens");
                         color: Theme.text-2;
                         vertical-alignment: center;
                     }
-                    Select {
+                    PickField {
                         horizontal-stretch: 1;
-                        model: root.open-options;
-                        window-height: root.height;
-                        label: @tr("When it opens");
-                        current <=> root.open-choice;
-                        selected(index) => {
-                            root.open-chosen(index);
+                        text: root.choice-name;
+                        label: @tr("App for “{}”", root.selected-letter);
+                        open => {
+                            root.picker-query = "";
+                            root.picker-open();
+                            root.picking = true;
+                        }
+                    }
+                }
+
+                // v1.1: dónde va la app al abrirse (plan-v1.1.md).
+                if root.choice-assigned: VerticalLayout {
+                    Rectangle { height: Theme.s2; }
+                    HorizontalLayout {
+                        spacing: Theme.s3;
+                        Text {
+                            text: @tr("When it opens");
+                            color: Theme.text-2;
+                            vertical-alignment: center;
+                        }
+                        Select {
+                            horizontal-stretch: 1;
+                            model: root.open-options;
+                            window-height: root.height;
+                            label: @tr("When it opens");
+                            current <=> root.open-choice;
+                            selected(index) => {
+                                root.open-chosen(index);
+                            }
                         }
                     }
                 }
             }
 
-            // Opciones (settings.txt; funciones-ocultas.md §2-§4).
-            VerticalLayout {
-            Rectangle { height: Theme.s6; }
-
-            SectionLabel {
-                text: @tr("Options");
-            }
-            Rectangle { height: Theme.s2; }
-            Rectangle {
-                border-radius: Theme.r-card;
-                background: Theme.surface;
-                border-width: 1px;
-                border-color: Theme.border;
-                VerticalLayout {
-                    padding: Theme.card-pad;
-                    ToggleRow {
-                        text: @tr("Focus border");
-                        detail: @tr("A 2 px line around the active window.");
-                        checked <=> root.focus-border;
-                    }
-                    ToggleRow {
-                        text: @tr("Mouse follows focus");
-                        detail: @tr("When you switch apps, the pointer goes with it.");
-                        checked <=> root.mouse-follows;
-                    }
-                    ToggleRow {
-                        text: @tr("Animate windows");
-                        detail: @tr("Short movements, no bounce.");
-                        checked <=> root.animations;
-                    }
-                    ToggleRow {
-                        text: @tr("On-screen notices");
-                        detail: @tr("A short message when a key can't do anything.");
-                        checked <=> root.notices;
+            if root.tab == 1: VerticalLayout {
+                vertical-stretch: 1;
+                Rectangle { height: Theme.s4; }
+                Rectangle {
+                    border-radius: Theme.r-card;
+                    background: Theme.surface;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    VerticalLayout {
+                        padding: Theme.card-pad;
+                        ToggleRow {
+                            text: @tr("Focus border");
+                            detail: @tr("A 2 px line around the active window.");
+                            checked <=> root.focus-border;
+                        }
+                        ToggleRow {
+                            text: @tr("Mouse follows focus");
+                            detail: @tr("When you switch apps, the pointer goes with it.");
+                            checked <=> root.mouse-follows;
+                        }
+                        ToggleRow {
+                            text: @tr("Animate windows");
+                            detail: @tr("Short movements, no bounce.");
+                            checked <=> root.animations;
+                        }
+                        ToggleRow {
+                            text: @tr("On-screen notices");
+                            detail: @tr("A short message when a key can't do anything.");
+                            checked <=> root.notices;
+                        }
                     }
                 }
-            }
+                Rectangle { vertical-stretch: 1; }
             }
 
             Rectangle { height: Theme.s6; }

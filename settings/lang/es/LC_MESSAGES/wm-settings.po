@@ -128,3 +128,6 @@ msgstr "Maximizada"
 
 msgid "Centered"
 msgstr "Centrada"
+
+msgid "Section"
+msgstr "Sección"
