@@ -1,0 +1,26 @@
+# Los ajustes (Slint) en release solo cuando cambian (la CI los compila en
+# modo de prueba en cada push; release.yml, al publicar).
+name: Ajustes (release)
+
+on:
+  push:
+    branches: ['**']
+    paths: ['settings/**', 'Cargo.lock', 'Cargo.toml', '.cargo/**']
+
+concurrency:
+  group: settings-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: settings-release
+          save-if: ${{ github.event_name == 'push' }}
+      - name: Build de release de wm-settings
+        run: cargo build --release --locked -p wm-settings

@@ -1,16 +1,45 @@
 # CI (architecture.md §10 y §13):
-# - `build` (spike 0): formato, lint, pruebas, release, y que `wm.exe` no
-#   dependa del runtime de C ni importe DLL de gráficos.
-# - `ventanas` (spike 9): pruebas con ventanas reales en el escritorio del
-#   runner (foco, hook, esconder, marco DWM, overlays, guardián).
+# - `fmt` (Linux, segundos): formato.
+# - `lint-test`: clippy y pruebas, con caché.
+# - `ventanas` (spike 9): build de release (con caché), que `wm.exe` no
+#   dependa del runtime de C ni importe DLL de gráficos, y pruebas con
+#   ventanas reales en el escritorio del runner (foco, hook, esconder, marco
+#   DWM, overlays, guardián, actualizador).
+# Las etiquetas no corren la CI (ya corrió en el commit): las publica
+# release.yml, que compila limpio, sin caché.
 name: CI
 
 on:
   push:
+    branches: ['**']
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
   pull_request:
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
+
+# Un push nuevo a la misma rama cancela la corrida anterior.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  # Menos información de depuración en las pruebas: compila y cachea menos.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 jobs:
-  build:
+  fmt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Formato
+        run: cargo fmt --all --check
+
+  lint-test:
     strategy:
       fail-fast: false
       matrix:
@@ -20,16 +49,20 @@ jobs:
           - runner: windows-11-arm
             target: aarch64-pc-windows-msvc
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-          components: clippy, rustfmt
+          components: clippy
 
-      - name: Formato
-        run: cargo fmt --all --check
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: lint-${{ matrix.target }}
+          cache-on-failure: true
+          save-if: ${{ github.event_name == 'push' }}
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --target ${{ matrix.target }} -- -D warnings
@@ -37,8 +70,47 @@ jobs:
       - name: Pruebas
         run: cargo test --workspace --target ${{ matrix.target }}
 
-      - name: Build de release
-        run: cargo build --release --target ${{ matrix.target }}
+  # Va aparte para que un error de formato o de lint no tape estos resultados.
+  ventanas:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            required: true
+            probe_args: ''
+          # Sesión interactiva, pero el proceso no puede tomar el primer plano
+          # (actions/runner-images#14049) y a veces arranca en la configuración
+          # inicial de Windows (#14677): informa, pero no bloquea.
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            required: false
+            # Lo que depende del primer plano sale como INESTABLE.
+            probe_args: --focus-informative
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ !matrix.required }}
+    timeout-minutes: 20
+    env:
+      BIN: target\${{ matrix.target }}\release
+      # Clave pública de prueba (tests/update/README.md): solo estos binarios
+      # aceptan los feeds de prueba; los de los releases no.
+      WM_UPDATE_PUBKEY: 8fd2ee4ccdfb48453096d041b0409c3bca887d6ba846201a5786e5788d840f76b2918dda214f18e7077fd283a00b7545015eb0436d10a558c2357c835fdd4408
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target }}
+          cache-on-failure: true
+          save-if: ${{ github.event_name == 'push' }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} -p wm -p wm-bench
 
       - name: Solo DLL del sistema (sin VCRUNTIME ni UCRT)
         shell: pwsh
@@ -50,7 +122,7 @@ jobs:
           if (-not $dumpbin) { throw "No se encontró dumpbin.exe" }
           # wm.exe (consola) y wmw.exe (sin consola, plan-core.md D5).
           foreach ($name in @("wm.exe", "wmw.exe")) {
-            $exe = "target\${{ matrix.target }}\release\$name"
+            $exe = "$env:BIN\$name"
             $deps = & $dumpbin.FullName /dependents $exe | Out-String
             Write-Output "== $name"
             Write-Output $deps
@@ -71,44 +143,12 @@ jobs:
               throw "$name importa la red o CNG en forma estática; usar dynlib (plan-update.md U2)."
             }
           }
-          $sub = & $dumpbin.FullName /headers "target\${{ matrix.target }}\release\wmw.exe" | Out-String
+          $sub = & $dumpbin.FullName /headers "$env:BIN\wmw.exe" | Out-String
           if ($sub -notmatch '(?i)Windows GUI') { throw "wmw.exe no es de subsistema Windows GUI." }
 
       - name: Doctor
-        run: target\${{ matrix.target }}\release\wm.exe doctor
-
-  # Va aparte para que un error de formato o de lint no tape estos resultados.
-  ventanas:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: windows-latest
-            target: x86_64-pc-windows-msvc
-            required: true
-          # Sesión interactiva, pero el proceso no puede tomar el primer plano
-          # (actions/runner-images#14049) y a veces arranca en la configuración
-          # inicial de Windows (#14677): informa, pero no bloquea.
-          - runner: windows-11-arm
-            target: aarch64-pc-windows-msvc
-            required: false
-    runs-on: ${{ matrix.runner }}
-    continue-on-error: ${{ !matrix.required }}
-    timeout-minutes: 30
-    env:
-      BIN: target\${{ matrix.target }}\release
-      # Clave pública de prueba (tests/update/README.md): solo estos binarios
-      # aceptan los feeds de prueba; los de los releases no.
-      WM_UPDATE_PUBKEY: 8fd2ee4ccdfb48453096d041b0409c3bca887d6ba846201a5786e5788d840f76b2918dda214f18e7077fd283a00b7545015eb0436d10a558c2357c835fdd4408
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Build
-        run: cargo build --release --target ${{ matrix.target }} -p wm -p wm-bench
+        shell: pwsh
+        run: '& "$env:BIN\wm.exe" doctor'
 
       - name: Captura al empezar
         shell: pwsh
@@ -167,10 +207,11 @@ jobs:
 
       - name: Sonda (wm ci-probe)
         shell: pwsh
-        run: '& "$env:BIN\wm.exe" ci-probe --summary $env:GITHUB_STEP_SUMMARY'
+        run: '& "$env:BIN\wm.exe" ci-probe --summary $env:GITHUB_STEP_SUMMARY ${{ matrix.probe_args }}'
 
       - name: Instalar, actualizar y desinstalar (tools/update-e2e.sh)
         if: success() || failure()
+        timeout-minutes: 5
         shell: bash
         run: bash tools/update-e2e.sh "target/${{ matrix.target }}/release"
 
@@ -195,6 +236,12 @@ jobs:
         run: |
           & "$env:BIN\wm-bench.exe" snapshot
           Move-Item "$env:BIN\overlay-*.bmp" ci-artifacts -ErrorAction SilentlyContinue
+
+      # El log del core de la sonda (diagnóstico de las fallas).
+      - name: Logs de wm
+        if: success() || failure()
+        shell: pwsh
+        run: Copy-Item "$env:LOCALAPPDATA\wm\wm*.log" ci-artifacts -ErrorAction SilentlyContinue
 
       - uses: actions/upload-artifact@v4
         if: success() || failure()
