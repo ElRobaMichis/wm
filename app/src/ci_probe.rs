@@ -57,7 +57,7 @@ use wm_platform::windows_list::{self, WindowId};
 use wm_platform::{geometry, puppet, session};
 
 /// Plazo total: si algo se traba, se restaura todo y se sale con 3.
-const TOTAL: Duration = Duration::from_secs(90);
+const TOTAL: Duration = Duration::from_secs(150);
 const PUPPETS: usize = 3;
 const CHORDS: usize = 10;
 const VK_CAPITAL: u8 = 0x14;
@@ -88,7 +88,28 @@ enum Status {
     Ok,
     Fail,
     Skip,
+    /// Falló un chequeo que depende de tomar el primer plano en un runner
+    /// que no lo garantiza (ARM64, architecture.md §13.11): se informa, no
+    /// cuenta como falla.
+    Flaky,
 }
+
+/// Chequeos que dependen de que la sonda pueda tomar el primer plano.
+const FOCUS_CHECKS: &[&str] = &[
+    "foco",
+    "capa de ventana",
+    "mapa",
+    "bandeja",
+    "recarga",
+    "opciones y avisos",
+    "colgada",
+    "escritorios",
+    "pantallas",
+    "vuelo",
+    "G y V",
+    "vuelo + caída",
+    "arrastre",
+];
 
 impl Status {
     fn label(self) -> &'static str {
@@ -96,6 +117,7 @@ impl Status {
             Status::Ok => "OK",
             Status::Fail => "FALLA",
             Status::Skip => "SIN PROBAR",
+            Status::Flaky => "INESTABLE",
         }
     }
 
@@ -104,6 +126,7 @@ impl Status {
             Status::Ok => "✅",
             Status::Fail => "❌",
             Status::Skip => "➖",
+            Status::Flaky => "⚠️",
         }
     }
 }
@@ -111,6 +134,9 @@ impl Status {
 struct Report {
     env: Vec<(String, String)>,
     checks: Vec<(String, Status, String)>,
+    /// `--focus-informative` (el job de ARM64): las fallas de los chequeos
+    /// de [`FOCUS_CHECKS`] salen como INESTABLE.
+    focus_informative: bool,
 }
 
 impl Report {
@@ -120,6 +146,12 @@ impl Report {
     }
 
     fn check(&mut self, name: &str, status: Status, detail: String) {
+        let status =
+            if status == Status::Fail && self.focus_informative && FOCUS_CHECKS.contains(&name) {
+                Status::Flaky
+            } else {
+                status
+            };
         out!("[{}] {name}: {detail}", status.label());
         let _ = std::io::stdout().flush();
         self.checks.push((name.to_owned(), status, detail));
@@ -174,7 +206,8 @@ pub fn run(args: &[String]) -> ExitCode {
         return ExitCode::from(2);
     }
     let cleanup = Cleanup;
-    let mut r = Report { env: Vec::new(), checks: Vec::new() };
+    let focus_informative = args.iter().any(|a| a == "--focus-informative");
+    let mut r = Report { env: Vec::new(), checks: Vec::new(), focus_informative };
     out!("Entorno");
     environment(&mut r);
 
@@ -226,7 +259,12 @@ pub fn run(args: &[String]) -> ExitCode {
     }
     let failed = r.checks.iter().filter(|(_, s, _)| *s == Status::Fail).count();
     let ok = r.checks.iter().filter(|(_, s, _)| *s == Status::Ok).count();
-    out!("\n{ok} OK, {failed} con fallas, de {}", r.checks.len());
+    let flaky = r.checks.iter().filter(|(_, s, _)| *s == Status::Flaky).count();
+    if flaky > 0 {
+        out!("\n{ok} OK, {failed} con fallas, {flaky} inestables (foco), de {}", r.checks.len());
+    } else {
+        out!("\n{ok} OK, {failed} con fallas, de {}", r.checks.len());
+    }
     if failed == 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE }
 }
 
@@ -806,7 +844,7 @@ fn core(r: &mut Report, puppets: &[WindowId]) {
     options_check(r, &lines, puppets, child.id());
     hard_checks(r);
     hung_check(r);
-    desks_check(r, puppets);
+    desks_check(r, &lines, puppets);
     screens_check(r, &lines, puppets);
     let drag = drag_check(puppets[1]);
 
@@ -886,6 +924,13 @@ fn screens_check(r: &mut Report, lines: &std::sync::mpsc::Receiver<String>, pupp
     let hidden = |id: WindowId| hide::visibility(id).cloaked == hide::DWM_CLOAKED_SHELL;
     let instance = Some("ci-probe");
     let (p, q, still) = (puppets[0], puppets[1], puppets[2]);
+    if !reset_desks(puppets) {
+        return r.check(
+            NAME,
+            Status::Fail,
+            "no se pudo empezar con todo en el escritorio 1".into(),
+        );
+    }
 
     // Q al escritorio 2 (con cloak).
     let _ = windows_list::activate(q);
@@ -981,14 +1026,50 @@ fn screens_check(r: &mut Report, lines: &std::sync::mpsc::Receiver<String>, pupp
     r.check(NAME, if ok { Status::Ok } else { Status::Fail }, detail);
 }
 
-fn desks_check(r: &mut Report, puppets: &[WindowId]) {
+/// Escritorios en un estado conocido: todas las ventanas de la sonda en el
+/// 1, visibles y sin marca ("Mostrar todas" desde el 1). Cada paso del
+/// chequeo de escritorios (y "pantallas") parte de acá: una falla ya no
+/// arrastra a las siguientes (Fable, diagnóstico de la CI).
+fn reset_desks(puppets: &[WindowId]) -> bool {
+    const CAPS: u8 = 0x14;
+    session::send_keys(&[(CAPS, true), (b'1', true), (b'1', false), (CAPS, false)]);
+    std::thread::sleep(Duration::from_millis(150));
+    let sent = wm_platform::tray::send_order_in("ci-probe", wm_platform::tray::Order::ShowAll);
+    sent && wait_for(Duration::from_secs(2), || {
+        puppets.iter().all(|&id| {
+            hide::fully_visible(hide::visibility(id))
+                && hide::hidden_with(id).is_none()
+                && hide::desk_of(id).is_none_or(|d| d == 1)
+        })
+    })
+    .is_some()
+}
+
+/// Espera la línea del core que cierra una transacción de escritorios
+/// ("… ms desde la tecla"), para verificar el estado ya terminado.
+fn wait_desk_line(lines: &std::sync::mpsc::Receiver<String>, limit: Duration) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < limit {
+        if let Ok(l) = lines.recv_timeout(Duration::from_millis(20))
+            && l.contains("ms desde la tecla")
+            && (l.contains("escritorio") || l.contains("Mostrar todas"))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn desks_check(r: &mut Report, lines: &std::sync::mpsc::Receiver<String>, puppets: &[WindowId]) {
     const NAME: &str = "escritorios";
     const CAPS: u8 = 0x14;
     const ALT: u8 = 0xA4;
     let go = |digit: u8| {
+        while lines.try_recv().is_ok() {}
         session::send_keys(&[(CAPS, true), (digit, true), (digit, false), (CAPS, false)]);
     };
     let carry = |key: u8| {
+        while lines.try_recv().is_ok() {}
         session::send_keys(&[
             (CAPS, true),
             (ALT, true),
@@ -1002,21 +1083,44 @@ fn desks_check(r: &mut Report, puppets: &[WindowId]) {
     let shown = |id: WindowId| hide::fully_visible(hide::visibility(id));
     let limit = Duration::from_secs(1);
     let (a, others) = (puppets[0], &puppets[1..]);
-    let _ = windows_list::activate(a);
-    std::thread::sleep(Duration::from_millis(100));
+    let state = || {
+        puppets
+            .iter()
+            .map(|&id| {
+                let v = hide::visibility(id);
+                format!(
+                    "{}{}",
+                    if v.cloaked == hide::DWM_CLOAKED_SHELL { "esc" } else { "vis" },
+                    hide::desk_of(id).map_or_else(String::new, |d| format!("@{d}"))
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("/")
+    };
     let mut parts = Vec::new();
     let mut ok = true;
     let step = |label: &str, t: Option<Duration>, parts: &mut Vec<String>, ok: &mut bool| {
         *ok &= t.is_some();
         parts.push(format!("{label}: {}", t.map_or_else(|| "NO".into(), ms)));
     };
+    if !reset_desks(puppets) {
+        return r.check(NAME, Status::Fail, format!("no se pudo empezar en el 1 ({})", state()));
+    }
+    // `a` al escritorio 2 desde el 1 (estado de partida de varios pasos).
+    let carry_a = || {
+        let _ = windows_list::activate(a);
+        std::thread::sleep(Duration::from_millis(100));
+        carry(b'2');
+        let t = wait_for(limit, || {
+            hidden(a)
+                && hide::desk_of(a) == Some(2)
+                && windows_list::foreground().is_some_and(|f| others.contains(&f))
+        });
+        let _ = wait_desk_line(lines, Duration::from_millis(200));
+        t
+    };
 
-    carry(b'2');
-    let t = wait_for(limit, || {
-        hidden(a)
-            && hide::desk_of(a) == Some(2)
-            && windows_list::foreground().is_some_and(|f| others.contains(&f))
-    });
+    let t = carry_a();
     step("Caps + Alt + 2 lleva", t, &mut parts, &mut ok);
 
     go(b'2');
@@ -1029,9 +1133,12 @@ fn desks_check(r: &mut Report, puppets: &[WindowId]) {
     let t = wait_for(limit, || hidden(a) && others.iter().all(|&o| shown(o)));
     step("Caps + 1", t, &mut parts, &mut ok);
 
-    // Alternar y medir hasta el estado verificado.
+    // Alternar y medir hasta el estado verificado (con la línea de fin de
+    // la transacción); 60 ms de calma entre cambios, fuera de la medición.
     let mut times = Vec::new();
+    let mut failed_at = None;
     for i in 0..20 {
+        std::thread::sleep(Duration::from_millis(60));
         let two = i % 2 == 0;
         go(if two { b'2' } else { b'1' });
         let t = wait_for(limit, || {
@@ -1041,57 +1148,83 @@ fn desks_check(r: &mut Report, puppets: &[WindowId]) {
                 hidden(a) && others.iter().all(|&o| shown(o))
             }
         });
+        let _ = wait_desk_line(lines, Duration::from_millis(200));
         match t {
             Some(d) => times.push(d),
             None => {
-                ok = false;
+                failed_at = Some((i + 1, state()));
                 break;
             }
         }
     }
     times.sort();
-    if let Some(p95) = times.get(times.len() * 95 / 100).or(times.last()) {
-        parts.push(format!("20 cambios: p95 {}", ms(*p95)));
+    match &failed_at {
+        None => {
+            if let Some(p95) = times.get(times.len() * 95 / 100).or(times.last()) {
+                parts.push(format!("20 cambios: p95 {}", ms(*p95)));
+            }
+        }
+        Some((n, st)) => {
+            ok = false;
+            parts.push(format!("20 cambios: falló el cambio {n} ({st})"));
+            // Volver al estado de partida para que lo que sigue valga.
+            if !reset_desks(puppets) || carry_a().is_none() {
+                return r.check(NAME, Status::Fail, parts.join("; "));
+            }
+        }
     }
 
     // Deshacer el "llevar" (estamos en el 1).
     carry(b'Z');
     let t = wait_for(limit, || shown(a) && hide::desk_of(a) == Some(1));
+    let _ = wait_desk_line(lines, Duration::from_millis(200));
     step("Caps + Alt + Z la trae", t, &mut parts, &mut ok);
 
     // "Mostrar todas las ventanas" (menú de la bandeja o `wm mostrar`).
+    let _ = windows_list::activate(a);
+    std::thread::sleep(Duration::from_millis(100));
     carry(b'3');
-    let _ = wait_for(limit, || hidden(a));
-    wm_platform::tray::send_order_in("ci-probe", wm_platform::tray::Order::ShowAll);
-    let t = wait_for(limit, || shown(a) && hide::desk_of(a) == Some(1));
+    let carried = wait_for(limit, || hidden(a)).is_some();
+    let _ = wait_desk_line(lines, Duration::from_millis(200));
+    let sent = wm_platform::tray::send_order_in("ci-probe", wm_platform::tray::Order::ShowAll);
+    let t = (carried && sent)
+        .then(|| wait_for(limit, || shown(a) && hide::desk_of(a) == Some(1)))
+        .flatten();
     step("Mostrar todas", t, &mut parts, &mut ok);
     if t.is_none() {
-        // Falló una vez en la CI sin repetirse: dejar el estado para entenderlo.
         parts.push(format!(
-            "(estado: {:?}, wm.desk {:?}, marca {:?}, al frente {})",
-            hide::visibility(a),
-            hide::desk_of(a),
-            hide::hidden_with(a),
+            "(llevada al 3: {carried}; orden enviada: {sent}; estado: {}, al frente {})",
+            state(),
             windows_list::foreground() == Some(a)
         ));
+        if !reset_desks(puppets) {
+            return r.check(NAME, Status::Fail, parts.join("; "));
+        }
     }
 
     // Como el clic en la barra de tareas: activar una escondida salta a su
     // escritorio (Windows la destapa y avisa FOREGROUND).
+    let carried = carry_a().is_some();
     let _ = windows_list::activate(a);
-    std::thread::sleep(Duration::from_millis(100));
-    carry(b'2');
-    let _ = wait_for(limit, || hidden(a));
-    let _ = windows_list::activate(a);
-    let t = wait_for(limit, || {
-        shown(a) && windows_list::foreground() == Some(a) && others.iter().all(|&o| hidden(o))
-    });
+    let t = carried
+        .then(|| {
+            wait_for(limit, || {
+                shown(a)
+                    && windows_list::foreground() == Some(a)
+                    && others.iter().all(|&o| hidden(o))
+            })
+        })
+        .flatten();
+    let _ = wait_desk_line(lines, Duration::from_millis(200));
     step("activar una escondida salta", t, &mut parts, &mut ok);
     // Queda en el 2 a propósito: "Salir" tiene que mostrar todo y borrar
     // `wm.desk` (lo revisa el chequeo "wm core").
     go(b'1');
     let t = wait_for(limit, || hidden(a) && others.iter().all(|&o| shown(o)));
     step("y Caps + 1 vuelve", t, &mut parts, &mut ok);
+    if !ok {
+        parts.push(format!("(al final: {})", state()));
+    }
 
     r.check(NAME, if ok { Status::Ok } else { Status::Fail }, parts.join("; "));
 }
