@@ -47,6 +47,9 @@ pub struct WindowInfo {
     pub family: Option<String>,
     /// AUMID del proceso (apps MSIX y de la Store).
     pub aumid: Option<String>,
+    /// Se puede redimensionar y maximizar: una ventana principal (no una
+    /// pantalla de carga ni un diálogo). v1.1.
+    pub main: bool,
 }
 
 /// Hito 4d: una ventana vista al reconciliar.
@@ -172,6 +175,7 @@ pub fn user_windows() -> Vec<WindowInfo> {
                 minimized: v.minimized,
                 family: None,
                 aumid: None,
+                main: is_main_window(h),
             })
         })
         .collect();
@@ -219,6 +223,15 @@ fn is_user_window(h: HWND) -> bool {
         );
         !(ok.is_ok() && cloaked != 0)
     }
+}
+
+/// ¿Ventana principal? Borde para cambiar el tamaño y botón de maximizar
+/// (las pantallas de carga y los diálogos no los tienen). Solo lee el estilo.
+fn is_main_window(h: HWND) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{GWL_STYLE, WS_MAXIMIZEBOX, WS_THICKFRAME};
+    // SAFETY: lectura del estilo de un HWND; no envía mensajes.
+    let style = unsafe { GetWindowLongPtrW(h, GWL_STYLE) } as u32;
+    style & WS_THICKFRAME.0 != 0 && style & WS_MAXIMIZEBOX.0 != 0
 }
 
 /// ¿Es una ventana "de usuario" (las del Alt+Tab)?

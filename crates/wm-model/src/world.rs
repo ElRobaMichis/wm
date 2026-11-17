@@ -292,6 +292,10 @@ pub struct WinInfo {
     pub family: Option<String>,
     /// AUMID del proceso (apps MSIX y de la Store).
     pub aumid: Option<String>,
+    /// Ventana principal: se puede redimensionar y maximizar (no es una
+    /// pantalla de carga ni un diálogo). v1.1: solo a estas se les aplica la
+    /// regla "al abrir".
+    pub main: bool,
 }
 
 impl WinInfo {
@@ -709,6 +713,10 @@ enum Pending {
     Rescue,
     /// Un clic sobre la lista de ventanas.
     ListHit,
+    /// v1.1: observar una ventana nueva con regla "al abrir".
+    Arrive {
+        win: WinKey,
+    },
 }
 
 /// El estado del core.
@@ -793,6 +801,8 @@ pub struct World {
     follow_fg: Option<WinKey>,
     /// El `Focus` del seguimiento en curso: si falla, se sigue esperando.
     follow_focus: Option<(Req, Follow)>,
+    /// v1.1: ventanas nuevas esperando su regla "al abrir".
+    arrivals: HashMap<WinKey, world_rules::Arrival>,
 }
 
 /// La lista de una letra mientras `Caps` sigue abajo.
@@ -946,6 +956,7 @@ impl World {
             .chain(self.screens.deadline_us())
             .chain(self.follow_deadline())
             .chain(self.list_deadline())
+            .chain(self.arrival_deadline())
             .min()
     }
 
@@ -1188,7 +1199,7 @@ impl World {
                 if let Some(Pending::MapScan) = self.pending.get(&req) {
                     self.pending.remove(&req);
                     let (windows, fg) = result.unwrap_or_default();
-                    self.adopt_scan(&windows, &mut out);
+                    self.adopt_scan(&windows, fg, now_us, &mut out);
                     self.map_fg = fg;
                     self.map_wins = windows.clone();
                     self.show_map(&windows, &mut out);
@@ -1199,7 +1210,7 @@ impl World {
                 };
                 match result {
                     Ok((windows, fg)) => {
-                        self.adopt_scan(&windows, &mut out);
+                        self.adopt_scan(&windows, fg, now_us, &mut out);
                         self.go_to_app(letter, key_us, &windows, fg, now_us, &mut out)
                     }
                     Err(e) => out.push(Effect::Log(format!("Caps + {}: {e}", letter as char))),
@@ -1275,6 +1286,7 @@ impl World {
                     Ok(obs) => self.resize(obs, grow, what, key_us, now_us, &mut out),
                     Err(e) => out.push(Effect::Log(format!("{what}: {e}"))),
                 },
+                Some(Pending::Arrive { win }) => self.arrival_seen(win, result, now_us, &mut out),
                 Some(Pending::Undo { key_us, entry }) => match result {
                     Ok(obs) => self.undo(entry, obs, key_us, now_us, &mut out),
                     // La ventana ya no existe: la entrada anterior, en la misma tecla.
@@ -2226,6 +2238,7 @@ impl World {
     fn tick(&mut self, now_us: u64, out: &mut Vec<Effect>) {
         self.pointer_tick(now_us, out);
         self.follow_tick(now_us, out);
+        self.arrival_tick(now_us, out);
         self.list_tick(now_us, out);
         self.screens_tick(now_us, out);
         if self.verify_due.is_some_and(|t| t <= now_us) {
@@ -2783,6 +2796,9 @@ mod world_drag;
 
 #[path = "world_screens.rs"]
 mod world_screens;
+
+#[path = "world_rules.rs"]
+mod world_rules;
 pub use world_screens::{ScreenStats, Survey, SurveyWin};
 
 /// Índice actual de un monitor (los índices no valen entre observaciones: se

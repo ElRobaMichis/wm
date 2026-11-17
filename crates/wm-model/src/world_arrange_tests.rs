@@ -290,9 +290,11 @@ impl Sim {
                                 app: "brave".into(),
                                 title: "Brave".into(),
                                 desk: Some(1),
+                                main: true,
                                 ..Default::default()
                             };
-                            queue.push_back(Event::Windows { req, result: Ok((vec![info], None)) });
+                            let fg = Some(self.win.key);
+                            queue.push_back(Event::Windows { req, result: Ok((vec![info], fg)) });
                         }
                         Effect::SetDesks { req, .. } => {
                             queue.push_back(Event::DesksSet { req, failed: Vec::new() })
@@ -1674,4 +1676,32 @@ fn a_half_on_a_monitor_that_goes_away_snaps_back_when_it_returns() {
     sim.win.frame = Rect::new(1923, 2, 2885, 1030);
     sim.run(&mut w, Event::Screen(crate::screens::ScreenEvent::Changed));
     assert!(sim.is_at(1, P::LeftHalf), "{:?} {:?}", sim.win.frame, sim.logs);
+}
+
+// ---- v1.1: regla "al abrir" ----
+
+#[test]
+fn a_new_window_with_an_open_rule_goes_to_its_place_once_and_z_undoes_it() {
+    let (b, _) = crate::apps::parse_bindings("b = brave | | | al abrir: derecha");
+    let mut w = World::new(b);
+    let mut sim = Sim::new();
+    let start = sim.win.frame;
+    sim.run(&mut w, Event::Foreground(sim.win.key)); // apareció una ventana nueva
+    assert!(sim.is_at(0, P::RightHalf), "{:?} {:?}", sim.win.frame, sim.logs);
+    assert_eq!(sim.flights, 0, "sin animación");
+    let places = sim.places;
+    sim.run(&mut w, Event::Foreground(sim.win.key));
+    assert_eq!(sim.places, places, "una sola vez");
+    sim.key(&mut w, b'Z');
+    assert_eq!(sim.win.frame, start, "Z la devuelve adonde la abrió la app");
+}
+
+#[test]
+fn without_rules_nothing_moves() {
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    let start = sim.win.frame;
+    sim.run(&mut w, Event::Foreground(sim.win.key));
+    assert_eq!(sim.win.frame, start);
+    assert_eq!(sim.places, 0);
 }

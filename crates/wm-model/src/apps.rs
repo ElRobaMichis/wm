@@ -15,6 +15,10 @@ pub struct AppBinding {
     pub launch: Option<String>,
     /// Nombre visible ("Steam"), para el mapa y los avisos.
     pub label: Option<String>,
+    /// v1.1: dónde va al abrirse ("al abrir: derecha").
+    pub open: Option<crate::rules::OpenRule>,
+    /// Campos que esta versión no entiende: se conservan al reescribir.
+    pub extra: Vec<String>,
 }
 
 impl AppBinding {
@@ -106,6 +110,22 @@ pub fn parse_bindings(text: &str) -> (Vec<AppBinding>, Vec<String>) {
             .collect();
         let launch = fields.next().filter(|p| !p.is_empty()).map(str::to_owned);
         let label = fields.next().filter(|p| !p.is_empty()).map(str::to_owned);
+        // Desde el cuarto campo, pares "clave: valor" (v1.1); lo que no se
+        // entiende se guarda tal cual.
+        let mut open = None;
+        let mut extra = Vec::new();
+        for f in fields.filter(|f| !f.is_empty()) {
+            match f.to_lowercase().strip_prefix(crate::rules::OPEN_KEY) {
+                Some(v) => match crate::rules::OpenRule::parse(v) {
+                    Some(r) => open = Some(r),
+                    None => {
+                        errors.push(format!("línea {}: «{f}» no es una ubicación", i + 1));
+                        extra.push(f.to_owned());
+                    }
+                },
+                None => extra.push(f.to_owned()),
+            }
+        }
         let Some((app, aliases)) = names.split_first() else {
             errors.push(format!("línea {}: falta el nombre de la app", i + 1));
             continue;
@@ -117,6 +137,8 @@ pub fn parse_bindings(text: &str) -> (Vec<AppBinding>, Vec<String>) {
             aliases: aliases.to_vec(),
             launch,
             label,
+            open,
+            extra,
         });
     }
     (bindings, errors)
@@ -151,6 +173,19 @@ fn binding_letter(raw: &str) -> Option<u8> {
 fn format_binding(b: &AppBinding) -> String {
     let letter = b.letter.to_ascii_lowercase() as char;
     let names = b.names().collect::<Vec<_>>().join(", ");
+    if b.open.is_some() || !b.extra.is_empty() {
+        let mut parts =
+            vec![names, b.launch.clone().unwrap_or_default(), b.label.clone().unwrap_or_default()];
+        if let Some(r) = b.open {
+            parts.push(format!("{} {}", crate::rules::OPEN_KEY, r.format()));
+        }
+        parts.extend(b.extra.iter().cloned());
+        return format!(
+            "{letter} = {}
+",
+            parts.join(" | ").replace(" |  | ", " | | ")
+        );
+    }
     match (&b.launch, &b.label) {
         (_, Some(label)) => {
             format!("{letter} = {names} | {} | {label}\n", b.launch.as_deref().unwrap_or(""))
@@ -371,6 +406,26 @@ mod tests {
     }
 
     #[test]
+    fn open_rules_and_unknown_fields_round_trip() {
+        let text = "b = brave | C:/b.exe | Brave | al abrir: derecha
+n = notepad | | | al abrir: centrada 60 | escritorio: 2
+";
+        let (b, errors) = parse_bindings(text);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(b[0].open, Some(crate::rules::OpenRule::Place(crate::Placement::RightHalf)));
+        assert_eq!(b[1].open, Some(crate::rules::OpenRule::Centered(60)));
+        assert_eq!(b[1].extra, vec!["escritorio: 2".to_owned()]);
+        let again = update_bindings(text, &b);
+        assert_eq!(parse_bindings(&again).0, b, "{again}");
+        // Un archivo viejo (tres campos) se lee igual.
+        let (old, _) = parse_bindings(
+            "s = steam | C:/s.exe | Steam
+",
+        );
+        assert_eq!(old[0].open, None);
+    }
+
+    #[test]
     fn aliases_and_labels_round_trip() {
         let b = AppBinding {
             letter: b'S',
@@ -378,6 +433,7 @@ mod tests {
             aliases: vec!["steamwebhelper".into()],
             launch: None,
             label: Some("Steam".into()),
+            ..Default::default()
         };
         let text = update_bindings("", std::slice::from_ref(&b));
         assert!(text.ends_with("s = steam, steamwebhelper |  | Steam\n"), "{text}");

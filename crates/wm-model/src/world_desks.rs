@@ -69,10 +69,17 @@ impl World {
     /// Cualquier `Scan` adopta lo nuevo al escritorio activo y repara las
     /// props `wm.desk` que falten (salvo con una transacción en curso, que
     /// lo hace ella con su propio `Scan`).
-    pub(super) fn adopt_scan(&mut self, windows: &[WinInfo], out: &mut Vec<Effect>) {
+    pub(super) fn adopt_scan(
+        &mut self,
+        windows: &[WinInfo],
+        fg: Option<WinKey>,
+        now_us: u64,
+        out: &mut Vec<Effect>,
+    ) {
         if self.sync.is_some() {
             return;
         }
+        self.greet(windows, fg, now_us, out);
         let set = self.desks.adopt(windows);
         self.send_set(set, out);
     }
@@ -201,6 +208,9 @@ impl World {
         out: &mut Vec<Effect>,
     ) {
         let Some(goal) = self.sync.as_ref().map(|s| s.goal) else { return };
+        if !matches!(goal, Goal::Boot { .. }) {
+            self.greet(windows, fg, now_us, out);
+        }
         let jobs = &self.jobs;
         let flying = |k: WinKey| jobs.get(&k).is_some_and(|j| j.flying);
         match self.desks.plan(goal, windows, fg, &flying) {

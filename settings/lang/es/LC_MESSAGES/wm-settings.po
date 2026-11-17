@@ -110,3 +110,21 @@ msgstr "Buscar una app"
 
 msgid "Loading the installed apps…"
 msgstr "Cargando las apps instaladas…"
+
+msgid "When it opens"
+msgstr "Al abrir"
+
+msgid "Do nothing"
+msgstr "No hacer nada"
+
+msgid "Left half"
+msgstr "Mitad izquierda"
+
+msgid "Right half"
+msgstr "Mitad derecha"
+
+msgid "Maximized"
+msgstr "Maximizada"
+
+msgid "Centered"
+msgstr "Centrada"

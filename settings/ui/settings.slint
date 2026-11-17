@@ -5,7 +5,7 @@
 import { Theme } from "theme.slint";
 import {
     SearchField, Segmented, ToggleRow, Button, LetterList, LetterItem, SectionLabel,
-    Keycap, KeyHint, PickerRow, PickField
+    Keycap, KeyHint, PickerRow, PickField, Select
 } from "components.slint";
 
 export { LetterItem, PickerRow, Theme }
@@ -24,6 +24,14 @@ export component SettingsWindow inherits Window {
     // Selector de apps (plan-apps.md §4).
     in property <[PickerRow]> picker-rows;
     in property <string> choice-name;
+    // v1.1: la regla "al abrir" de la letra elegida.
+    in property <bool> choice-assigned;
+    in property <[string]> open-options;
+    in-out property <int> open-choice;
+    callback open-chosen(int);
+    out property <[string]> open-labels: [
+        @tr("Do nothing"), @tr("Left half"), @tr("Right half"), @tr("Maximized"), @tr("Centered")
+    ];
     in property <bool> catalog-loading;
     in-out property <bool> picking: false;
     in-out property <string> picker-query;
@@ -231,6 +239,29 @@ export component SettingsWindow inherits Window {
                         root.picker-query = "";
                         root.picker-open();
                         root.picking = true;
+                    }
+                }
+            }
+
+            // v1.1: dónde va la app al abrirse (plan-v1.1.md).
+            if root.choice-assigned: VerticalLayout {
+                Rectangle { height: Theme.s2; }
+                HorizontalLayout {
+                    spacing: Theme.s3;
+                    Text {
+                        text: @tr("When it opens");
+                        color: Theme.text-2;
+                        vertical-alignment: center;
+                    }
+                    Select {
+                        horizontal-stretch: 1;
+                        model: root.open-options;
+                        window-height: root.height;
+                        label: @tr("When it opens");
+                        current <=> root.open-choice;
+                        selected(index) => {
+                            root.open-chosen(index);
+                        }
                     }
                 }
             }

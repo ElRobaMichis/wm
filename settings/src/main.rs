@@ -22,10 +22,11 @@ use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
 
-use slint::{ModelRc, SharedString, VecModel};
+use slint::{Model, ModelRc, SharedString, VecModel};
 use wm_model::apps::{AppBinding, bindings_path, parse_bindings, update_bindings};
 use wm_model::mapview::display_name;
 use wm_model::options::{Options, options_path};
+use wm_model::rules::OpenRule;
 
 slint::include_modules!();
 
@@ -194,6 +195,36 @@ struct State {
     query: String,
     /// Opciones al abrir (`settings.txt`).
     options: Options,
+    /// v1.1: la regla "al abrir" de cada letra (A–Z) y la del archivo.
+    rules: Vec<Option<OpenRule>>,
+    original_rules: Vec<Option<OpenRule>>,
+    /// Campos que esta versión no entiende, por letra: se conservan.
+    extras: Vec<Vec<String>>,
+}
+
+/// Las reglas que ofrece el desplegable "Al abrir" (plan-v1.1.md §7: cinco;
+/// el resto solo a mano en `apps.txt`).
+const OPEN_CHOICES: [Option<OpenRule>; 5] = [
+    None,
+    Some(OpenRule::Place(wm_model::Placement::LeftHalf)),
+    Some(OpenRule::Place(wm_model::Placement::RightHalf)),
+    Some(OpenRule::Maximized),
+    Some(OpenRule::Centered(80)),
+];
+
+/// Las opciones del desplegable para `rule` y cuál está elegida: si la regla
+/// no es una de las cinco (una esquina, escrita a mano), va como sexta.
+fn open_options(ui: &SettingsWindow, rule: Option<OpenRule>) -> (Vec<SharedString>, i32) {
+    let labels = ui.get_open_labels();
+    let mut options: Vec<SharedString> = (0..5).filter_map(|i| labels.row_data(i)).collect();
+    let i = match OPEN_CHOICES.iter().position(|c| *c == rule) {
+        Some(i) => i as i32,
+        None => {
+            options.push(rule.map_or_else(SharedString::new, |r| r.format().into()));
+            5
+        }
+    };
+    (options, i)
 }
 
 fn refresh(ui: &SettingsWindow, st: &State) {
@@ -207,7 +238,9 @@ fn refresh(ui: &SettingsWindow, st: &State) {
                 name: a
                     .map_or_else(SharedString::new, |a| st.catalog.entries[a].name.as_str().into()),
                 exe: a.map_or_else(SharedString::new, |a| {
-                    format!("{}.exe", st.catalog.entries[a].names[0]).into()
+                    let rule =
+                        st.rules[i].map_or_else(String::new, |r| format!(" · {}", r.short()));
+                    format!("{}.exe{rule}", st.catalog.entries[a].names[0]).into()
                 }),
                 assigned: a.is_some(),
             }
@@ -222,7 +255,14 @@ fn refresh(ui: &SettingsWindow, st: &State) {
         app.map_or_else(|| ui.get_none_text(), |a| st.catalog.entries[a].name.as_str().into()),
     );
     ui.set_assigned(st.assigned.iter().filter(|(_, a)| a.is_some()).count() as i32);
-    ui.set_dirty(st.assigned != st.original || options_of(ui) != st.options);
+    let rule = st.rules[st.current];
+    let (options, chosen) = open_options(ui, rule);
+    ui.set_open_options(ModelRc::new(VecModel::from(options)));
+    ui.set_open_choice(chosen);
+    ui.set_choice_assigned(app.is_some());
+    ui.set_dirty(
+        st.assigned != st.original || st.rules != st.original_rules || options_of(ui) != st.options,
+    );
 }
 
 fn options_of(ui: &SettingsWindow) -> Options {
@@ -256,12 +296,15 @@ fn save(path: &Path, st: &State) -> std::io::Result<()> {
             let (app, aliases) = e.names.split_first()?;
             // El nombre visible solo si no es el que ya se deduce del exe.
             let label = (e.name != display_name(app)).then(|| e.name.clone());
+            let i = usize::from(letter as u8 - b'A');
             Some(AppBinding {
                 letter: letter as u8,
                 app: app.clone(),
                 aliases: aliases.to_vec(),
                 launch: e.launch.clone(),
                 label,
+                open: st.rules[i],
+                extra: st.extras[i].clone(),
             })
         })
         .collect();
@@ -311,6 +354,14 @@ fn main() -> Result<(), slint::PlatformError> {
     let file_text = path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
     let (bindings, _errors) = parse_bindings(&file_text);
     let catalog = Catalog::new(&bindings);
+    let rules: Vec<Option<OpenRule>> = (b'A'..=b'Z')
+        .map(|l| bindings.iter().find(|b| b.letter == l).and_then(|b| b.open))
+        .collect();
+    let extras: Vec<Vec<String>> = (b'A'..=b'Z')
+        .map(|l| {
+            bindings.iter().find(|b| b.letter == l).map(|b| b.extra.clone()).unwrap_or_default()
+        })
+        .collect();
     let initial: Vec<(char, Option<usize>)> = (b'A'..=b'Z')
         .map(|l| {
             let app = bindings.iter().find(|b| b.letter == l).and_then(|b| catalog.index(&b.app));
@@ -336,6 +387,9 @@ fn main() -> Result<(), slint::PlatformError> {
         current: 0,
         query: String::new(),
         options,
+        original_rules: rules.clone(),
+        rules,
+        extras,
     }));
     refresh(&ui, &st.borrow());
 
@@ -411,10 +465,26 @@ fn main() -> Result<(), slint::PlatformError> {
         let Some(ui) = weak.upgrade() else { return };
         let mut st = s.borrow_mut();
         let cur = st.current;
+        let before = st.assigned[cur].1;
         match st.picker.get(i.max(0) as usize).copied() {
             Some(Row::None) => st.assigned[cur].1 = None,
             Some(Row::App(a)) => st.assigned[cur].1 = Some(a),
             _ => return,
+        }
+        // Otra app en la letra: la regla era de la anterior.
+        if st.assigned[cur].1 != before {
+            st.rules[cur] = None;
+        }
+        refresh(&ui, &st);
+    });
+    let weak = ui.as_weak();
+    let s = st.clone();
+    ui.on_open_chosen(move |i| {
+        let Some(ui) = weak.upgrade() else { return };
+        let mut st = s.borrow_mut();
+        let cur = st.current;
+        if let Some(&rule) = OPEN_CHOICES.get(i.max(0) as usize) {
+            st.rules[cur] = rule;
         }
         refresh(&ui, &st);
     });

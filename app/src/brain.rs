@@ -1035,6 +1035,7 @@ fn win_info(w: windows_list::WindowInfo) -> WinInfo {
         minimized: w.minimized,
         family: w.family,
         aumid: w.aumid,
+        main: w.main,
     }
 }
 

@@ -17,6 +17,7 @@ pub mod mouse;
 pub mod notices;
 pub mod options;
 pub mod place;
+pub mod rules;
 pub mod screens;
 pub mod settings_demo;
 pub mod update;
