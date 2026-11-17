@@ -2176,4 +2176,24 @@ fn overlay(r: &mut Report) {
         }
         Err(e) => r.check("overlay (Composition + mapa)", Status::Fail, e.to_string()),
     }
+    // Recién creadas, las ventanas overlay y el anfitrión del fantasma tienen
+    // que dar "vigentes": si no, cada mapa, aviso o lista las rearma (fue el
+    // parpadeo de la lista de ventanas, 17/11/2026).
+    let current = std::thread::spawn(|| {
+        let overlays = wm_platform::overlay::Overlays::new().map(|o| o.is_current());
+        let ghost = wm_platform::ghost::GhostHost::new().map(|g| g.is_current());
+        (overlays, ghost)
+    })
+    .join();
+    match current {
+        Ok((Ok(true), Ok(true))) => {
+            r.check("overlay vigente", Status::Ok, "overlays y fantasma recién creados: vigentes".into())
+        }
+        Ok((o, g)) => r.check(
+            "overlay vigente",
+            Status::Fail,
+            format!("recién creados dan no vigentes (overlays {o:?}, fantasma {g:?}): se rearmarían siempre"),
+        ),
+        Err(_) => r.check("overlay vigente", Status::Fail, "pánico al crear".into()),
+    }
 }

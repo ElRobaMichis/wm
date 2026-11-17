@@ -158,7 +158,8 @@ impl GhostHost {
     /// ¿Sigue cubriendo la pantalla virtual (no cambiaron los monitores)?
     pub fn is_current(&self) -> bool {
         let (x, y, cx, cy) = virtual_screen();
-        let want = Rect::new(x, y, x + cx, y + cy);
+        // 1 px menos de alto, como al crearlo (`new`).
+        let want = Rect::new(x, y, x + cx, y + cy - 1);
         self.origin == (x, y)
             && self.size == (cx, cy)
             && window_rect(crate::windows_list::WindowId(self.host.0 as isize)) == Some(want)

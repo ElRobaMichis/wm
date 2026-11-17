@@ -427,6 +427,7 @@ impl State {
         }
         self.built = None;
         self.shown = None;
+        self.list = None;
         Ok(true)
     }
 
@@ -441,6 +442,12 @@ impl State {
             self.end_toast();
             for s in self.overlays.screens() {
                 s.root.Children()?.RemoveAll()?;
+            }
+            // La lista vive en el mismo árbol: vuelve arriba.
+            if let Some((li, visual, _)) = self.list.as_ref()
+                && let Some(s) = self.overlays.screens().get(*li)
+            {
+                s.root.Children()?.InsertAtTop(&visual.container)?;
             }
             self.built = Some(Built { views, screens: (0..n).map(|_| None).collect() });
         }
@@ -506,6 +513,9 @@ impl State {
     }
 
     fn set_layer(&self, i: usize, layer: Layer) -> windows::core::Result<()> {
+        if self.list.as_ref().is_some_and(|(li, _, _)| *li == i) {
+            return Ok(()); // la lista reemplaza al mapa mientras dura
+        }
         let Some(Some((apps, window))) = self.built.as_ref().map(|b| &b.screens[i]) else {
             return Ok(());
         };

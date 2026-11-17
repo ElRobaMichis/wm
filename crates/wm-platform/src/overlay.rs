@@ -58,6 +58,16 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
     }
 }
 
+/// El rectángulo de la ventana overlay de un monitor: 1 px menos de alto
+/// que el monitor (si lo cubre entero, el shell cree que hay una app a
+/// pantalla completa y, por ejemplo, silencia las notificaciones; spike 5).
+/// Lo usan la creación **y** `is_current`: con dos cuentas distintas,
+/// `is_current` daba siempre falso y cada mapa, aviso o lista rearmaba las
+/// ventanas (el parpadeo de la lista; Fable, 17/11/2026).
+pub(crate) fn window_rect_for(b: Rect) -> Rect {
+    Rect { bottom: b.bottom - 1, ..b }
+}
+
 impl Overlays {
     /// Crea el `DispatcherQueue` del hilo actual, el `Compositor` y una
     /// ventana overlay oculta por monitor.
@@ -85,7 +95,7 @@ impl Overlays {
                 m.bounds == s.bounds
                     && m.dpi == s.dpi
                     && crate::ghost::window_rect(crate::windows_list::WindowId(s.hwnd.0 as isize))
-                        == Some(s.bounds)
+                        == Some(window_rect_for(s.bounds))
             })
     }
 
@@ -228,10 +238,7 @@ fn create_screens(compositor: &Compositor) -> windows::core::Result<Vec<Screen>>
                 b.left,
                 b.top,
                 b.width(),
-                // 1 px menos que el monitor: si la ventana lo cubre entero,
-                // el shell cree que hay una app a pantalla completa y, por
-                // ejemplo, silencia las notificaciones (spike 5).
-                b.height() - 1,
+                window_rect_for(b).height(),
                 None,
                 None,
                 Some(instance),
@@ -334,4 +341,18 @@ pub fn next_thread_message(msg: u32) -> Option<usize> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    /// Recién creadas, las ventanas tienen que dar vigentes (si no, cada mapa,
+    /// aviso o lista las rearma: el parpadeo de la lista, 17/11/2026). No se
+    /// muestran: nada aparece en pantalla.
+    #[test]
+    fn fresh_overlays_and_ghost_are_current() {
+        let overlays = super::Overlays::new().expect("overlays");
+        assert!(overlays.is_current(), "overlays recién creados: no vigentes");
+        let ghost = crate::ghost::GhostHost::new().expect("fantasma");
+        assert!(ghost.is_current(), "fantasma recién creado: no vigente");
+    }
 }
