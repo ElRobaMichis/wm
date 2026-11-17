@@ -102,6 +102,7 @@ const FOCUS_CHECKS: &[&str] = &[
     "bandeja",
     "recarga",
     "opciones y avisos",
+    "ventanas difíciles",
     "colgada",
     "escritorios",
     "pantallas",
