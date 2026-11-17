@@ -149,3 +149,15 @@ msgstr "Abrir en la pantalla del puntero"
 
 msgid "Apps with a “When it opens” rule go to the screen where the pointer is."
 msgstr "Las apps con regla «Al abrir» van a la pantalla donde está el puntero."
+
+msgid "{} was on {}. Now it is only on {}."
+msgstr "{} estaba en la {}. Ahora está solo en la {}."
+
+msgid "Caps + {} will no longer go to: {} (open now). Give them another letter if you use them."
+msgstr "Caps + {} ya no va a ir a: {} (abiertas ahora). Si las usás, dales otra letra."
+
+msgid "Usage log"
+msgstr "Registro de uso"
+
+msgid "Counts which shortcuts you use, only on this PC. Nothing is sent anywhere."
+msgstr "Cuenta qué atajos usás, solo en esta PC. No se envía a ningún lado."

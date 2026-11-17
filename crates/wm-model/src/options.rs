@@ -24,6 +24,10 @@ pub struct Options {
     pub gap: u8,
     /// v1.1: la regla "al abrir" se aplica en el monitor del puntero.
     pub open_on_pointer: bool,
+    /// v1.2: contar qué atajos se usan, por día (`usage.rs`, `uso.txt`).
+    pub usage_log: bool,
+    /// v1.2: "La próxima vez: Caps + B" al ir a una app a mano.
+    pub tips: bool,
 }
 
 /// El espacio máximo entre ventanas (px a 100 %).
@@ -38,16 +42,20 @@ impl Default for Options {
             notices: true,
             gap: 0,
             open_on_pointer: false,
+            usage_log: false,
+            tips: true,
         }
     }
 }
 
-const KEYS: [&str; 5] = [
+const KEYS: [&str; 7] = [
     "animaciones",
     "puntero_sigue_al_foco",
     "borde_de_foco",
     "avisos",
     "abrir_en_la_pantalla_del_puntero",
+    "registro_de_uso",
+    "sugerir_atajos",
 ];
 const GAP_KEY: &str = "espacio_entre_ventanas";
 
@@ -82,6 +90,8 @@ impl Options {
                 "borde_de_foco" => o.focus_border = v,
                 "avisos" => o.notices = v,
                 "abrir_en_la_pantalla_del_puntero" => o.open_on_pointer = v,
+                "registro_de_uso" => o.usage_log = v,
+                "sugerir_atajos" => o.tips = v,
                 _ => {}
             }
         }
@@ -96,6 +106,8 @@ impl Options {
             self.focus_border,
             self.notices,
             self.open_on_pointer,
+            self.usage_log,
+            self.tips,
         ];
         let mut s = String::from(
             "# Opciones de wm. Las escriben los ajustes; se pueden editar a mano\n\
@@ -127,6 +139,8 @@ mod tests {
             notices: true,
             gap: 8,
             open_on_pointer: true,
+            usage_log: true,
+            tips: false,
         };
         assert_eq!(Options::parse(&o.format()), o);
         assert_eq!(Options::parse("espacio_entre_ventanas = 99").gap, GAP_MAX);

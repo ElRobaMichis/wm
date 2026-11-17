@@ -90,6 +90,8 @@ struct Sim {
     unlisted: usize,
     /// Dónde está el puntero (v1.1: abrir en la pantalla del puntero).
     pointer: Option<(i32, i32)>,
+    /// v1.2: reglas que el modelo mandó a guardar.
+    saved: Vec<(u8, Option<crate::rules::OpenRule>)>,
 }
 
 fn monitor(left: i32) -> MonitorObs {
@@ -131,6 +133,7 @@ impl Sim {
             behind: false,
             unlisted: 0,
             pointer: None,
+            saved: Vec::new(),
         }
     }
 
@@ -321,6 +324,7 @@ impl Sim {
                         Effect::SetDesks { req, .. } => {
                             queue.push_back(Event::DesksSet { req, failed: Vec::new() })
                         }
+                        Effect::SaveRule { letter, open } => self.saved.push((letter, open)),
                         other => panic!("efecto inesperado: {other:?}"),
                     }
                 }
@@ -1980,4 +1984,114 @@ fn with_a_gap_the_open_rule_uses_the_spaced_half() {
     sim.run(&mut w, gaps(8));
     sim.run(&mut w, Event::Foreground(sim.win.key));
     assert_eq!(sim.win.frame, spaced(&sim.monitors[0], P::RightHalf), "{:?}", sim.logs);
+}
+
+// ---- v1.2: "Abrir siempre así" ----
+
+fn keep(sim: &mut Sim, w: &mut World) {
+    let win = sim.win.key;
+    sim.run(w, Event::Command(crate::world::Command::OpenLikeThis { win, letter: b'B' }));
+}
+
+fn brave(rule: &str) -> World {
+    let text = if rule.is_empty() {
+        "b = brave".to_owned()
+    } else {
+        format!("b = brave | | | al abrir: {rule}")
+    };
+    World::new(crate::apps::parse_bindings(&text).0)
+}
+
+#[test]
+fn keep_saves_the_half_and_confirms_when_the_file_comes_back() {
+    use crate::rules::OpenRule;
+    let mut w = brave("");
+    let mut sim = Sim::new();
+    sim.key(&mut w, b'D');
+    keep(&mut sim, &mut w);
+    assert_eq!(sim.saved, vec![(b'B', Some(OpenRule::Place(P::RightHalf)))], "{:?}", sim.logs);
+    assert!(sim.notices.is_empty(), "el aviso espera al archivo: {:?}", sim.notices);
+    let (b, _) = crate::apps::parse_bindings("b = brave | | | al abrir: derecha");
+    sim.run(&mut w, Event::Bindings(b));
+    assert_eq!(
+        sim.notices.last().map(String::as_str),
+        Some("Brave se va a abrir siempre en la mitad derecha")
+    );
+    let n = sim.notices.len();
+    let (b, _) = crate::apps::parse_bindings("b = brave | | | al abrir: derecha");
+    sim.run(&mut w, Event::Bindings(b));
+    assert_eq!(sim.notices.len(), n, "una sola vez");
+}
+
+#[test]
+fn keep_knows_maximized_and_centered() {
+    use crate::rules::OpenRule;
+    let mut w = brave("");
+    let mut sim = Sim::new();
+    sim.key(&mut w, b'F');
+    keep(&mut sim, &mut w);
+    assert_eq!(sim.saved.last(), Some(&(b'B', Some(OpenRule::Maximized))), "{:?}", sim.logs);
+    let mut w = brave("");
+    let mut sim = Sim::new();
+    sim.key(&mut w, b'C');
+    keep(&mut sim, &mut w);
+    assert!(
+        matches!(sim.saved.last(), Some((b'B', Some(OpenRule::Centered(_))))),
+        "{:?} {:?}",
+        sim.saved,
+        sim.logs
+    );
+}
+
+#[test]
+fn keep_asks_to_arrange_a_free_window_first() {
+    let mut w = brave("");
+    let mut sim = Sim::new();
+    keep(&mut sim, &mut w);
+    assert!(sim.saved.is_empty());
+    assert_eq!(
+        sim.notices.last().map(String::as_str),
+        Some("Acomodala primero: mitad, esquina, maximizada o centrada")
+    );
+}
+
+#[test]
+fn keep_with_the_same_rule_only_says_so() {
+    let mut w = brave("derecha");
+    let mut sim = Sim::new();
+    sim.key(&mut w, b'D');
+    keep(&mut sim, &mut w);
+    assert!(sim.saved.is_empty(), "{:?}", sim.saved);
+    assert_eq!(sim.notices.last().map(String::as_str), Some("Brave ya se abre así"));
+}
+
+#[test]
+fn keep_with_a_gap_still_sees_the_half() {
+    use crate::rules::OpenRule;
+    let mut w = brave("");
+    let mut sim = Sim::new();
+    sim.run(&mut w, gaps(8));
+    sim.key(&mut w, b'A');
+    keep(&mut sim, &mut w);
+    assert_eq!(sim.saved, vec![(b'B', Some(OpenRule::Place(P::LeftHalf)))], "{:?}", sim.logs);
+}
+
+#[test]
+fn keep_a_closed_window_says_so() {
+    let mut w = brave("");
+    let win = WinKey { hwnd: 7, pid: 70 };
+    let out = w.step(Event::Command(crate::world::Command::OpenLikeThis { win, letter: b'B' }), 0);
+    let Some(Effect::Inspect { req, .. }) = out.first() else { panic!("{out:?}") };
+    let out =
+        w.step(Event::Inspected { req: *req, result: Err("la ventana ya no existe".into()) }, 0);
+    assert!(out.contains(&Effect::Notice("Esa ventana ya no está".into())), "{out:?}");
+    assert!(!out.iter().any(|e| matches!(e, Effect::SaveRule { .. })));
+}
+
+#[test]
+fn keep_without_an_app_on_the_letter_does_nothing() {
+    let mut w = World::new(Vec::new());
+    let win = WinKey { hwnd: 7, pid: 70 };
+    let out = w.step(Event::Command(crate::world::Command::OpenLikeThis { win, letter: b'B' }), 0);
+    assert!(out.iter().all(|e| matches!(e, Effect::Log(_))), "{out:?}");
 }

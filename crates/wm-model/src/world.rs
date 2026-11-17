@@ -6,9 +6,9 @@
 //! devuelve los resultados como eventos. Así toda la lógica se prueba sin
 //! Windows, con una plataforma de mentira.
 //!
-//! Hecho: la capa de apps (`Caps` + letra), la capa del teclado y, de la capa
-//! de ventana, mitades, esquinas y empujar al monitor vecino (hitos 1a y 1b).
-//! Los escritorios llegan en el hito 4.
+//! Hecho: la capa de apps (`Caps` + letra), la capa de ventana (mitades,
+//! esquinas, empujar, C/F/G/V/Z), los escritorios 1-4 (hito 4) y las reglas
+//! por app (v1.1, `world_rules.rs`).
 //!
 //! **Capa de ventana** (plan-core.md §3.1, versión 2): cada tecla actúa según
 //! **dónde está la ventana** ([`crate::place::step`]), no según la tecla
@@ -611,6 +611,12 @@ pub enum Effect {
         x: i32,
         y: i32,
     },
+    /// v1.2: escribir esta regla "al abrir" para la letra en `apps.txt`
+    /// (el brain, en un hilo; `wm-watch` lo recarga).
+    SaveRule {
+        letter: u8,
+        open: Option<crate::rules::OpenRule>,
+    },
 }
 
 /// Antigüedad máxima de una acción para ejecutarla: una que llega tarde (el
@@ -724,6 +730,10 @@ enum Pending {
     Arrive {
         win: WinKey,
     },
+    /// v1.2: "Abrir siempre así": cómo está la ventana.
+    Keep {
+        letter: u8,
+    },
 }
 
 /// El estado del core.
@@ -817,6 +827,9 @@ pub struct World {
     /// v1.1: una ventana pasó al frente pero el `Scan` no la vio (Java la
     /// activa antes de terminar de mostrarla): se la vuelve a buscar.
     unseen: Option<world_rules::Unseen>,
+    /// v1.2: la regla que "Abrir siempre así" mandó a guardar; al volver
+    /// en `apps.txt`, se confirma con un aviso.
+    keeping: Option<(u8, crate::rules::OpenRule)>,
 }
 
 /// La lista de una letra mientras `Caps` sigue abajo.
@@ -1195,7 +1208,10 @@ impl World {
                 self.map.set_enabled(on, &mut m);
                 self.map_effects(m, &mut out);
             }
-            Event::Bindings(b) => self.bindings = b,
+            Event::Bindings(b) => {
+                self.bindings = b;
+                self.kept(&mut out);
+            }
             Event::Windows { req, result } => {
                 if let Some(Pending::FollowScan) = self.pending.get(&req) {
                     self.pending.remove(&req);
@@ -1304,6 +1320,7 @@ impl World {
                     Err(e) => out.push(Effect::Log(format!("{what}: {e}"))),
                 },
                 Some(Pending::Arrive { win }) => self.arrival_seen(win, result, now_us, &mut out),
+                Some(Pending::Keep { letter }) => self.keep_seen(letter, result, &mut out),
                 Some(Pending::Undo { key_us, entry }) => match result {
                     Ok(obs) => self.undo(entry, obs, key_us, now_us, &mut out),
                     // La ventana ya no existe: la entrada anterior, en la misma tecla.
@@ -2183,6 +2200,7 @@ impl World {
             }
             Command::Reconcile => self.start_sync(crate::desks::Goal::Verify, now_us, out),
             Command::Desk(n) => self.start_sync(crate::desks::Goal::Desk(n), now_us, out),
+            Command::OpenLikeThis { win, letter } => self.keep_like_this(win, letter, out),
         }
     }
 
@@ -3048,6 +3066,7 @@ mod tests {
                             queue.push(Event::ListHit { req, row: self.hit })
                         }
                         Effect::Rescue { .. } => panic!("sin pantallas no hay rescate"),
+                        Effect::SaveRule { .. } => panic!("la capa de apps no guarda reglas"),
                         Effect::InspectAt { .. }
                         | Effect::Raise { .. }
                         | Effect::DragStart { .. }
@@ -3510,6 +3529,12 @@ pub enum Command {
     Reconcile,
     /// Ir a este escritorio (menú de la bandeja, hito 5e).
     Desk(u8),
+    /// v1.2: "Abrir siempre así" (bandeja): guardar cómo está `win` como
+    /// la regla "al abrir" de la app de `letter` (plan-v1.2.md §4).
+    OpenLikeThis {
+        win: WinKey,
+        letter: u8,
+    },
 }
 
 #[cfg(test)]

@@ -145,7 +145,8 @@ pub fn run() -> ExitCode {
         Some("doctor") => doctor(),
         #[cfg(windows)]
         Some(
-            name @ ("quit" | "pause" | "resume" | "undo" | "ajustes" | "mostrar" | "actualizar"),
+            name @ ("quit" | "pause" | "resume" | "undo" | "ajustes" | "mostrar" | "actualizar"
+            | "abrir-asi"),
         ) => order(name),
         #[cfg(windows)]
         Some("autostart") => autostart(args.first().map(String::as_str)),
@@ -158,6 +159,7 @@ pub fn run() -> ExitCode {
         #[cfg(windows)]
         Some("apps") if args.iter().any(|a| a == "--instaladas") => installed_apps(),
         Some("apps") => core::list_apps(),
+        Some("uso") => usage_report(),
         Some("burn") => burn(std::env::args().nth(2)),
         #[cfg(windows)]
         Some("settings") => {
@@ -183,7 +185,7 @@ pub fn run() -> ExitCode {
         }
         Some(other) => {
             eprintln!("Comando desconocido: `{other}`.");
-            eprintln!("Uso: wm [doctor | core | apps | burn [s] | puppet [n] | version");
+            eprintln!("Uso: wm [doctor | core | apps | uso | burn [s] | puppet [n] | version");
             eprintln!("          | guardian [comando...] | restore | hidden");
             eprintln!("          | hide-test <método> [rondas] [apps...]");
             eprintln!("          | hide-hold <método> [cycle] | crash-test [método] [n]]");
@@ -356,6 +358,34 @@ fn display_poke() -> ExitCode {
         eprintln!("No hay un wm corriendo.");
         ExitCode::FAILURE
     }
+}
+
+/// `wm uso`: el registro de uso (plan-v1.2.md §2), lo más usado primero.
+fn usage_report() -> ExitCode {
+    let Some(path) = wm_model::usage::usage_path() else {
+        eprintln!("No hay LOCALAPPDATA.");
+        return ExitCode::FAILURE;
+    };
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        println!(
+            "Todavía no hay registro de uso ({}). Se prende en Ajustes → Opciones → Registro de uso.",
+            path.display()
+        );
+        return ExitCode::SUCCESS;
+    };
+    let usage = wm_model::usage::Usage::parse(&text);
+    let days = usage.days();
+    match (days.first(), days.last()) {
+        (Some(a), Some(b)) => {
+            println!("Registro de uso: {} días con uso, del {a} al {b}.", days.len())
+        }
+        _ => println!("El registro de uso está vacío."),
+    }
+    for (key, n) in usage.totals() {
+        println!("{n:>6}  {key}");
+    }
+    println!("Por día: {}", path.display());
+    ExitCode::SUCCESS
 }
 
 /// `wm apps --instaladas`: las apps de "Todas las aplicaciones", como las

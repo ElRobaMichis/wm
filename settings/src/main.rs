@@ -273,6 +273,8 @@ fn options_of(ui: &SettingsWindow) -> Options {
         notices: ui.get_notices(),
         gap: ui.get_gap_px().clamp(0, i32::from(GAP_MAX)) as u8,
         open_on_pointer: ui.get_open_on_pointer(),
+        usage_log: ui.get_usage_log(),
+        tips: ui.get_tips(),
     }
 }
 
@@ -310,6 +312,11 @@ fn save_options(o: &Options) -> std::io::Result<()> {
 /// Escribe las asignaciones en `path`: primero a un temporal y después lo
 /// renombra encima, así nunca queda un archivo a medias.
 fn save(path: &Path, st: &State) -> std::io::Result<()> {
+    // v1.2: con los ajustes abiertos, "Abrir siempre así" (bandeja) puede
+    // haber escrito una regla: se escribe sobre el archivo de ahora y se
+    // respeta lo de afuera en las letras que no se tocaron acá.
+    let now_text = std::fs::read_to_string(path).unwrap_or_else(|_| st.file_text.clone());
+    let rules = merged_rules(st, &now_text);
     let bindings: Vec<AppBinding> = st
         .assigned
         .iter()
@@ -325,18 +332,118 @@ fn save(path: &Path, st: &State) -> std::io::Result<()> {
                 aliases: aliases.to_vec(),
                 launch: e.launch.clone(),
                 label,
-                open: st.rules[i],
+                open: rules[i],
                 extra: st.extras[i].clone(),
             })
         })
         .collect();
-    let text = update_bindings(&st.file_text, &bindings);
+    let text = update_bindings(&now_text, &bindings);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
     let tmp = path.with_extension("txt.tmp");
     std::fs::write(&tmp, text)?;
     std::fs::rename(&tmp, path)
+}
+
+/// Lo que avisa elegir una app para una letra (plan-v1.2.md §3).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct Note {
+    /// La letra donde estaba la app (se mudó: ahí quedó libre).
+    moved_from: Option<char>,
+    /// Apps abiertas sin letra que `Caps` + esta letra ya no alcanza.
+    lost: Vec<String>,
+}
+
+/// Pone `app` (o ninguna) en la letra elegida. Una app vive en una sola
+/// letra: si ya estaba en otra, se muda con su regla y sus campos, y la otra
+/// queda libre. Si la app cambia sin mudanza, la regla y los campos eran de
+/// la anterior y se borran.
+fn assign(st: &mut State, app: Option<usize>) -> Note {
+    let cur = st.current;
+    let before = st.assigned[cur].1;
+    if before == app {
+        return Note::default();
+    }
+    let mut note = Note::default();
+    let other =
+        app.and_then(|a| (0..st.assigned.len()).find(|&j| j != cur && st.assigned[j].1 == Some(a)));
+    if let Some(j) = other {
+        st.assigned[j].1 = None;
+        st.rules[cur] = st.rules[j].take();
+        st.extras[cur] = std::mem::take(&mut st.extras[j]);
+        note.moved_from = Some(st.assigned[j].0);
+    } else {
+        st.rules[cur] = None;
+        st.extras[cur].clear();
+    }
+    st.assigned[cur].1 = app;
+    if before.is_none()
+        && let Some(a) = app
+    {
+        note.lost = shadowed(st, cur, a);
+    }
+    note
+}
+
+/// Las apps abiertas ahora, sin letra, cuya inicial es la letra `cur`
+/// (salvo `app`): con la letra libre, `Caps` + letra iba a ellas
+/// (`wm_model::apps::resolve`); asignada, ya no. Solo se sabe de las
+/// abiertas.
+fn shadowed(st: &State, cur: usize, app: usize) -> Vec<String> {
+    let initial = st.assigned[cur].0.to_ascii_lowercase();
+    let mut lost: Vec<String> = st
+        .catalog
+        .entries
+        .iter()
+        .enumerate()
+        .filter(|&(i, e)| {
+            i != app
+                && e.open
+                && e.names.first().is_some_and(|n| n.to_ascii_lowercase().starts_with(initial))
+                && !st.assigned.iter().any(|&(_, a)| a == Some(i))
+        })
+        .map(|(_, e)| e.name.clone())
+        .collect();
+    lost.sort_by_key(|n| fold(n));
+    lost.dedup();
+    lost
+}
+
+/// Muestra (o borra, con la nota vacía) el aviso bajo la app elegida.
+fn show_note(ui: &SettingsWindow, st: &State, note: &Note) {
+    let app = st.assigned[st.current].1;
+    match (note.moved_from, app) {
+        (Some(from), Some(a)) => {
+            ui.set_moved_app(st.catalog.entries[a].name.as_str().into());
+            ui.set_moved_old(SharedString::from(from.to_string()));
+        }
+        _ => {
+            ui.set_moved_app(SharedString::new());
+            ui.set_moved_old(SharedString::new());
+        }
+    }
+    ui.set_lost_apps(note.lost.join(", ").into());
+}
+
+/// Las reglas a guardar: las de esta ventana, salvo en las letras que acá
+/// no cambiaron (ni la app ni la regla) y que en el archivo de ahora tienen
+/// la misma app con otra regla (la escribió la bandeja mientras tanto).
+fn merged_rules(st: &State, now_text: &str) -> Vec<Option<OpenRule>> {
+    let (now, _) = parse_bindings(now_text);
+    (0..st.rules.len())
+        .map(|i| {
+            let untouched = st.assigned[i] == st.original[i] && st.rules[i] == st.original_rules[i];
+            let app = st.assigned[i].1.map(|a| st.catalog.entries[a].names[0].as_str());
+            let outside = now
+                .iter()
+                .find(|b| usize::from(b.letter - b'A') == i && Some(b.app.as_str()) == app);
+            match outside {
+                Some(b) if untouched => b.open,
+                _ => st.rules[i],
+            }
+        })
+        .collect()
 }
 
 thread_local! {
@@ -404,6 +511,8 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_gap_options(ModelRc::new(VecModel::from(gaps)));
     ui.set_gap_choice(gap_i);
     ui.set_open_on_pointer(options.open_on_pointer);
+    ui.set_usage_log(options.usage_log);
+    ui.set_tips(options.tips);
     ui.set_multi_monitor(wm_platform::monitors().len() > 1);
     let st = Rc::new(RefCell::new(State {
         catalog,
@@ -456,6 +565,7 @@ fn main() -> Result<(), slint::PlatformError> {
             st.current = first;
         }
         refresh(&ui, &st);
+        show_note(&ui, &st, &Note::default());
     });
     let weak = ui.as_weak();
     let s = st.clone();
@@ -463,6 +573,9 @@ fn main() -> Result<(), slint::PlatformError> {
         let Some(ui) = weak.upgrade() else { return };
         let mut st = s.borrow_mut();
         if let Some(&i) = st.visible.get(index.max(0) as usize) {
+            if i != st.current {
+                show_note(&ui, &st, &Note::default());
+            }
             st.current = i;
             let (letter, app) = st.assigned[i];
             ui.set_selected_letter(SharedString::from(letter.to_string()));
@@ -508,18 +621,14 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_picker_choose(move |i| {
         let Some(ui) = weak.upgrade() else { return };
         let mut st = s.borrow_mut();
-        let cur = st.current;
-        let before = st.assigned[cur].1;
-        match st.picker.get(i.max(0) as usize).copied() {
-            Some(Row::None) => st.assigned[cur].1 = None,
-            Some(Row::App(a)) => st.assigned[cur].1 = Some(a),
+        let app = match st.picker.get(i.max(0) as usize).copied() {
+            Some(Row::None) => None,
+            Some(Row::App(a)) => Some(a),
             _ => return,
-        }
-        // Otra app en la letra: la regla era de la anterior.
-        if st.assigned[cur].1 != before {
-            st.rules[cur] = None;
-        }
+        };
+        let note = assign(&mut st, app);
         refresh(&ui, &st);
+        show_note(&ui, &st, &note);
     });
     let weak = ui.as_weak();
     let s = st.clone();
@@ -537,14 +646,15 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_picker_enter(move || {
         let Some(ui) = weak.upgrade() else { return };
         let mut st = s.borrow_mut();
-        let cur = st.current;
-        if let Some(a) = st.picker.iter().find_map(|r| match r {
+        let Some(a) = st.picker.iter().find_map(|r| match r {
             Row::App(a) => Some(*a),
             _ => None,
-        }) {
-            st.assigned[cur].1 = Some(a);
-        }
+        }) else {
+            return;
+        };
+        let note = assign(&mut st, Some(a));
         refresh(&ui, &st);
+        show_note(&ui, &st, &note);
     });
 
     // Todas las apps del menú Inicio, en un hilo: la ventana ya está.
@@ -607,8 +717,8 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
-    // `--show-unfinished`: muestra lo escondido en la primera versión (el
-    // perfil y las tres opciones; funciones-ocultas.md), para seguir
+    // `--show-unfinished`: muestra lo escondido (hoy solo el perfil;
+    // funciones-ocultas.md), para seguir
     // trabajando en eso.
     if std::env::args().any(|a| a == "--show-unfinished") {
         ui.set_show_unfinished(true);
@@ -629,4 +739,122 @@ fn main() -> Result<(), slint::PlatformError> {
         println!("SHOWN");
     }
     slint::run_event_loop()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(name: &str, exe: &str, open: bool) -> Entry {
+        Entry { name: name.into(), names: vec![exe.into()], launch: None, open }
+    }
+
+    /// Brave (0) en la B con regla, Notion (1) en la N; Notepad (2) y
+    /// Nanofy (3) abiertas sin letra; Word (4) cerrada.
+    fn state() -> State {
+        let catalog = Catalog {
+            entries: vec![
+                entry("Brave", "brave", true),
+                entry("Notion", "notion", false),
+                entry("Notepad", "notepad", true),
+                entry("Nanofy", "nanofy", true),
+                entry("Word", "winword", false),
+            ],
+        };
+        let mut assigned: Vec<(char, Option<usize>)> =
+            (b'A'..=b'Z').map(|l| (l as char, None)).collect();
+        assigned[1].1 = Some(0);
+        assigned[13].1 = Some(1);
+        let mut rules = vec![None; 26];
+        rules[1] = Some(OpenRule::Maximized);
+        let mut extras = vec![Vec::new(); 26];
+        extras[1] = vec!["zona: 3".to_owned()];
+        State {
+            catalog,
+            file_text: String::new(),
+            picker: Vec::new(),
+            original: assigned.clone(),
+            assigned,
+            visible: (0..26).collect(),
+            current: 0,
+            query: String::new(),
+            options: Options::default(),
+            original_rules: rules.clone(),
+            rules,
+            extras,
+        }
+    }
+
+    #[test]
+    fn an_app_on_another_letter_moves_with_its_rule() {
+        let mut st = state();
+        st.current = 23; // X
+        let note = assign(&mut st, Some(0));
+        assert_eq!(note.moved_from, Some('B'));
+        assert_eq!(st.assigned[1].1, None, "la B queda libre");
+        assert_eq!(st.assigned[23].1, Some(0));
+        assert_eq!(st.rules[23], Some(OpenRule::Maximized));
+        assert_eq!(st.rules[1], None);
+        assert_eq!(st.extras[23], vec!["zona: 3".to_owned()]);
+        assert!(st.extras[1].is_empty());
+        assert!(note.lost.is_empty(), "nada abierto empieza con X");
+    }
+
+    #[test]
+    fn another_app_on_the_letter_drops_the_old_rule() {
+        let mut st = state();
+        st.current = 1; // B: Brave → Word
+        let note = assign(&mut st, Some(4));
+        assert_eq!(note, Note::default(), "la B ya estaba ocupada: no tapa a nadie nuevo");
+        assert_eq!(st.rules[1], None);
+        assert!(st.extras[1].is_empty());
+    }
+
+    #[test]
+    fn a_free_letter_tells_which_open_apps_lose_it() {
+        let mut st = state();
+        st.current = 13; // N: sacar Notion
+        assert_eq!(assign(&mut st, None), Note::default(), "\"Ninguna\" no avisa");
+        let note = assign(&mut st, Some(4)); // N = Word
+        assert_eq!(note.lost, vec!["Nanofy".to_owned(), "Notepad".to_owned()]);
+        let mut st = state();
+        st.current = 13;
+        assign(&mut st, None);
+        let note = assign(&mut st, Some(2)); // N = Notepad
+        assert_eq!(note.lost, vec!["Nanofy".to_owned()], "la elegida no se cuenta");
+    }
+
+    #[test]
+    fn saving_keeps_a_rule_written_meanwhile_from_the_tray() {
+        let mut st = state();
+        // Afuera: la bandeja puso la B maximizada → derecha.
+        let now = "b = brave | | | al abrir: derecha
+n = notion
+";
+        assert_eq!(
+            merged_rules(&st, now)[1],
+            Some(OpenRule::Place(wm_model::Placement::RightHalf))
+        );
+        // Acá se cambió la regla de la B: gana esta ventana.
+        st.rules[1] = Some(OpenRule::Centered(80));
+        assert_eq!(merged_rules(&st, now)[1], Some(OpenRule::Centered(80)));
+        // Otra app en la B afuera: no se mezcla.
+        let st = state();
+        assert_eq!(
+            merged_rules(
+                &st,
+                "b = bitwarden | | | al abrir: derecha
+"
+            )[1],
+            Some(OpenRule::Maximized)
+        );
+    }
+
+    #[test]
+    fn the_same_app_again_does_nothing() {
+        let mut st = state();
+        st.current = 1;
+        assert_eq!(assign(&mut st, Some(0)), Note::default());
+        assert_eq!(st.rules[1], Some(OpenRule::Maximized), "la regla se queda");
+    }
 }

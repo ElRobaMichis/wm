@@ -40,17 +40,92 @@ const LOG_MAX_BYTES: u64 = 1024 * 1024;
 /// Escribe en la consola (si hay) y en `%LOCALAPPDATA%\wm\wm.log`, con la
 /// fecha y hora local. Cada línea va en una sola escritura (el guardián
 /// escribe en el mismo archivo, ver [`append_line`]).
+///
+/// v1.2: también lleva el registro de uso (`wm_model::usage`, `uso.txt`),
+/// que sale de las mismas líneas.
 #[derive(Clone)]
-pub struct Log(Sender<String>);
+pub struct Log(Sender<LogMsg>);
+
+enum LogMsg {
+    Line(String),
+    /// Prender o apagar el registro de uso.
+    Usage(bool),
+}
+
+/// Cada cuánto se escribe `uso.txt` si hubo cambios (una caída pierde a lo
+/// sumo esto). Se mira al llegar una línea: sin temporizador, en reposo no
+/// despierta.
+const USAGE_SAVE_EVERY: Duration = Duration::from_secs(10 * 60);
+
+/// El registro de uso dentro del hilo de log.
+struct UsageLog {
+    usage: wm_model::usage::Usage,
+    dirty: bool,
+    saved: Instant,
+}
+
+impl UsageLog {
+    fn load() -> Self {
+        let text = wm_model::usage::usage_path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .unwrap_or_default();
+        Self { usage: wm_model::usage::Usage::parse(&text), dirty: false, saved: Instant::now() }
+    }
+
+    fn count(&mut self, line: &str) {
+        if let Some(key) = wm_model::usage::key_for(line) {
+            let stamp = wm_platform::clock::local_stamp();
+            self.usage.add(&stamp[..10], key);
+            self.dirty = true;
+        }
+        if self.dirty && self.saved.elapsed() >= USAGE_SAVE_EVERY {
+            self.save();
+        }
+    }
+
+    /// Temporal + renombrar, como `apps.txt`. Si falla (disco lleno), sigue
+    /// contando y prueba la próxima vez.
+    fn save(&mut self) {
+        self.saved = Instant::now();
+        if !self.dirty {
+            return;
+        }
+        let Some(path) = wm_model::usage::usage_path() else { return };
+        let stamp = wm_platform::clock::local_stamp();
+        self.usage.prune(&stamp[..10]);
+        let tmp = path.with_extension("txt.tmp");
+        let ok = path.parent().is_some_and(|d| std::fs::create_dir_all(d).is_ok())
+            && std::fs::write(&tmp, self.usage.format()).is_ok()
+            && std::fs::rename(&tmp, &path).is_ok();
+        if ok {
+            self.dirty = false;
+        }
+    }
+}
 
 impl Log {
     pub fn start() -> (Self, std::thread::JoinHandle<()>) {
-        let (tx, rx) = mpsc::channel::<String>();
+        let (tx, rx) = mpsc::channel::<LogMsg>();
         let handle = std::thread::Builder::new()
             .name("wm-log".into())
             .spawn(move || {
                 let mut file = open_log_file();
-                for line in rx {
+                let mut usage: Option<UsageLog> = None;
+                for msg in rx {
+                    let line = match msg {
+                        LogMsg::Line(line) => line,
+                        LogMsg::Usage(on) => {
+                            match (on, usage.as_mut()) {
+                                (true, None) => usage = Some(UsageLog::load()),
+                                (false, Some(u)) => {
+                                    u.save();
+                                    usage = None;
+                                }
+                                _ => {}
+                            }
+                            continue;
+                        }
+                    };
                     println!("{line}");
                     if let Some(f) = file.as_mut() {
                         let stamped = format!("[{}] {line}\n", wm_platform::clock::local_stamp());
@@ -58,6 +133,12 @@ impl Log {
                             file = None; // disco lleno o sin permiso: solo consola
                         }
                     }
+                    if let Some(u) = usage.as_mut() {
+                        u.count(&line);
+                    }
+                }
+                if let Some(u) = usage.as_mut() {
+                    u.save();
                 }
             })
             .expect("no se pudo crear el hilo de log");
@@ -65,7 +146,40 @@ impl Log {
     }
 
     pub fn line(&self, s: impl Into<String>) {
-        let _ = self.0.send(s.into());
+        let _ = self.0.send(LogMsg::Line(s.into()));
+    }
+
+    /// v1.2: prende o apaga el registro de uso (al apagarlo, guarda).
+    pub fn usage(&self, on: bool) {
+        let _ = self.0.send(LogMsg::Usage(on));
+    }
+}
+
+/// v1.2 (plan-v1.2.md §4): "Abrir siempre así" escribe la regla en
+/// `apps.txt`, en un hilo corto (el brain nunca toca el disco). Temporal con
+/// otro nombre que el de los ajustes, y renombrar encima; `wm-watch` lo
+/// recarga y el modelo confirma con un aviso.
+fn save_rule(log: Log, letter: u8, open: Option<wm_model::rules::OpenRule>) {
+    let spawned = std::thread::Builder::new().name("wm-save".into()).spawn(move || {
+        let result = (|| -> Result<(), String> {
+            let path = wm_model::apps::bindings_path().ok_or("sin APPDATA")?;
+            let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+            let new = wm_model::apps::set_open_rule(&text, letter, open)
+                .ok_or_else(|| format!("la {} ya no tiene app", letter as char))?;
+            let tmp = path.with_extension("txt.wm.tmp");
+            std::fs::write(&tmp, new).map_err(|e| e.to_string())?;
+            std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
+        })();
+        if let Err(e) = result {
+            log.line(format!("Abrir siempre así: no se pudo guardar apps.txt ({e})."));
+            wm_platform::tray::balloon(
+                "No se pudo guardar",
+                "wm no pudo escribir apps.txt. Probá de nuevo.",
+            );
+        }
+    });
+    if let Err(e) = spawned {
+        append_line(&format!("Abrir siempre así: sin hilo para guardar ({e})."));
     }
 }
 
@@ -261,15 +375,18 @@ impl Brain {
         if reloaded {
             let b = |v: bool| if v { "sí" } else { "no" };
             self.log.line(format!(
-                "Opciones recargadas: animaciones {}, puntero sigue al foco {}, borde de foco {}, avisos {}, espacio entre ventanas {} px, abrir en la pantalla del puntero {}.",
+                "Opciones recargadas: animaciones {}, puntero sigue al foco {}, borde de foco {}, avisos {}, espacio entre ventanas {} px, abrir en la pantalla del puntero {}, registro de uso {}, sugerir atajos {}.",
                 b(o.animate),
                 b(o.mouse_follows_focus),
                 b(o.focus_border),
                 b(o.notices),
                 o.gap,
-                b(o.open_on_pointer)
+                b(o.open_on_pointer),
+                b(o.usage_log),
+                b(o.tips)
             ));
         }
+        self.log.usage(o.usage_log);
         self.options = o;
         if o.focus_border {
             if self.border.is_none() {
@@ -703,6 +820,7 @@ impl Brain {
                     Some(ui) => ui.list_hit(req, x, y),
                     None => self.feed(Event::ListHit { req, row: None }),
                 },
+                Effect::SaveRule { letter, open } => save_rule(self.log.clone(), letter, open),
                 Effect::ScreensChanged => {
                     if let Some(ui) = self.ui.as_mut() {
                         ui.screens_changed();

@@ -39,8 +39,8 @@ export component SettingsWindow inherits Window {
     in property <int> total: 26;
     in property <bool> dirty;
     in property <bool> bench-mark;
-    // Lo que todavía no hace nada (el perfil y las tres opciones) queda
-    // escondido en la primera versión: ver funciones-ocultas.md. Con `true`
+    // Lo que todavía no hace nada (hoy solo el perfil) queda
+    // escondido: ver funciones-ocultas.md. Con `true`
     // vuelve a verse tal cual.
     in property <bool> show-unfinished: false;
     in-out property <int> selected: 0;
@@ -52,6 +52,9 @@ export component SettingsWindow inherits Window {
     in-out property <bool> focus-border: true;
     in-out property <bool> mouse-follows: false;
     in-out property <bool> animations: true;
+    // v1.2 (plan-v1.2.md §2 y §6).
+    in-out property <bool> usage-log: false;
+    in-out property <bool> tips: true;
     in-out property <bool> notices: true;
     // v1.1: espacio entre ventanas (px) y abrir en la pantalla del puntero.
     in-out property <int> gap-px: 0;
@@ -62,6 +65,10 @@ export component SettingsWindow inherits Window {
     in-out property <bool> open-on-pointer: false;
     in property <bool> multi-monitor: false;
     in property <string> selected-letter;
+    // v1.2: el aviso al elegir una app (plan-v1.2.md §3); vacías = ocultas.
+    in property <string> moved-app;
+    in property <string> moved-old;
+    in property <string> lost-apps;
     // Textos que arma el código en Rust, traducidos acá.
     out property <string> free-text: @tr("Free");
     out property <string> none-text: @tr("None");
@@ -83,6 +90,8 @@ export component SettingsWindow inherits Window {
     changed animations => { root.options-changed(); }
     changed notices => { root.options-changed(); }
     changed open-on-pointer => { root.options-changed(); }
+    changed usage-log => { root.options-changed(); }
+    changed tips => { root.options-changed(); }
     callback cancel();
     pure callback find-letter(string) -> int;
 
@@ -295,6 +304,26 @@ export component SettingsWindow inherits Window {
                         }
                     }
                 }
+
+                // v1.2: una app, una letra (plan-v1.2.md §3).
+                if root.moved-app != "": VerticalLayout {
+                    Rectangle { height: Theme.s2; }
+                    Text {
+                        text: @tr("{} was on {}. Now it is only on {}.", root.moved-app, root.moved-old, root.selected-letter);
+                        color: Theme.text-2;
+                        font-size: Theme.t-small;
+                        wrap: word-wrap;
+                    }
+                }
+                if root.lost-apps != "": VerticalLayout {
+                    Rectangle { height: Theme.s2; }
+                    Text {
+                        text: @tr("Caps + {} will no longer go to: {} (open now). Give them another letter if you use them.", root.selected-letter, root.lost-apps);
+                        color: Theme.text-2;
+                        font-size: Theme.t-small;
+                        wrap: word-wrap;
+                    }
+                }
             }
 
             if root.tab == 1: VerticalLayout {
@@ -383,6 +412,11 @@ export component SettingsWindow inherits Window {
                             text: @tr("On-screen notices");
                             detail: @tr("A short message when a key can't do anything.");
                             checked <=> root.notices;
+                        }
+                        ToggleRow {
+                            text: @tr("Usage log");
+                            detail: @tr("Counts which shortcuts you use, only on this PC. Nothing is sent anywhere.");
+                            checked <=> root.usage-log;
                         }
                     }
                 }

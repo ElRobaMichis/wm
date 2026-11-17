@@ -65,6 +65,9 @@ pub enum Order {
     UpdateNow = 9,
     /// Hito U: buscar actualizaciones ya.
     UpdateCheck = 10,
+    /// v1.2: "Abrir siempre así" con la última ventana al frente
+    /// (`wm abrir-asi`; lo usa `ci-probe`).
+    OpenLikeThis = 11,
 }
 
 impl Order {
@@ -80,6 +83,7 @@ impl Order {
             8 => Self::UpdateReady,
             9 => Self::UpdateNow,
             10 => Self::UpdateCheck,
+            11 => Self::OpenLikeThis,
             _ => return None,
         })
     }
@@ -93,6 +97,7 @@ impl Order {
             "settings" | "ajustes" => Self::Settings,
             "showall" | "mostrar" => Self::ShowAll,
             "actualizar" => Self::UpdateNow,
+            "abrir-asi" | "abrir-así" => Self::OpenLikeThis,
             _ => return None,
         })
     }
@@ -167,6 +172,66 @@ struct Lane {
     last_warning: Option<std::time::Instant>,
     /// Con nosotros como administrador, los atajos llegan siempre.
     self_elevated: bool,
+    /// v1.2: la última ventana de usuario al frente que no es nuestra (al
+    /// abrir el menú, el frente es la barra de tareas).
+    last_user: Option<HWND>,
+}
+
+/// v1.2 (plan-v1.2.md §4): la app de la última ventana al frente, para
+/// "Abrir siempre así".
+struct FrontApp {
+    win: wm_model::world::WinKey,
+    /// Su letra en `apps.txt` y la regla que ya tiene.
+    letter: Option<(u8, Option<wm_model::rules::OpenRule>)>,
+    name: String,
+}
+
+/// La app de `hwnd`, si sigue siendo una ventana de usuario sin minimizar.
+fn front_app(hwnd: Option<HWND>) -> Option<FrontApp> {
+    use windows::Win32::UI::WindowsAndMessaging::{IsIconic, IsWindow};
+    let hwnd = hwnd?;
+    let id = crate::windows_list::WindowId(hwnd.0 as isize);
+    // SAFETY: lecturas de un HWND que puede no existir más.
+    let alive = unsafe { IsWindow(Some(hwnd)).as_bool() && !IsIconic(hwnd).as_bool() };
+    if !alive || !crate::windows_list::is_user(id) {
+        return None;
+    }
+    let pid = crate::windows_list::window_pid(id);
+    let info = crate::process_info::info(pid)?;
+    let app = wm_model::apps::AppId {
+        exe: &info.exe,
+        family: info.family.as_deref(),
+        aumid: info.aumid.as_deref(),
+    };
+    let text = wm_model::apps::bindings_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_default();
+    let (bindings, _) = wm_model::apps::parse_bindings(&text);
+    let b = bindings.iter().find(|b| b.matches(&app));
+    let name = b
+        .and_then(|b| b.label.clone())
+        .unwrap_or_else(|| wm_model::mapview::display_name(app.name()));
+    Some(FrontApp {
+        win: wm_model::world::WinKey { hwnd: hwnd.0 as isize, pid },
+        letter: b.map(|b| (b.letter, b.open)),
+        name,
+    })
+}
+
+/// El texto del ítem del menú y si se puede elegir.
+fn keep_label(f: &FrontApp) -> (String, bool) {
+    match f.letter {
+        Some((_, Some(rule))) => (
+            format!(
+                "Abrir {} siempre así  ·  ahora: {}",
+                f.name,
+                rule.describe().trim_start_matches("en la ")
+            ),
+            true,
+        ),
+        Some((_, None)) => (format!("Abrir {} siempre así", f.name), true),
+        None => (format!("Abrir {} siempre así (dale una letra en Ajustes)", f.name), false),
+    }
 }
 
 /// Nombre de la ventana `wm-ui` (con `WM_INSTANCE`, el de esa instancia).
@@ -303,6 +368,7 @@ fn run(brain: u32, events: Sender<TrayEvent>) {
         warned: std::collections::HashSet::new(),
         last_warning: None,
         self_elevated: crate::session::self_elevated(),
+        last_user: None,
     };
     lane.add_icon();
     watch_foreground();
@@ -484,6 +550,7 @@ impl Lane {
             Order::Resume => self.send(TrayEvent::Command(Command::SetPaused(false))),
             Order::Undo => self.send(TrayEvent::Command(Command::Undo)),
             Order::ShowAll => self.send(TrayEvent::Command(Command::ShowAll)),
+            Order::OpenLikeThis => self.open_like_this(front_app(self.last_user)),
             Order::UpdateReady | Order::UpdateNow | Order::UpdateCheck => self.update_order(o),
             Order::Settings => self.open_settings(),
             Order::ToggleAutostart => {
@@ -494,6 +561,21 @@ impl Lane {
                     Err(e) => format!("No se pudo cambiar el inicio con Windows: {e}"),
                 };
                 self.send(TrayEvent::Log(line));
+            }
+        }
+    }
+
+    /// v1.2: "Abrir siempre así" (plan-v1.2.md §4).
+    fn open_like_this(&mut self, front: Option<FrontApp>) {
+        match front {
+            Some(FrontApp { win, letter: Some((letter, _)), .. }) => {
+                self.send(TrayEvent::Command(Command::OpenLikeThis { win, letter }))
+            }
+            Some(f) => {
+                self.send(TrayEvent::Log(format!("Abrir siempre así: {} no tiene letra.", f.name)))
+            }
+            None => {
+                self.send(TrayEvent::Log("Abrir siempre así: no hay una ventana al frente.".into()))
             }
         }
     }
@@ -534,11 +616,13 @@ impl Lane {
         const SHOW_ALL: usize = 6;
         const UPDATE_NOW: usize = 7;
         const UPDATE_CHECK: usize = 8;
+        const KEEP: usize = 9;
         /// Escritorios: 11 a 14.
         const DESK_BASE: usize = 10;
         let paused = PAUSED.load(Ordering::Relaxed);
         let can_undo = CAN_UNDO.load(Ordering::Relaxed);
         let autostart = crate::autostart::status();
+        let front = front_app(self.last_user);
         // SAFETY: menú propio, se destruye al terminar.
         unsafe {
             let Ok(menu) = CreatePopupMenu() else { return };
@@ -563,6 +647,13 @@ impl Lane {
                 let _ = AppendMenuW(menu, flags, DESK_BASE + usize::from(n), PCWSTR(text.as_ptr()));
             }
             let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+            if let Some(f) = &front {
+                let (text, enabled) = keep_label(f);
+                let text: Vec<u16> = format!("{text}\0").encode_utf16().collect();
+                let flags = if enabled { MF_STRING } else { MF_STRING | MF_GRAYED };
+                let _ = AppendMenuW(menu, flags, KEEP, PCWSTR(text.as_ptr()));
+                let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+            }
             let _ = AppendMenuW(menu, MF_STRING, SETTINGS, w!("Ajustes…"));
             let pause = if paused { w!("Reanudar atajos") } else { w!("Pausar atajos") };
             let _ = AppendMenuW(menu, MF_STRING, PAUSE, pause);
@@ -603,6 +694,7 @@ impl Lane {
                 SHOW_ALL => self.order(Order::ShowAll),
                 UPDATE_NOW => self.order(Order::UpdateNow),
                 UPDATE_CHECK => self.order(Order::UpdateCheck),
+                KEEP => self.open_like_this(front),
                 id @ 11..=14 => {
                     self.send(TrayEvent::Command(Command::Desk((id - DESK_BASE) as u8)))
                 }
@@ -617,6 +709,12 @@ impl Lane {
     /// administrador, el hook no recibe las teclas (UIPI) y los atajos no
     /// hacen nada. Un globo de la bandeja lo explica (una vez por app).
     fn foreground_changed(&mut self, hwnd: HWND) {
+        let id = crate::windows_list::root_owner(crate::windows_list::WindowId(hwnd.0 as isize));
+        if crate::windows_list::is_user(id)
+            && crate::windows_list::window_pid(id) != std::process::id()
+        {
+            self.last_user = Some(HWND(id.0 as *mut _));
+        }
         if self.self_elevated || PAUSED.load(Ordering::Relaxed) || !self.added {
             return;
         }

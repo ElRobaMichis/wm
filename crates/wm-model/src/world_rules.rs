@@ -321,3 +321,104 @@ impl World {
         }
     }
 }
+
+/// "Acomodala primero" (plan-v1.2.md §4).
+const ARRANGE_FIRST: &str = "Acomodala primero: mitad, esquina, maximizada o centrada";
+
+impl World {
+    /// El nombre de la app de `letter` para los avisos.
+    fn app_name(&self, letter: u8) -> Option<String> {
+        self.bindings
+            .iter()
+            .find(|b| b.letter == letter)
+            .map(|b| b.label.clone().unwrap_or_else(|| crate::mapview::display_name(&b.app)))
+    }
+
+    /// v1.2: "Abrir siempre así" desde la bandeja: mirar cómo está `win`.
+    /// Funciona también en pausa (no mueve nada).
+    pub(super) fn keep_like_this(&mut self, win: WinKey, letter: u8, out: &mut Vec<Effect>) {
+        if self.app_name(letter).is_none() {
+            out.push(Effect::Log(format!(
+                "Abrir siempre así: la {} no tiene app.",
+                letter as char
+            )));
+            return;
+        }
+        let req = self.req();
+        self.pending.insert(req, Pending::Keep { letter });
+        out.push(Effect::Inspect { req, win: Some(win) });
+    }
+
+    /// La ventana observada: su regla, si está acomodada, y a guardar.
+    pub(super) fn keep_seen(
+        &mut self,
+        letter: u8,
+        result: Result<Obs, String>,
+        out: &mut Vec<Effect>,
+    ) {
+        let Some(name) = self.app_name(letter) else { return };
+        let obs = match result {
+            Ok(obs) => obs,
+            Err(e) => {
+                out.push(Effect::Log(format!(
+                    "Abrir siempre así ({name}): la ventana ya no está ({e})."
+                )));
+                out.push(Effect::Notice("Esa ventana ya no está".into()));
+                return;
+            }
+        };
+        let m = monitor_of(&obs.monitors, obs.frame);
+        let rule = match m {
+            Some(m) if !obs.minimized && !is_fullscreen(&obs) => {
+                let (spot, rect) = self.locate(&obs, m);
+                let real_max = looks_maximized(&obs);
+                // Maximizada de mentira (Steam): cuenta su marco.
+                let placement = if obs.maximized && !real_max {
+                    crate::place::slot_at(&obs.monitors[m], obs.frame, self.options.gap)
+                        .unwrap_or(Placement::Full)
+                } else {
+                    spot.placement
+                };
+                crate::rules::rule_like(rect, real_max, placement, obs.monitors[m].work)
+            }
+            _ => None,
+        };
+        let Some(rule) = rule else {
+            out.push(Effect::Log(format!(
+                "Abrir siempre así ({name}): la ventana está libre, minimizada o a pantalla completa ({:?})."
+                , obs.frame
+            )));
+            out.push(Effect::Notice(ARRANGE_FIRST.into()));
+            return;
+        };
+        let current = self.bindings.iter().find(|b| b.letter == letter).and_then(|b| b.open);
+        if current == Some(rule) {
+            out.push(Effect::Log(format!(
+                "Abrir siempre así ({name}): ya se abre {}.",
+                rule.describe()
+            )));
+            out.push(Effect::Notice(format!("{name} ya se abre así")));
+            return;
+        }
+        out.push(Effect::Log(format!(
+            "Abrir siempre así → {name} ({}): {}.",
+            letter as char,
+            rule.format()
+        )));
+        out.push(Effect::SaveRule { letter, open: Some(rule) });
+        self.keeping = Some((letter, rule));
+    }
+
+    /// `apps.txt` volvió: si trae la regla recién guardada, avisarlo (así
+    /// el aviso confirma todo el camino: archivo, `wm-watch` y modelo).
+    pub(super) fn kept(&mut self, out: &mut Vec<Effect>) {
+        let Some((letter, rule)) = self.keeping else { return };
+        if !self.bindings.iter().any(|b| b.letter == letter && b.open == Some(rule)) {
+            return;
+        }
+        self.keeping = None;
+        if let Some(name) = self.app_name(letter) {
+            out.push(Effect::Notice(format!("{name} se va a abrir siempre {}", rule.describe())));
+        }
+    }
+}

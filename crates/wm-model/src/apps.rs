@@ -231,6 +231,19 @@ pub fn update_bindings(text: &str, bindings: &[AppBinding]) -> String {
     out
 }
 
+/// Cambia la regla "al abrir" de `letter` en el texto de `apps.txt`
+/// (plan-v1.2.md §4). `None` si la letra no tiene app.
+pub fn set_open_rule(
+    text: &str,
+    letter: u8,
+    open: Option<crate::rules::OpenRule>,
+) -> Option<String> {
+    let (mut bindings, _) = parse_bindings(text);
+    let b = bindings.iter_mut().find(|b| b.letter == letter)?;
+    b.open = open;
+    Some(update_bindings(text, &bindings))
+}
+
 /// Qué hacer al apretar Hyper + letra.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target<W> {
@@ -423,6 +436,30 @@ n = notepad | | | al abrir: centrada 60 | escritorio: 2
 ",
         );
         assert_eq!(old[0].open, None);
+    }
+
+    #[test]
+    fn set_open_rule_keeps_the_rest_of_the_file() {
+        let text = "# mis apps
+b = brave | C:/b.exe | Brave
+mal = renglón
+n = notion | | | al abrir: izquierda | zona: 3
+";
+        let rule = Some(crate::rules::OpenRule::Maximized);
+        let out = set_open_rule(text, b'B', rule).expect("la B tiene app");
+        assert!(
+            out.starts_with(
+                "# mis apps
+b = brave | C:/b.exe | Brave | al abrir: maximizada
+mal = renglón
+"
+            ),
+            "{out}"
+        );
+        assert!(out.contains("zona: 3"), "{out}");
+        let out = set_open_rule(&out, b'N', None).expect("la N tiene app");
+        assert!(!out.contains("izquierda"), "{out}");
+        assert_eq!(set_open_rule(text, b'Q', rule), None, "sin app en la Q");
     }
 
     #[test]

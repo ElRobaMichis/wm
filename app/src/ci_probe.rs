@@ -34,6 +34,8 @@
 //!     oculta; un toque y un atajo rápido no lo muestran; Bloq Mayús intacto.
 //! 15. **regla al abrir** (v1.1): un títere de otra app con "al abrir:
 //!     derecha" va solo a la mitad derecha al abrirse, y Z lo devuelve.
+//! 16. **abrir siempre así** (v1.2): un títere en la mitad izquierda y la
+//!     orden de la bandeja escriben "al abrir: izquierda" en `apps.txt`.
 //!
 //! "Llegó" exige además que la ventana no esté escondida: durante un vuelo,
 //! el marco real ya está en el destino pero con cloak.
@@ -927,6 +929,78 @@ r = wmregla | | | al abrir: derecha
     }
 }
 
+/// v1.2 (plan-v1.2.md §4): "Abrir siempre así". Un títere (app `wm`, la Q
+/// en el `apps.txt` de la sonda) va a la mitad izquierda y la orden de la
+/// bandeja guarda la regla; después se borra, para que los títeres que se
+/// abran más adelante no la tomen.
+fn keep_check(r: &mut Report, lines: &std::sync::mpsc::Receiver<String>, puppets: &[WindowId]) {
+    const NAME: &str = "abrir siempre así";
+    const CAPS: u8 = 0x14;
+    const ALT: u8 = 0xA4;
+    let Some(&id) = puppets.first() else {
+        return r.check(NAME, Status::Skip, "no hay títeres".into());
+    };
+    let apps = std::env::temp_dir().join("wm-ci-probe-appdata").join("wm").join("apps.txt");
+    let detail = (|| -> Result<String, String> {
+        let _ = windows_list::activate(id);
+        std::thread::sleep(Duration::from_millis(150));
+        session::send_keys(&[
+            (CAPS, true),
+            (ALT, true),
+            (b'A', true),
+            (b'A', false),
+            (ALT, false),
+            (CAPS, false),
+        ]);
+        let monitors: Vec<wm_model::place::MonitorObs> = wm_platform::monitors()
+            .iter()
+            .map(|m| wm_model::place::MonitorObs {
+                bounds: m.bounds,
+                work: m.work_area,
+                dpi: m.dpi,
+            })
+            .collect();
+        let first = wm_platform::ghost::frame_bounds(id).ok_or("no se pudo leer el marco")?;
+        let m = wm_model::place::monitor_of(&monitors, first).ok_or("no hay monitores")?;
+        let target = place(monitors[m].work, Placement::LeftHalf);
+        wait_for(Duration::from_secs(3), || landed(id, target))
+            .ok_or("no llegó a la mitad izquierda")?;
+        while lines.try_recv().is_ok() {}
+        let start = Instant::now();
+        if !wm_platform::tray::send_order_in("ci-probe", wm_platform::tray::Order::OpenLikeThis) {
+            return Err("no se pudo mandar la orden".into());
+        }
+        let (mut said, mut reloaded) = (false, false);
+        while !(said && reloaded) {
+            match lines.recv_timeout(Duration::from_millis(50)) {
+                Ok(l) if l.starts_with("Abrir siempre así → ") => said = true,
+                Ok(l) if l.starts_with("apps.txt recargado") => reloaded = true,
+                Ok(l) if l.starts_with("Abrir siempre así") => return Err(l),
+                Ok(_) => {}
+                Err(_) if start.elapsed() > Duration::from_secs(3) => {
+                    return Err(format!("sin respuesta en 3 s (log: {said}, recarga: {reloaded})"));
+                }
+                Err(_) => {}
+            }
+        }
+        let text = std::fs::read_to_string(&apps).map_err(|e| e.to_string())?;
+        if !text.lines().any(|l| l.starts_with("q = wm") && l.contains("al abrir: izquierda")) {
+            return Err(format!("apps.txt no tiene la regla: {text:?}"));
+        }
+        Ok(format!("\"al abrir: izquierda\" guardada y recargada en {}", ms(start.elapsed())))
+    })();
+    let tmp = apps.with_extension("tmp");
+    let _ = std::fs::write(
+        &tmp, "q = wm
+",
+    )
+    .and_then(|()| std::fs::rename(&tmp, &apps));
+    match detail {
+        Ok(d) => r.check(NAME, Status::Ok, d),
+        Err(d) => r.check(NAME, Status::Fail, d),
+    }
+}
+
 fn landed(id: WindowId, target: wm_model::Rect) -> bool {
     !wm_platform::ghost::is_cloaked(id)
         && hide::hidden_with(id).is_none()
@@ -974,6 +1048,7 @@ fn core(r: &mut Report, puppets: &[WindowId]) {
     reload_check(r, &lines, puppets);
     options_check(r, &lines, puppets, child.id());
     rules_check(r, &lines);
+    keep_check(r, &lines, puppets);
     hard_checks(r);
     hung_check(r);
     desks_check(r, &lines, puppets);

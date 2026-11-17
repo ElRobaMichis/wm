@@ -21,6 +21,7 @@ pub mod rules;
 pub mod screens;
 pub mod settings_demo;
 pub mod update;
+pub mod usage;
 pub mod world;
 #[cfg(test)]
 mod world_arrange_tests;
