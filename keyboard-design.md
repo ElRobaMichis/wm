@@ -294,6 +294,7 @@ Un modificador **exclusivo** del gestor, así no choca con nada. Por defecto es 
 - **Asignar en el momento:** apretar Hyper + una letra libre abre un selector de apps para esa letra.
 - **Una letra puede apuntar a una categoría** en vez de a una app: "B = mi navegador" (el que esté como predeterminado). Así cambiar de Chrome a Arc no rompe la memoria muscular **(a validar)**.
 - **El mapa siempre muestra el ícono** de la app sobre su tecla: no hay que recordar nada.
+- **v1.1: la letra también dice dónde se abre la app** ("Al abrir": mitad, maximizada o centrada; `plan-v1.1.md`). Se aplica una vez, al abrirse; las teclas de la capa de ventana siguen mandando después.
 
 ### 6.5 Nivel 3: solo en el buscador de comandos (sin atajo)
 

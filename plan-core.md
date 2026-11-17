@@ -546,21 +546,21 @@ Revisión del 16/11/2026, a pedido del usuario: qué de lo que la gente **ama**,
 |---|---|
 | ⭐ 1–2. Zonas fijas con pilas de ventanas, híbrido con tiling (la propuesta de valor de §14.1) | **Fuera de v1** (línea de alcance) |
 | ⭐ 21. Configurar el layout visualmente, con mouse | **Fuera de v1** (va con las zonas) |
-| ⭐ 4. Reglas por app (lado preferido, tamaño, flotar, posición al abrir) | **Sin lugar hasta ahora** → propuesta abajo |
+| ⭐ 4. Reglas por app (lado preferido, tamaño, flotar, posición al abrir) | **v1.1: "al abrir"** (mitad, esquina, maximizada o centrada; `plan-v1.1.md`). Tamaño fijo, flotar y recordar la posición: después |
 | ⭐ 10. Reaplicar el layout solo (al abrir una app, al cambiar monitores, al volver del reposo) | Parcial: 4d rescata ventanas fuera de pantalla; la persistencia por topología (spike 7) está fuera de v1 |
 | ⭐ 14. Selector por ventana y por monitor con posiciones estables | **Sin lugar hasta ahora** → propuesta abajo |
-| 13. Ventanas nuevas en el monitor del puntero y sin tapar a otras | **Sin lugar hasta ahora** → propuesta abajo |
+| 13. Ventanas nuevas en el monitor del puntero y sin tapar a otras | **v1.1: el monitor del puntero** (opcional, para apps con regla). "Sin tapar a otras": v2, con las zonas |
 | 11. Grupos de apps que se abren juntos | **Sin lugar hasta ahora** → propuesta abajo |
 | 16–17. Escritorios con nombre; llevar una ventana con el teclado | Llevar: hito 4. Nombres: después de v1 |
 | 25. Tecla Hyper configurable | Después de v1 (§10) |
-| 26. Espacios entre ventanas (accesibilidad) | Sin lugar → propuesta abajo |
+| 26. Espacios entre ventanas (accesibilidad) | **v1.1** (0–24 px, por la escala de cada monitor) |
 | 28. Cuartos arrastrando a las esquinas | Ya lo da Windows (Snap) |
 | 30. Animaciones en cero | Hecho (`WM_ANIM=0`, "reducir animaciones"); falta el interruptor en los ajustes |
 
 **Conclusión:** v1 es la **base de teclado** para la sesión con la usuaria (lo que pidió `keyboard-design.md` §12): resuelve casi todo lo que la gente odia, pero **todavía no tiene el diferencial** que la investigación encontró (zonas con pilas, reglas por app, layouts que se reaplican solos).
 
 **Propuesta de hoja de ruta después de v1 (a confirmar con el usuario):**
-1. **v1.1, reglas simples:** posición al abrir por app (lado o zona preferida), ventanas nuevas en el monitor del puntero y sin tapar a otras, espacios entre ventanas opcionales. Barato sobre lo que ya existe (`place`, `anchor`).
+1. **v1.1, reglas simples (hecho, 17/11/2026, `plan-v1.1.md`):** posición al abrir por app, ventanas con regla en el monitor del puntero (opcional) y espacios entre ventanas. "Sin tapar a otras" pasó a v2 (con ventanas maximizadas nunca hay lugar libre).
 2. **v2, zonas:** áreas de trabajo por monitor con pila, definidas visualmente con el overlay (el editor de zonas de architecture.md §3), arrastrar a una zona con `Caps` o clic derecho, atajos por zona, redimensionado vinculado. Es la ⭐ principal.
 3. **v2.x, recordar todo:** persistencia por topología (spike 7, ya diseñado y probado), reaplicar al conectar o desconectar monitores y al volver del reposo; grupos de apps.
 4. **Después:** selector por ventana y por monitor; tiling automático por área; los diferenciales de §14.2.

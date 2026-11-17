@@ -42,6 +42,8 @@ target/release/wmw
 | Mantener `Caps` | El mapa de teclado (con Alt, la capa de ventana) |
 | `Caps` (toque corto) | Bloq Mayús normal |
 
+**Reglas por app (v1.1):** en los ajustes, cada letra con app puede tener una regla "Al abrir": no hacer nada, mitad izquierda, mitad derecha, maximizada o centrada (80 %). Se aplica una sola vez, a la primera ventana principal de la app, cuando la app termina de ubicarla (también al volver de la bandeja, como Steam); si después la app se mueve sola, gana la app, y `Caps` + Alt + Z la devuelve adonde la abrió. En la pestaña Opciones: **espacio entre ventanas** (sin espacio, 4, 8, 12, 16 o 24 px, contra los bordes y entre mitades y esquinas; maximizar y centrar no cambian) y, con más de un monitor, **abrir en la pantalla del puntero** (las apps con regla van a la pantalla donde está el puntero).
+
 Al conectar o desconectar un monitor, cambiar la resolución o la escala, volver del reposo o desbloquear, `wm` espera a que Windows termine de acomodar y trae entera a la pantalla más cercana cualquier ventana que haya quedado afuera (también las de otros escritorios). "Mostrar todas las ventanas" hace lo mismo en el momento.
 
 Línea de comandos (con `wm` corriendo): `wm quit`, `wm pause`, `wm resume`, `wm undo`, `wm ajustes`, `wm mostrar` (todas las ventanas al escritorio activo); `wm autostart on|off` (iniciar con Windows); `wm apps` muestra a qué app apunta cada letra; `wm restore` muestra cualquier ventana que haya quedado escondida; `wm fuera` dice si hay ventanas fuera de pantalla (solo mira). El log está en `%LOCALAPPDATA%\wm\wm.log`.
@@ -49,11 +51,13 @@ Línea de comandos (con `wm` corriendo): `wm quit`, `wm pause`, `wm resume`, `wm
 Sin configuración, cada letra va a la app abierta más reciente cuyo nombre de ejecutable empieza con esa letra. Para fijar letras, usar los ajustes o editar `%APPDATA%\wm\apps.txt` (se recarga solo al guardar):
 
 ```text
-# letra = ejecutable (sin .exe) | ruta para abrirla si está cerrada (opcional)
-b = brave
+# letra = ejecutable (sin .exe) | ruta para abrirla si está cerrada | nombre | al abrir: regla
+b = brave | | | al abrir: derecha
 t = windowsterminal
-n = notion | C:\Users\yo\AppData\Local\Programs\Notion\Notion.exe
+n = notion | C:\Users\yo\AppData\Local\Programs\Notion\Notion.exe | | al abrir: centrada 60
 ```
+
+Reglas a mano: `izquierda`, `derecha`, `arriba`, `abajo`, las cuatro esquinas (`arriba-izquierda`…), `maximizada`, `centrada` o `centrada N` (30–100 %). Las opciones están en `%APPDATA%\wm\settings.txt` (`espacio_entre_ventanas = 8`, `abrir_en_la_pantalla_del_puntero = sí`, …).
 
 ## Documentos
 
@@ -63,6 +67,8 @@ n = notion | C:\Users\yo\AppData\Local\Programs\Notion\Notion.exe
 - [design.md](design.md): lenguaje de diseño (principios, tokens y componentes).
 - [plan-core.md](plan-core.md): plan de la primera versión (hitos 0–5), con [plan-hito4.md](plan-hito4.md), [plan-hito4d.md](plan-hito4d.md) (monitores) y [plan-hito5.md](plan-hito5.md).
 - [plan-update.md](plan-update.md): instalar y actualizar sin terminal.
+- [plan-apps.md](plan-apps.md): apps (bandeja, selector, el Alt+Tab de la letra, la lista de ventanas).
+- [plan-v1.1.md](plan-v1.1.md): reglas por app, espacio entre ventanas y abrir en la pantalla del puntero.
 - [funciones-ocultas.md](funciones-ocultas.md): lo que se escondió de los ajustes en la primera versión, por qué y qué falta para mostrarlo.
 
 ## Compilar
