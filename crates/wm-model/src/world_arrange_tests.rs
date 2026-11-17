@@ -1643,3 +1643,35 @@ fn a_corner_one_pixel_off_without_a_neighbor_ends_exact() {
     sim.chord(&mut w, b"WA", true);
     assert!(sim.is_at(0, P::TopLeft), "{:?} {:?}", sim.win.frame, sim.logs);
 }
+
+#[test]
+fn a_window_already_in_a_corner_before_wm_counts_as_placed() {
+    // Como Rayo: puesta en su esquina en otra sesión de wm.
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.monitors = vec![monitor(0)];
+    sim.at(0, P::TopRight);
+    sim.run(&mut w, Event::Screen(crate::screens::ScreenEvent::WorkArea)); // como el arranque
+    rescale(&mut sim, 120, 1020);
+    sim.run(&mut w, Event::Screen(crate::screens::ScreenEvent::Changed));
+    assert!(sim.is_at(0, P::TopRight), "{:?} {:?}", sim.win.frame, sim.logs);
+}
+
+#[test]
+fn a_half_on_a_monitor_that_goes_away_snaps_back_when_it_returns() {
+    // Como Claude: en el monitor 2; al desconectarlo Windows la lleva al 1 y
+    // al reconectarlo la devuelve corrida unos px.
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    sim.at(1, P::RightHalf);
+    sim.key(&mut w, b'A');
+    assert!(sim.is_at(1, P::LeftHalf));
+    let both = sim.monitors.clone();
+    sim.monitors = vec![monitor(0)];
+    sim.win.frame = Rect::new(0, 0, 960, 1032);
+    sim.run(&mut w, Event::Screen(crate::screens::ScreenEvent::Changed));
+    sim.monitors = both;
+    sim.win.frame = Rect::new(1923, 2, 2885, 1030);
+    sim.run(&mut w, Event::Screen(crate::screens::ScreenEvent::Changed));
+    assert!(sim.is_at(1, P::LeftHalf), "{:?} {:?}", sim.win.frame, sim.logs);
+}

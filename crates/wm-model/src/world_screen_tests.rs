@@ -434,3 +434,24 @@ fn another_topology_in_between_does_not_bring_it_back_yet() {
     sim.wait(&mut w, 5_000);
     assert_eq!(sim.frame(win), start, "{:?}", sim.logs);
 }
+
+#[test]
+fn a_rescued_window_resized_from_the_same_corner_stays() {
+    // Como ardia: rescatada a una esquina y después llevada a la mitad con
+    // la misma esquina de arriba a la izquierda.
+    let mut w = World::new(Vec::new());
+    let mut sim = Sim::new();
+    let win = sim.add(1, Rect::new(2880, 0, 3840, 516));
+    sim.screen(&mut w, ScreenEvent::WorkArea);
+    sim.wait(&mut w, 5_000);
+    sim.monitors = vec![monitor(0)];
+    sim.screen(&mut w, ScreenEvent::Changed);
+    sim.wait(&mut w, 5_000);
+    let f = sim.frame(win);
+    let half = Rect::new(f.left, f.top, f.right, f.top + 1032);
+    sim.get(win).frame = half;
+    sim.monitors = vec![monitor(0), monitor(1920)];
+    sim.screen(&mut w, ScreenEvent::Changed);
+    sim.wait(&mut w, 5_000);
+    assert_eq!(sim.frame(win), half, "{:?}", sim.logs);
+}

@@ -90,9 +90,11 @@ pub(crate) struct Screens {
 struct Home {
     /// Topología en la que estaba ahí.
     key: u64,
-    /// Esquina exterior antes y después del rescate.
+    /// Esquina exterior antes del rescate.
     from: (i32, i32),
-    to: (i32, i32),
+    /// Marco justo después del rescate: si cambió (la movieron o le
+    /// cambiaron el tamaño, aunque sea con la misma esquina), no vuelve.
+    after: Rect,
     /// Marco de antes (para saber si vuelve a ser alcanzable).
     frame: Rect,
 }
@@ -351,9 +353,16 @@ impl World {
         let dragging = self.dragging_win();
         let mut moves = Vec::new();
         if changed && !late {
-            self.resnap(old_placed, &survey, dragging, now_us, out);
+            self.resnap(old_placed, &survey, dragging, false, now_us, out);
             self.return_home(key, &survey, &mut moves, out);
+        } else if late {
+            // Windows restaura algunas ventanas (minimizadas al desconectar)
+            // después de la calma: otra oportunidad de reencajarlas.
+            let mut placed = std::mem::take(&mut self.placed);
+            placed.extend(old_placed);
+            self.resnap(placed, &survey, dragging, true, now_us, out);
         }
+        self.adopt_slots(&survey, dragging);
         let seen: Vec<Seen> = survey
             .wins
             .iter()
@@ -388,7 +397,7 @@ impl World {
                         let home = Home {
                             key: self.screens.home_key,
                             from: (w.outer.left, w.outer.top),
-                            to: (to.left, to.top),
+                            after: shift(w.frame, dx, dy),
                             frame: w.frame,
                         };
                         self.screens.homes.insert(win, home);
@@ -456,27 +465,39 @@ impl World {
         old: HashMap<WinKey, (Spot, Rect)>,
         survey: &Survey,
         dragging: Option<WinKey>,
+        late: bool,
         now_us: u64,
         out: &mut Vec<Effect>,
     ) {
         let mut names = Vec::new();
+        // Lo que todavía no se puede decidir (minimizada, su monitor no está,
+        // algo en curso) queda para el próximo cambio: así una ventana que
+        // Windows minimiza al desconectar y restaura al reconectar vuelve
+        // exacta a su mitad.
+        let mut keep = Vec::new();
         for (win, (spot, achieved)) in old {
+            let Some(w) = survey.wins.iter().find(|w| w.info.key == win) else { continue };
             if spot.placement == Placement::Full
                 || edge_error(achieved, place(spot.monitor.work, spot.placement)) > 1
             {
-                continue; // no era un encaje exacto (G/V, tamaño mínimo)
+                // No era un encaje exacto (G/V, tamaño mínimo): con otra
+                // topología se olvida; en el control tardío se conserva.
+                if late {
+                    keep.push((win, (spot, achieved)));
+                }
+                continue;
             }
-            let Some(mi) = index_of(&survey.monitors, spot.monitor) else { continue };
+            let Some(mi) = index_of(&survey.monitors, spot.monitor) else {
+                keep.push((win, (spot, achieved)));
+                continue;
+            };
             let m = survey.monitors[mi];
-            let Some(w) = survey.wins.iter().find(|w| w.info.key == win) else { continue };
-            if w.info.minimized
-                || w.maximized
-                || w.parked
-                || w.frame == m.bounds
-                || self.jobs.contains_key(&win)
-                || dragging == Some(win)
-                || !self.desks.in_scope(&w.info.app)
+            if w.info.minimized || w.parked || self.jobs.contains_key(&win) || dragging == Some(win)
             {
+                keep.push((win, (spot, achieved)));
+                continue;
+            }
+            if w.maximized || w.frame == m.bounds || !self.desks.in_scope(&w.info.app) {
                 continue;
             }
             let slot = place(m.work, spot.placement);
@@ -527,12 +548,49 @@ impl World {
                 ));
             }
         }
+        for (win, v) in keep {
+            self.placed.entry(win).or_insert(v);
+        }
         if !names.is_empty() {
             out.push(Effect::Log(format!(
                 "Pantallas: {} reencajadas: {}.",
                 names.len(),
                 names.join(", ")
             )));
+        }
+    }
+
+    /// Las ventanas que están exactas en una mitad o esquina cuentan como
+    /// puestas ahí (también las de antes de arrancar `wm`, o las que se
+    /// pusieron a mano): un cambio de escala las reencaja igual.
+    fn adopt_slots(&mut self, survey: &Survey, dragging: Option<WinKey>) {
+        const SLOTS: [Placement; 8] = [
+            Placement::LeftHalf,
+            Placement::RightHalf,
+            Placement::TopHalf,
+            Placement::BottomHalf,
+            Placement::TopLeft,
+            Placement::TopRight,
+            Placement::BottomLeft,
+            Placement::BottomRight,
+        ];
+        for w in &survey.wins {
+            let win = w.info.key;
+            if w.info.minimized
+                || w.maximized
+                || w.parked
+                || self.placed.contains_key(&win)
+                || self.jobs.contains_key(&win)
+                || dragging == Some(win)
+                || !self.desks.in_scope(&w.info.app)
+            {
+                continue;
+            }
+            let Some(mi) = crate::place::monitor_of(&survey.monitors, w.frame) else { continue };
+            let monitor = survey.monitors[mi];
+            if let Some(&placement) = SLOTS.iter().find(|&&p| place(monitor.work, p) == w.frame) {
+                self.placed.insert(win, (Spot { monitor, placement }, w.frame));
+            }
         }
     }
 
@@ -548,13 +606,12 @@ impl World {
     ) {
         let areas: Vec<Rect> = survey.monitors.iter().map(|m| m.work).collect();
         let min = crate::screens::min_visible(&survey.monitors);
-        let near = |a: (i32, i32), b: (i32, i32)| (a.0 - b.0).abs() <= 1 && (a.1 - b.1).abs() <= 1;
         let mut back = Vec::new();
         let homes = std::mem::take(&mut self.screens.homes);
         for (win, home) in homes {
             let Some(w) = survey.wins.iter().find(|w| w.info.key == win) else { continue };
             // Nadie la movió desde el rescate; si no, la casa se olvida.
-            if !near((w.outer.left, w.outer.top), home.to) {
+            if edge_error(w.frame, home.after) > 1 {
                 continue;
             }
             let ok = home.key == key
