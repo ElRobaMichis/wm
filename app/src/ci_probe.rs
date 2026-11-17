@@ -894,7 +894,15 @@ r = wmregla | | | al abrir: derecha
         wait_for(Duration::from_secs(4), || landed(id, target))
             .ok_or("no llegó a la mitad derecha en 4 s")?;
         let placed = opened.elapsed();
-        let said = lines.try_iter().any(|l| l.contains("Regla al abrir → mitad derecha"));
+        // wm la anota al terminar de verificar, un poco después de llegar.
+        let said = loop {
+            match lines.recv_timeout(Duration::from_millis(50)) {
+                Ok(l) if l.contains("Regla al abrir → mitad derecha") => break true,
+                Ok(_) => {}
+                Err(_) if opened.elapsed() > placed + Duration::from_millis(1500) => break false,
+                Err(_) => {}
+            }
+        };
         if !said {
             return Err("llegó, pero el log no dice \"Regla al abrir\"".into());
         }
