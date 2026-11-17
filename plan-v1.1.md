@@ -54,3 +54,14 @@ Ver §7 (se completa con las respuestas del usuario).
 - Monitor: **donde la abre la app**; "abrir en la pantalla del puntero" como interruptor opcional, apagado.
 - Espacios: **elegir el tamaño** (0–24 px), no un interruptor fijo.
 - Con la recomendación de Fable: Z deshace la regla; sin animación al aplicar; si la app se reubica sola, gana la app; volver de la bandeja cuenta como abrir; reglas solo para apps con letra; ajustes en dos pestañas; (c), (e) y recordar posición, para después.
+
+## 8. Avance
+
+- **Pasos 1–3 hechos y probados por el usuario (17/11/2026):** Steam desde la bandeja (maximizada) e IntelliJ desde cero (mitad derecha) aplican la regla solos; Z la deshace.
+- Lo que salió de las pruebas:
+  - IntelliJ (Java) activa su ventana antes de terminar de mostrarla: el `Scan` del `FOREGROUND` no la ve y Windows no vuelve a avisar. Con reglas, wm la vuelve a buscar (cada 250–500 ms los primeros 3 s, hasta 10 s). En las pruebas apareció a los 1.5–2.5 s.
+  - Una ventana nueva que aparece detrás (la pantalla de carga al frente) queda anotada 5 s: si pasa al frente, la regla corre; si no, no se toca.
+  - El `Scan` del seguimiento tras abrir (Caps + letra) también adopta y aplica la regla.
+  - Steam (CEF) vuelve de la bandeja con la marca de maximizada y la ventana a tamaño normal: solo cuenta como maximizada si cubre el área de trabajo (también en Caps + Alt + F).
+  - Cada vez que la regla no corre, el log dice por qué.
+- Falta: paso 4 (`ci-probe`), 5 (puntero), 6 (espacios), ajustes en dos pestañas, 7 (documentación).
