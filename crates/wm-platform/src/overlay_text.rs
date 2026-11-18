@@ -455,11 +455,7 @@ type Resolved = (char, Option<(usize, u16)>, f32);
 /// Cada carácter de `text` con la cara que lo dibuja (`None`: no se
 /// dibuja), su glifo y su avance a `em`. Si `font` los tiene todos, no se
 /// abre ningún respaldo (el camino de siempre).
-fn resolve_chars(
-    font: &Font,
-    text: &str,
-    em: f32,
-) -> windows::core::Result<Vec<Resolved>> {
+fn resolve_chars(font: &Font, text: &str, em: f32) -> windows::core::Result<Vec<Resolved>> {
     let chars: Vec<char> = text.chars().collect();
     let codepoints: Vec<u32> = chars.iter().map(|&c| u32::from(c)).collect();
     let glyphs = glyph_indices(font, &codepoints)?;
