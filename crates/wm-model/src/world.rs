@@ -3210,6 +3210,9 @@ mod tests {
         let said: Vec<&String> = sim.logs.iter().filter(|l| l.starts_with("A mano")).collect();
         assert_eq!(said.len(), 3, "{:?}", sim.logs);
         assert_eq!(said[0], "A mano (Alt+Tab o la barra) → brave: tiene la B.");
+        let tip = "Sugerir atajos: aviso «La próxima vez: Caps + N» (el siguiente, en 10 minutos como mínimo).";
+        assert!(sim.logs.iter().any(|l| l == tip), "{:?}", sim.logs);
+        assert!(crate::notices::notice_for(tip).is_none() && crate::usage::key_for(tip).is_none());
         // Volver a la misma ventana (Alt+Tab y soltar sin cambiar) no cuenta.
         by_hand(&mut w, &mut sim, notion);
         assert_eq!(sim.logs.iter().filter(|l| l.starts_with("A mano")).count(), 3);

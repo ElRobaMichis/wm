@@ -77,6 +77,10 @@ impl World {
             id.name()
         )));
         if self.options.tips && self.teach.switched(letter, now_us) {
+            // También al log: un aviso de 2 s se pierde fácil al ir rápido.
+            out.push(Effect::Log(format!(
+                "Sugerir atajos: aviso «La próxima vez: Caps + {key}» (el siguiente, en 10 minutos como mínimo)."
+            )));
             out.push(Effect::Notice(format!("La próxima vez: Caps + {key}")));
             out.push(Effect::SaveLearning(self.teach.format()));
         }
